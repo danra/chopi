@@ -1,0 +1,8 @@
+;; chopi's seatbelt network profile. Disallows any incoming connections and
+;; only allows outgoing traffic through the smokescreen proxy. chopi appends
+;; this (with safehouse's --append-profile) on every run, so it lands LAST in
+;; the composed policy and its (deny network*) overrides whatever network
+;; access safehouse's own profile leaves open.
+
+(deny network*)
+(allow network-outbound (remote ip "localhost:4760"))

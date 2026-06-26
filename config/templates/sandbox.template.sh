@@ -1,0 +1,36 @@
+# shellcheck shell=bash
+# shellcheck disable=SC2034 # These arrays are consumed by chopi, which sources this file.
+# shellcheck disable=SC2054 # Commas inside an element are intentional (e.g. --enable's value list).
+#
+# sandbox.sh -- sandbox configuration
+#
+# Flags passed to safehouse. Run `safehouse --help` for the full option list.
+CHOPI_SAFEHOUSE_FLAGS=(
+    --enable xcode,vscode,keychain
+    # Verify no secrets in shell RC file before enabling!
+    # --enable shell-init
+
+    # Enable read access to additional application binaries
+    # --add-dirs-ro /Applications/CMake.app:/Applications/Postgres.app
+
+    # Enable additional read-write access
+    # --add-dirs "$HOME/.cache"
+)
+
+# Extra environment for the sandboxed command, passed as literal KEY=VALUE preceding
+# the sandboxed command. Use it for vars that are OK to have visible on the command line,
+# allowing easy inspection of the entire configuration for the sandboxed command.
+#
+# You can also forward a host environment variable with FOO="$FOO"; its resolved value is
+# substituted (and thus visible in the command-line).
+#
+# For secrets or anything else you'd rather keep off the visible command line, use safehouse's
+# --env-pass NAME or --env=FILE.
+CHOPI_EXTRA_ENV=(
+    PATH="$HOME/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+
+    # Forward a host env var into the sandbox. If the host var is unset, chopi hard-errors
+    # rather than forwarding an empty value, so a missing var is caught loudly:
+    # FOO="$FOO"
+)

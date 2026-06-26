@@ -1,0 +1,25 @@
+# Smokescreen proxy outgoing allowlist
+#
+# allowed_domains matches the exact host; use a leading "*." for subdomains
+# (e.g. "*.anthropic.com").
+version: v1
+
+services: []
+
+default:
+  name: default
+  action: enforce
+  allowed_domains:
+    - api.anthropic.com
+    - mcp-proxy.anthropic.com
+    - platform.claude.com
+    - downloads.claude.ai
+
+    - github.com
+    - api.github.com
+    - raw.githubusercontent.com
+    # Images are stored here: Looks random, but this same random-looking identifier is what currently comes up in other reports
+    # when googling github-production-user-asset
+    - github-production-user-asset-6210df.s3.amazonaws.com
+
+    - pypi.org
