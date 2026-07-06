@@ -168,6 +168,26 @@ assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
 
 
 # ---------------------------------------------------------------------------
+echo "private per-invocation temp dir"
+# ---------------------------------------------------------------------------
+# chopi exports a freshly-made TMPDIR for each run (safehouse forwards it into the
+# sandbox)
+# shellcheck disable=SC2016  # $TMPDIR expands in the sandboxed shell, not here
+out="$(chopi_t /bin/sh -c 'echo "SBX_TMPDIR=$TMPDIR"; echo probe > "$TMPDIR/probe.txt" && echo WRITE_OK' 2>/dev/null)"
+sbx_tmpdir="$(printf '%s\n' "$out" | sed -n 's/^SBX_TMPDIR=//p')"
+case "$sbx_tmpdir" in
+    "${TMPDIR:-/tmp}"*chopi.*) ok "the sandboxed TMPDIR is a chopi-private dir under the invoking temp dir" ;;
+    *) bad "the sandboxed TMPDIR should be a chopi-private dir under '${TMPDIR:-/tmp}' (got '$sbx_tmpdir')" ;;
+esac
+assert_contains "$out" "WRITE_OK"                  "  -> and the sandboxed command can write in it"
+if [ -n "$sbx_tmpdir" ] && [ ! -e "$sbx_tmpdir" ]; then
+    ok  "chopi removes the invocation temp dir (and the command's temporaries) after the run"
+else
+    bad "chopi should remove the invocation temp dir ('$sbx_tmpdir') after the run"
+fi
+
+
+# ---------------------------------------------------------------------------
 echo "network confinement"
 # ---------------------------------------------------------------------------
 # (1) Allowed host THROUGH the proxy -> 200. Needs real connectivity, so gate it on a

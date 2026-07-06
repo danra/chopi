@@ -15,6 +15,14 @@ usage="usage: chopi [--config FILE] <executable> [args...]
   --config FILE   use FILE as the sandbox config instead of the default
                   config/sandbox.sh"
 
+# Every chopi run gets its own private subfolder under TMPDIR (or /tmp), exported into TMPDIR.
+# safehouse forwards TMPDIR to the sandboxed command, so all generated temporaries (for generation
+# that respects TMPDIR) are contained in it and cleaned up on exit.
+CHOPI_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/chopi.XXXXXX")" \
+    || { echo "chopi: could not create a temp dir for the run" >&2; exit 1; }
+export TMPDIR="$CHOPI_TMPDIR"
+trap 'rm -rf "$CHOPI_TMPDIR"' EXIT
+
 main() {
     local config="$CHOPI_DIR/config/sandbox.sh"
     local config_given=""
