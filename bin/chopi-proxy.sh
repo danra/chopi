@@ -11,14 +11,18 @@ CHOPI_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd -P)"
 
 usage() {
     cat <<EOF
-usage: $SCRIPT_NAME [--allowlist FILE]   # listens on 127.0.0.1:$PROXY_PORT
+usage: $SCRIPT_NAME [--allowlist FILE] [--verbose]   # listens on 127.0.0.1:$PROXY_PORT
 
   --allowlist FILE   use FILE as the outgoing allowlist instead of the default
                      config/proxy-allowlist.yaml
+  --verbose          show smokescreen's output verbatim, interleaved with chopi-proxy's
+                     own: nothing is dropped or replaced (allowed connections and known
+                     noise become visible; each DENY's raw line precedes its formatted one)
 EOF
 }
 
 CUSTOM_ACL=""
+VERBOSE=false
 INVOCATION_DIR="$PWD"
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -30,6 +34,7 @@ while [ "$#" -gt 0 ]; do
                 exit 1
             fi
             CUSTOM_ACL="$2"; shift 2 ;;
+        --verbose) VERBOSE=true; shift ;;
         *) usage >&2; exit 1 ;;
     esac
 done
@@ -99,7 +104,7 @@ done
 format_smokescreen_log() {
     local is_interactive=false
     [ -t 1 ] && is_interactive=true
-    classify_log "$is_interactive" "$SCRIPT_NAME" notify_deny
+    classify_log "$is_interactive" "$SCRIPT_NAME" notify_deny "$VERBOSE"
 }
 
 notify_deny() {

@@ -24,7 +24,7 @@ echo "log classifier (connection-request / deny-host / format-deny / format-misc
 classify() {
     arity 1
     local is_interactive="$1"
-    classify_log "$is_interactive" "chopi-proxy.sh" ""
+    classify_log "$is_interactive" "chopi-proxy.sh" "" false
 }
 
 out="$(printf '%s\n' '{"allow":false,"requested_host":"evil.com","time":"T"}' | classify false)"
@@ -93,12 +93,60 @@ out="$(
     set -euo pipefail
     FORMAT_MISC_FILTER="$poison_filter"
     printf '%s\n' 'POISON-LINE' '{"allow":false,"requested_host":"late.example","time":"T"}' \
-        | classify_log false "chopi-proxy.sh" ""
+        | classify_log false "chopi-proxy.sh" "" false
 )"
 rm -f "$poison_filter"
 assert_contains "$out" "[chopi-proxy.sh] DENY  late.example  @ T" \
     "a jq failure on one line does not abort the loop and silence later DENYs (under set -e)"
 
+
+# ---------------------------------------------------------------------------
+echo "verbose mode (--verbose: nothing dropped or replaced)"
+# ---------------------------------------------------------------------------
+# With verbose on, every raw smokescreen line is passed through: normally-dropped lines
+# (allowed connections, known noise) become visible, and a DENY's raw line is emitted
+# *before* the formatted line that normally replaces it. The deny hook still fires (tests
+# pass "" so nothing pops).
+classify_verbose() {
+    arity 1
+    local is_interactive="$1"
+    classify_log "$is_interactive" "chopi-proxy.sh" "" true
+}
+
+deny_raw='{"allow":false,"requested_host":"evil.com","time":"T"}'
+out="$(printf '%s\n' "$deny_raw" | classify_verbose false)"
+assert_eq "$out" "$deny_raw
+[chopi-proxy.sh] DENY  evil.com  @ T" "verbose DENY -> raw line, then the formatted deny line after it"
+
+out="$(printf '%s\n' '{"allow":true,"requested_host":"ok.com"}' | classify_verbose false)"
+assert_eq "$out" '{"allow":true,"requested_host":"ok.com"}' "verbose allowed connection -> raw line surfaced (not dropped)"
+
+noise='time="x" level=warning msg="no statsd addr provided, using a noop client"'
+out="$(printf '%s\n' "$noise" | classify_verbose false)"
+assert_eq "$out" "$noise" "verbose known noise -> raw line surfaced (not dropped)"
+
+passthrough='some smokescreen startup line'
+out="$(printf '%s\n' "$passthrough" | classify_verbose false)"
+assert_eq "$out" "$passthrough" "verbose unknown line -> surfaced exactly once (not doubled)"
+
+# The whole cascade at once: every raw line is kept in order, and the lone DENY gains its
+# formatted line right after its raw line -- nothing is dropped or replaced.
+out="$(printf '%s\n' \
+        '{"allow":true,"requested_host":"ok.com"}' \
+        '{"bytes_in":1}' \
+        '{"allow":false,"requested_host":"blocked.example","time":"T"}' \
+        'WARN: Error copying to client' \
+      | classify_verbose false)"
+assert_eq "$out" '{"allow":true,"requested_host":"ok.com"}
+{"bytes_in":1}
+{"allow":false,"requested_host":"blocked.example","time":"T"}
+[chopi-proxy.sh] DENY  blocked.example  @ T
+WARN: Error copying to client' "verbose mixed batch -> every raw line kept in order, DENY also formatted after its raw line"
+
+
+# ---------------------------------------------------------------------------
+echo "log classifier building blocks (connection-request / deny-host)"
+# ---------------------------------------------------------------------------
 # The building blocks, each on its own. connection-request.jq gates the chain; deny-host.jq
 # is the single security-critical step that decides denied-or-not and names the host.
 conn()      { jq -R -r -f "$CONNECTION_FILTER"; }

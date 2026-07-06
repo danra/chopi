@@ -28,10 +28,10 @@ FORMAT_DENY_FILTER="$_classify_dir/format-deny.jq"
 FORMAT_MISC_FILTER="$_classify_dir/format-misc.jq"
 unset _classify_dir
 
-# classify_log <is_interactive> <script> <on_deny_cmd>
+# classify_log <is_interactive> <script> <on_deny_cmd> <verbose>
 #
 # Read smokescreen log lines on stdin; write the display output to stdout, one line in to
-# zero-or-one line out (empty == the line is dropped).
+# zero-or-one line out (empty == the line is dropped) -- or, in verbose mode, one-or-two.
 #
 #   <is_interactive>  true/false -- enables the DENY bell + red color in format-deny.jq;
 #                     both are noise in a file or a pipe, so the proxy passes the result of
@@ -40,6 +40,11 @@ unset _classify_dir
 #   <on_deny_cmd>     called as `<on_deny_cmd> <host>` once per denied connection, or ""
 #                     for none. The proxy passes notify_deny (pops a macOS banner); the
 #                     tests pass "" so a test run never fires real notifications.
+#   <verbose>         true/false -- when true, nothing is dropped or replaced: every raw
+#                     smokescreen line is passed through as-is, interleaved with chopi-proxy's
+#                     own output. Normally-dropped lines (allowed connections, known noise)
+#                     become visible, and a DENY's formatted line is emitted *after* its raw
+#                     line rather than in place of it.
 #
 # The `|| [ -n "$line" ]` tail flushes a final line that arrives without a trailing newline.
 #
@@ -50,14 +55,15 @@ unset _classify_dir
 # consumer for good -- silencing every later DENY. Degraded formatting on a broken line is fine; a
 # silently dropped DENY is not, so a failed classifier always errs toward surfacing the raw line.
 classify_log() {
-    arity 3
-    local is_interactive="$1" script="$2" on_deny="$3" line host
+    arity 4
+    local is_interactive="$1" script="$2" on_deny="$3" verbose="$4" line host
     while IFS= read -r line || [ -n "$line" ]; do
+        [ "$verbose" = true ] && printf '%s\n' "$line"
         if [ -n "$(printf '%s\n' "$line" | jq -R -r -f "$CONNECTION_FILTER")" ]; then
             # deny-host.jq decides deny-or-allow; if it fails we can't tell, so surface the raw
             # line (fail-safe) rather than guessing ALLOW and dropping a possible DENY.
             if ! host=$(printf '%s\n' "$line" | jq -R -r -f "$DENY_HOST_FILTER"); then
-                printf '%s\n' "$line"
+                [ "$verbose" = true ] || printf '%s\n' "$line"
                 continue
             fi
             if [ -n "$host" ]; then
@@ -65,9 +71,9 @@ classify_log() {
                 printf '%s\n' "$line" | jq -R -r \
                     --argjson is_interactive "$is_interactive" --arg script "$script" \
                     --arg host "$host" \
-                    -f "$FORMAT_DENY_FILTER" || printf '%s\n' "$line"
+                    -f "$FORMAT_DENY_FILTER" || [ "$verbose" = true ] || printf '%s\n' "$line"
             fi
-        else
+        elif [ "$verbose" != true ]; then
             printf '%s\n' "$line" | jq -R -r -f "$FORMAT_MISC_FILTER" || printf '%s\n' "$line"
         fi
     done
