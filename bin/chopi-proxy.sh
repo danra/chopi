@@ -11,29 +11,29 @@ CHOPI_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd -P)"
 
 usage() {
     cat <<EOF
-usage: $SCRIPT_NAME [--allowlist FILE] [--verbose]   # listens on 127.0.0.1:$PROXY_PORT
+usage: $SCRIPT_NAME [--rules FILE] [--verbose]   # listens on 127.0.0.1:$PROXY_PORT
 
-  --allowlist FILE   use FILE as the outgoing allowlist instead of the default
-                     config/proxy-allowlist.yaml
+  --rules FILE       use FILE as the proxy rules instead of the default
+                     config/proxy-rules.yaml
   --verbose          show smokescreen's output verbatim, interleaved with chopi-proxy's
                      own: nothing is dropped or replaced (allowed connections and known
                      noise become visible; each DENY's raw line precedes its formatted one)
 EOF
 }
 
-CUSTOM_ACL=""
+CUSTOM_RULES=""
 VERBOSE=false
 INVOCATION_DIR="$PWD"
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -h|--help) usage; exit 0 ;;
-        --allowlist)
+        --rules)
             if [ "$#" -lt 2 ]; then
-                echo "error: --allowlist requires a file path" >&2
+                echo "error: --rules requires a file path" >&2
                 usage >&2
                 exit 1
             fi
-            CUSTOM_ACL="$2"; shift 2 ;;
+            CUSTOM_RULES="$2"; shift 2 ;;
         --verbose) VERBOSE=true; shift ;;
         *) usage >&2; exit 1 ;;
     esac
@@ -64,27 +64,27 @@ if ! command -v alerter >/dev/null 2>&1; then
     exit 1
 fi
 
-if [ -n "$CUSTOM_ACL" ]; then
-    case "$CUSTOM_ACL" in
-        /*) ACL="$CUSTOM_ACL" ;;
-        *)  ACL="$INVOCATION_DIR/$CUSTOM_ACL" ;;
+if [ -n "$CUSTOM_RULES" ]; then
+    case "$CUSTOM_RULES" in
+        /*) RULES="$CUSTOM_RULES" ;;
+        *)  RULES="$INVOCATION_DIR/$CUSTOM_RULES" ;;
     esac
-    if [ ! -f "$ACL" ]; then
-        echo "error: --allowlist file not found: $ACL" >&2
+    if [ ! -f "$RULES" ]; then
+        echo "error: --rules file not found: $RULES" >&2
         exit 1
     fi
 
-    # The proxy doesn't know which dirs will be sandboxed later, so it can't enforce no overlap with a custom allowlist.
+    # The proxy doesn't know which dirs will be sandboxed later, so it can't enforce no overlap with a custom rules file.
     # Warn instead
-    echo "[$SCRIPT_NAME] using custom outgoing allowlist: $ACL" >&2
+    echo "[$SCRIPT_NAME] using custom proxy rules: $RULES" >&2
     echo "[$SCRIPT_NAME] warning: keep this file OUTSIDE any workspace you sandbox with chopi --" >&2
-    echo "              a sandboxed command that can write to its own allowlist can lift its outgoing limits." >&2
+    echo "              a sandboxed command that can write its own allowlist can lift its outgoing limits." >&2
 else
-    ACL="./config/proxy-allowlist.yaml"
-    if [ ! -f "$ACL" ]; then
-        echo "error: no outgoing allowlist at $CHOPI_DIR/config/proxy-allowlist.yaml" >&2
+    RULES="./config/proxy-rules.yaml"
+    if [ ! -f "$RULES" ]; then
+        echo "error: no outgoing rules at $CHOPI_DIR/config/proxy-rules.yaml" >&2
         echo "Run the installer to create it from the template:  $CHOPI_DIR/install.sh" >&2
-        echo "or copy it manually:  cp \"$CHOPI_DIR/config/templates/proxy-allowlist.template.yaml\" \"$CHOPI_DIR/config/proxy-allowlist.yaml\"" >&2
+        echo "or copy it manually:  cp \"$CHOPI_DIR/config/templates/proxy-rules.template.yaml\" \"$CHOPI_DIR/config/proxy-rules.yaml\"" >&2
         exit 1
     fi
 fi
@@ -130,5 +130,5 @@ notify_deny() {
 echo "[$SCRIPT_NAME] starting outgoing proxy on 127.0.0.1:$PROXY_PORT (Ctrl-C to stop)" >&2
 exec "$SMOKESCREEN_BIN" --config-file ./.internal/smokescreen-config.yaml \
               --listen-ip 127.0.0.1 --listen-port "$PROXY_PORT" \
-              --egress-acl-file "$ACL" \
+              --egress-acl-file "$RULES" \
               > >(format_smokescreen_log) 2>&1

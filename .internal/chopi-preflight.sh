@@ -6,7 +6,7 @@
 #
 # Checks, in order:
 #   * the workspace doesn't overlap chopi's own dir (a confined command must not be able
-#     to reach the allowlist/policy that confines it),
+#     to reach the policy that confines it),
 #   * a custom --config, if given, isn't placed inside the workspace it would sandbox,
 #   * the outgoing proxy is already up, and
 #   * the safehouse CLI is on PATH.
@@ -75,7 +75,7 @@ preflight() {
     done
 
     # chopi's whole promise is that it lives OUTSIDE the tree it sandboxes, so a
-    # confined command can't reach chopi's own allowlist/policy and edit what confines
+    # confined command can't reach chopi's own policy and edit what confines
     # it. Enforce it: refuse when the workspace and chopi's own dir overlap in EITHER
     # direction -- the workspace is chopi's dir, contains it (a parent), or is nested
     # inside it (e.g. run from chopi/config). In any of those the workspace's
@@ -107,7 +107,7 @@ preflight() {
 
     # The outgoing proxy must already be running in its own terminal. We deliberately
     # don't start it here, so it stays in the foreground where you can watch refused
-    # connections and stop it to edit the allowlist.
+    # connections and stop it to edit the list of allowed domains.
     #
     # This is a liveness check only -- it confirms something is listening, not that it's
     # our smokescreen. We deliberately don't verify the listener's identity because no

@@ -1,3 +1,3 @@
 # Local configuration, copied from templates and customized
-proxy-allowlist.yaml
+proxy-rules.yaml
 sandbox.sh

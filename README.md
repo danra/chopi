@@ -27,8 +27,8 @@ Before first use, review the configuration.
 
 ## Configuration
 
-To add or remove allowed domains, edit `config/proxy-allowlist.yaml`. **Restart the proxy**
-if it's already running for edits to take effect.
+To add or remove allowed domains, edit `config/proxy-rules.yaml`. **Restart the proxy** if
+it's already running for edits to take effect.
 
 To configure the sandbox policy, edit `config/sandbox.sh`:
 
@@ -71,8 +71,8 @@ the other locations that `safehouse` itself provides.
    naming the host. (If the banners don't appear, allow notifications for your
    terminal in System Settings -> Notifications.)
 
-   The proxy only reads the allowlist at startup, so after editing it **restart
-   the proxy** (Ctrl-C, then `chopi-proxy` again). The new allowlist will take
+   The proxy only reads the rules at startup, so after editing them **restart
+   the proxy** (Ctrl-C, then `chopi-proxy` again). The new rules will take
    effect for any new connections in existing `chopi` sessions; you don't have
    to restart them (unless you need to kill an already established connection).
 
@@ -91,9 +91,9 @@ the other locations that `safehouse` itself provides.
 
 ### Advanced
 
-To run the proxy against a different allowlist, pass `chopi-proxy --allowlist FILE`. Keep
+To run the proxy against a different rules file, pass `chopi-proxy --rules FILE`. Keep
 that file **outside** of any workspace you sandbox with chopi: a sandboxed command that 
-can write to its own allowlist can modify its own limits.
+can write its own allowlist can modify its own limits.
 
 To use a different sandbox config for a single run, pass `chopi --config FILE`. The file 
 must define the same `CHOPI_SAFEHOUSE_FLAGS` / `CHOPI_EXTRA_ENV` as `config/sandbox.sh`.
@@ -111,17 +111,17 @@ and run anyway (useful mainly for dogfooding `chopi` for developing `chopi` itse
 ## Why two layers
 
 macOS Seatbelt (`sandbox-exec`) can confine the filesystem and pin outgoing network
-connections to an IP/port, but it **cannot** allowlist by hostname; its network rules only
+connections to an IP/port, but it **cannot** filter by hostname; its network rules only
 understand `localhost`/IP. Host-based filtering is therefore split across two cooperating
 layers:
 
 | Layer | Tool | Enforces |
 |-------|------|----------|
 | Sandbox | [`safehouse`](https://github.com/eugene1g/agent-safehouse) (wraps `sandbox-exec`) | Filesystem and preset features; the only outgoing network traffic permitted is to the local proxy at `127.0.0.1:4760`. |
-| Outgoing proxy | [`smokescreen`](https://github.com/stripe/smokescreen) | Of the traffic that reaches it, only connections to allowlisted hosts are forwarded; everything else is refused and logged. |
+| Outgoing proxy | [`smokescreen`](https://github.com/stripe/smokescreen) | Of the traffic that reaches it, only connections to allowed hosts are forwarded; everything else is refused and logged. |
 
 Neither layer is sufficient alone: the sandbox makes the proxy the *only* way out,
-and the proxy is what actually enforces the hostname allowlist.
+and the proxy is what actually enforces the hostname rules.
 
 The sandboxed agent must route its traffic through the proxy, i.e., respect
 `HTTP_PROXY`/`HTTPS_PROXY`). The sandbox blocks all other outgoing traffic, so an agent that
@@ -134,7 +134,7 @@ sets in the sandbox env.
   Terminal 1 (start once, leave running)
   ──────────────────────────────────────
   $ chopi-proxy
-       → smokescreen listens on 127.0.0.1:4760, enforcing config/proxy-allowlist.yaml
+       → smokescreen listens on 127.0.0.1:4760, enforcing config/proxy-rules.yaml
 
   Terminal 2 (from inside the repo you're working on)
   ───────────────────────────────────────────────────
@@ -147,9 +147,9 @@ sets in the sandbox env.
       <cmd>
         │  Seatbelt allows outgoing connections ONLY to 127.0.0.1:4760
         ▼
-      smokescreen ──(host allowlisted?)──▶  api.anthropic.com / api.github.com / downloads.claude.ai
+      smokescreen ──(host allowed?)──────▶  api.anthropic.com / api.github.com / downloads.claude.ai
         │
-        └────────(not allowlisted)───────▶  refused + logged in Terminal 1
+        └────────(not allowed)───────────▶  refused + logged in Terminal 1
 ```
 
 
@@ -157,7 +157,7 @@ sets in the sandbox env.
 
 - **A network connection was refused** -- First verify that the proxy is running.
   Refused hosts appear as red `DENY` lines in the log; if the host should be permitted,
-  add it to `config/proxy-allowlist.yaml` and restart the proxy. You don't have
+  add it to `config/proxy-rules.yaml` and restart the proxy. You don't have
   to restart any of your existing `chopi` sessions: the added domains will be
   immediately allowed.
 - **A non-network sandbox denial** -- See Agent Safehouse's

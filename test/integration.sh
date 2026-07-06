@@ -8,7 +8,7 @@
 #
 #   * filesystem: read/write inside the workspace works; reads/writes OUTSIDE it (incl.
 #     chopi's own dir) are denied.
-#   * network: an allowlisted host is reachable THROUGH the proxy; a non-allowlisted host
+#   * network: an allowed host is reachable THROUGH the proxy; a host that's not allowed
 #     is refused by the proxy (and the denial is logged + notified); any direct outgoing connection
 #     that bypasses the proxy, or aims at a non-4760 port, is blocked by Seatbelt.
 
@@ -20,8 +20,8 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
 header "test/integration.sh -- chopi's end-to-end integration tests"
 
-ALLOWED_HOST="www.google.com"      # in the test allowlist  -> reachable through the proxy
-DENIED_HOST="www.microsoft.com"    # NOT in the allowlist   -> refused by the proxy
+ALLOWED_HOST="www.google.com"      # allowed in the test rules       -> reachable through the proxy
+DENIED_HOST="www.microsoft.com"    # NOT allowed in the test rules   -> refused by the proxy
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +51,7 @@ ws="$base/workspace"            # the sandbox workspace (read/write granted, as 
 outside="$base/outside"         # sibling under $HOME -> reliably denied
 alerter_stub="$base/bin"        # a recording `alerter` shim on the proxy's PATH
 cfg="$base/config/sandbox.sh"   # minimal sandbox config, OUTSIDE the workspace
-allowlist="$base/config/itest-allowlist.yaml"
+rules="$base/config/itest-rules.yaml"
 proxy_log="$base/proxy.log"
 alerter_log="$base/alerter-calls.log"
 mkdir -p "$ws" "$outside" "$alerter_stub" "$base/config"
@@ -67,8 +67,8 @@ CHOPI_SAFEHOUSE_FLAGS=()
 CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
 EOF
 
-# Test allowlist: exactly one host allowed.
-cat > "$allowlist" <<EOF
+# Test rules: exactly one host allowed.
+cat > "$rules" <<EOF
 version: v1
 services: []
 default:
@@ -107,7 +107,7 @@ wait_for() {
 echo "proxy + sandbox setup"
 
 # The stub alerter goes first on the proxy's PATH; jq/nc/etc. stay reachable via the rest.
-PATH="$alerter_stub:$PATH" "$repo/bin/chopi-proxy.sh" --allowlist "$allowlist" > "$proxy_log" 2>&1 &
+PATH="$alerter_stub:$PATH" "$repo/bin/chopi-proxy.sh" --rules "$rules" > "$proxy_log" 2>&1 &
 proxy_pid=$!
 
 ready=""
@@ -174,16 +174,16 @@ echo "network confinement"
 # host-side precheck and SKIP (not fail) when offline.
 if curl -sS -o /dev/null --max-time 10 "https://$ALLOWED_HOST" 2>/dev/null; then
     code="$(sandbox_curl --max-time 20 "https://$ALLOWED_HOST")"
-    assert_eq "$code" "200"                        "allowlisted host is reachable THROUGH the proxy"
+    assert_eq "$code" "200"                        "allowed host is reachable THROUGH the proxy"
 else
-    echo "  SKIP allowlisted-host reachability (no connectivity to $ALLOWED_HOST)"
+    echo "  SKIP allowed-host reachability (no connectivity to $ALLOWED_HOST)"
 fi
 
-# (2) Denied host THROUGH the proxy -> refused (smokescreen denies on the ACL before
+# (2) Denied host THROUGH the proxy -> refused (smokescreen denies on the rules before
 # dialing, so this works offline). Refused == not 200, plus a logged DENY, plus the
 # notification path firing (the recording alerter stub).
 code="$(sandbox_curl --max-time 20 "https://$DENIED_HOST")"
-assert_not_contains "$code" "200"                  "non-allowlisted host is refused by the proxy"
+assert_not_contains "$code" "200"                  "a host not allowed in the rules is refused by the proxy"
 if wait_for "$proxy_log" "$DENIED_HOST"; then
     ok  "  -> the proxy logged a DENY for $DENIED_HOST"
 else

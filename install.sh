@@ -87,7 +87,7 @@ ensure_copy() {
     echo "  created $live  (from $template)"
 }
 
-ensure_copy config/templates/proxy-allowlist.template.yaml config/proxy-allowlist.yaml
+ensure_copy config/templates/proxy-rules.template.yaml config/proxy-rules.yaml
 ensure_copy config/templates/sandbox.template.sh           config/sandbox.sh
 
 
@@ -148,7 +148,7 @@ echo ""
 echo "==> Done."
 echo ""
 echo "Before first use, review your local setup:"
-echo "  * the proxy allowlist        ($CHOPI_DIR/config/proxy-allowlist.yaml)"
+echo "  * the proxy rules            ($CHOPI_DIR/config/proxy-rules.yaml)"
 echo "  * the sandbox configuration  ($CHOPI_DIR/config/sandbox.sh)"
 echo ""
 echo "To use it:"

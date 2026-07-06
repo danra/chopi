@@ -5,7 +5,7 @@
 # Covers the security-critical logic that decides whether a run is even allowed to start:
 #
 #   * is_path_within / the workspace-overlap predicate -- if this loosens, a sandboxed
-#     command could be handed read/write to chopi's own allowlist and policy.
+#     command could be handed read/write to its own sandboxing policy.
 #   * preflight's observable behavior: the chopi-dir overlap refusal (and its
 #     CHOPI_ALLOW_SELF downgrade), and the --config-inside-the-workspace refusal.
 

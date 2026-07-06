@@ -1,4 +1,4 @@
-# Smokescreen proxy outgoing allowlist
+# Smokescreen proxy rules list
 #
 # allowed_domains matches the exact host; use a leading "*." for subdomains
 # (e.g. "*.anthropic.com").
