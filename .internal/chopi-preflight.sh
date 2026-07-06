@@ -17,17 +17,8 @@
 set -euo pipefail
 
 CHOPI_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 
 . "$CHOPI_DIR/.internal/util.sh"
-
-usage() {
-    cat >&2 <<EOF
-usage: $SCRIPT_NAME [--config FILE]
-
-Run pre-run checks. Not run directly; chopi calls this before each sandboxed command.
-EOF
-}
 
 # Is directory $1 the same as, or nested inside, directory $2? Both are absolute and
 # normalized (no trailing slash except the root "/").
@@ -137,8 +128,5 @@ preflight() {
 # no-op there. It exists so the tests can `source` this file to exercise the pure helpers
 # (is_path_within) directly without tripping the dispatch.
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
-    case "${1:-}" in
-        -h|--help) usage; exit 0 ;;
-        *)         preflight "$@" ;;
-    esac
+    preflight "$@"
 fi
