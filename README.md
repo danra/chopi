@@ -27,8 +27,10 @@ Before first use, review the configuration.
 
 ## Configuration
 
-To add or remove allowed domains, edit `config/proxy-rules.yaml`. **Restart the proxy** if
-it's already running for edits to take effect.
+To add or remove allowed domains, edit `config/proxy-rules.yaml`. You can also modify the list
+of known denied domains that don't generate alerts -- important for keeping blocked telemetry,
+auto-updates etc. from spamming you with notifications. **Restart the proxy** if it's already
+running for edits to take effect.
 
 To configure the sandbox policy, edit `config/sandbox.sh`:
 
@@ -69,7 +71,9 @@ the other locations that `safehouse` itself provides.
    All `chopi` sessions share this one proxy. It runs in the foreground so you
    can watch refused connections. Each denial also pops a macOS notification
    naming the host. (If the banners don't appear, allow notifications for your
-   terminal in System Settings -> Notifications.)
+   terminal in System Settings -> Notifications.) Hosts matching the known denylist
+   are the exception: their denials log a single quiet `deny(known)` line per
+   proxy run, with no notification.
 
    The proxy only reads the rules at startup, so after editing them **restart
    the proxy** (Ctrl-C, then `chopi-proxy` again). The new rules will take
@@ -156,7 +160,8 @@ sets in the sandbox env.
 ## Troubleshooting
 
 - **A network connection was refused** -- First verify that the proxy is running.
-  Refused hosts appear as red `DENY` lines in the log; if the host should be permitted,
+  Refused hosts appear as red `DENY` lines in the log (or as a single plain
+  `deny(known)` line if they match the known denylist); if the host should be allowed,
   add it to `config/proxy-rules.yaml` and restart the proxy. You don't have
   to restart any of your existing `chopi` sessions: the added domains will be
   immediately allowed.

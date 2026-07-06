@@ -145,12 +145,86 @@ WARN: Error copying to client' "verbose mixed batch -> every raw line kept in or
 
 
 # ---------------------------------------------------------------------------
-echo "log classifier building blocks (connection-request / deny-host)"
+echo "known denies (denylist matches: quiet, once per host, no notification)"
+# ---------------------------------------------------------------------------
+# A deny whose decision_reason is smokescreen's denylist verdict is one the user asked for
+# by listing the host: it gets a single plain "deny(known)" line per host per session --
+# no bell, no color, no deny hook -- and every other deny stays exactly as loud as before.
+known_deny='{"allow":false,"decision_reason":"host matched rule in global deny list","requested_host":"tele.example:443","time":"T"}'
+unknown_deny='{"allow":false,"decision_reason":"default rule policy used","requested_host":"tele.example:443","time":"T2"}'
+
+out="$(printf '%s\n' "$known_deny" | classify false)"
+assert_eq "$out" "[chopi-proxy.sh] deny(known)  tele.example:443  @ T" "known deny -> plain deny(known) line naming the host"
+
+out="$(printf '%s\n' "$known_deny" | classify true)"
+assert_eq "$out" "[chopi-proxy.sh] deny(known)  tele.example:443  @ T" "interactive known deny -> still plain (no BEL, no color)"
+
+out="$(printf '%s\n' "$unknown_deny" | classify false)"
+assert_eq "$out" "[chopi-proxy.sh] DENY  tele.example:443  @ T2" "a deny with any other decision_reason -> loud DENY as before"
+
+# The deny hook (the macOS notification in the live proxy) fires for unknown denies only.
+record_deny() { arity 1; printf 'HOOK:%s\n' "$1"; }
+out="$(printf '%s\n' "$known_deny" | classify_log false "chopi-proxy.sh" record_deny false)"
+assert_not_contains "$out" "HOOK:" "known deny does NOT fire the deny hook (no notification)"
+out="$(printf '%s\n' "$unknown_deny" | classify_log false "chopi-proxy.sh" record_deny false)"
+assert_contains "$out" "HOOK:tele.example:443" "unknown deny still fires the deny hook"
+
+# Once per host per session: a repeat is silent, a different host gets its own line.
+out="$(printf '%s\n' "$known_deny" "$known_deny" | classify false)"
+assert_eq "$out" "[chopi-proxy.sh] deny(known)  tele.example:443  @ T" "repeated known deny of the same host -> logged once"
+
+known_deny_other='{"allow":false,"decision_reason":"host matched rule in global deny list","requested_host":"other.example:443","time":"T3"}'
+out="$(printf '%s\n' "$known_deny" "$known_deny_other" | classify false)"
+assert_eq "$out" "[chopi-proxy.sh] deny(known)  tele.example:443  @ T
+[chopi-proxy.sh] deny(known)  other.example:443  @ T3" "known denies of two different hosts -> one line each"
+
+# The seen-set only mutes known denies: the same host denied again by another rule is loud.
+# (never expecting such a case currently; will be possible in the future if we make the proxy's lists hot-reloadable)
+out="$(printf '%s\n' "$known_deny" "$unknown_deny" | classify false)"
+assert_eq "$out" "[chopi-proxy.sh] deny(known)  tele.example:443  @ T
+[chopi-proxy.sh] DENY  tele.example:443  @ T2" "an unknown deny of an already-seen host is still loud"
+
+# Verbose keeps its contract: every raw line survives, and the formatted deny(known) line
+# still appears only once -- a repeat shows as its raw line alone.
+out="$(printf '%s\n' "$known_deny" "$known_deny" | classify_verbose false)"
+assert_eq "$out" "$known_deny
+[chopi-proxy.sh] deny(known)  tele.example:443  @ T
+$known_deny" "verbose repeated known deny -> raw lines always, formatted line once"
+
+# A real smokescreen denylist line, verbatim from a live run.
+real_line='{"allow":false,"content_length":115,"decision_reason":"host matched rule in global deny list","dns_lookup_time_ms":0,"enforce_would_deny":true,"id":"d95k1d4k4keehrrdmagg","inbound_remote_addr":"127.0.0.1:60749","level":"warning","msg":"CANONICAL-PROXY-DECISION","project":"","proxy_type":"connect","requested_host":"http-intake.logs.us5.datadoghq.com:443","role":"","start_time":"2026-07-06T05:44:20.961655Z","time":"2026-07-05T22:44:20-07:00","trace_id":""}'
+out="$(printf '%s\n' "$real_line" | classify false)"
+assert_eq "$out" "[chopi-proxy.sh] deny(known)  http-intake.logs.us5.datadoghq.com:443  @ 2026-07-05T22:44:20-07:00" \
+    "a real smokescreen denylist line -> deny(known)"
+
+# Fail-safe under the live proxy's `set -e`: if known-deny.jq itself fails we can't tell
+# known from unknown, so the deny goes the LOUD path -- a broken classifier must never
+# mute an alert -- and the loop survives to process later lines.
+poison_filter="$(mktemp)"
+printf '%s\n' 'error("simulated jq failure")' > "$poison_filter"
+out="$(
+    set -euo pipefail
+    # shellcheck disable=SC2030 # deliberately subshell-local: the real filter must survive for later tests
+    KNOWN_DENY_FILTER="$poison_filter"
+    printf '%s\n' "$known_deny" '{"allow":false,"requested_host":"late.example","time":"T"}' \
+        | classify_log false "chopi-proxy.sh" "" false
+)"
+rm -f "$poison_filter"
+assert_eq "$out" "[chopi-proxy.sh] DENY  tele.example:443  @ T
+[chopi-proxy.sh] DENY  late.example  @ T" \
+    "a known-deny.jq failure -> the deny surfaces LOUD and the loop continues (under set -e)"
+
+
+# ---------------------------------------------------------------------------
+echo "log classifier building blocks (connection-request / deny-host / known-deny)"
 # ---------------------------------------------------------------------------
 # The building blocks, each on its own. connection-request.jq gates the chain; deny-host.jq
-# is the single security-critical step that decides denied-or-not and names the host.
-conn()      { jq -R -r -f "$CONNECTION_FILTER"; }
-deny_host() { jq -R -r -f "$DENY_HOST_FILTER"; }
+# is the single security-critical step that decides denied-or-not and names the host;
+# known-deny.jq decides whether a deny may go the quiet route.
+conn()       { jq -R -r -f "$CONNECTION_FILTER"; }
+deny_host()  { jq -R -r -f "$DENY_HOST_FILTER"; }
+# shellcheck disable=SC2031 # the poison test above overrode this in a subshell on purpose; here it is intact
+known_deny() { jq -R -r -f "$KNOWN_DENY_FILTER"; }
 
 assert_eq "$(printf '%s\n' '{"allow":false,"requested_host":"e.com"}' | conn)" "1"  "deny is a connection request"
 assert_eq "$(printf '%s\n' '{"allow":true,"requested_host":"ok.com"}' | conn)" "1"  "allow is a connection request"
@@ -210,6 +284,22 @@ assert_eq "$(printf '%s\n' '{"allow":false,"requested_host":""}' | deny_host)"  
 # empty and silently drop the DENY.
 assert_eq "$(printf '%s\n' '{"allow":false,"requested_host":"\n"}' | deny_host)"                 "?"         "newline-only host -> '?' (surfaced as a DENY, never dropped)"
 assert_eq "$(printf '%s\n' '{"allow":false,"requested_host":"   "}' | deny_host)"                "?"         "blank (spaces-only) host -> '?' (surfaced as a DENY, never dropped)"
+
+# known_deny() edge cases. The quiet route mutes a notification, so the doubt here points the
+# other way from deny_host(): "1" only on a certain denylist match, empty (-> loud) otherwise.
+reason='host matched rule in global deny list'
+assert_eq "$(printf '%s\n' '{"allow":false,"decision_reason":"'"$reason"'"}' | known_deny)"      "1"  "smokescreen's exact denylist verdict -> known"
+assert_eq "$(printf '%s\n' '{"allow":false,"decision_reason":"default rule policy used"}' | known_deny)" \
+                                                                                                 ""   "the default-rule verdict -> NOT known (loud)"
+assert_eq "$(printf '%s\n' '{"allow":false}' | known_deny)"                                      ""   "no decision_reason at all -> NOT known (loud)"
+assert_eq "$(printf '%s\n' '{"allow":false,"decision_reason":"'"$reason"' extended"}' | known_deny)" \
+                                                                                                 ""   "a longer reason merely containing the verdict -> NOT known (exact match only)"
+assert_eq "$(printf '%s\n' '{"allow":false,"decision_reason":null}' | known_deny)"               ""   "a null decision_reason -> NOT known (loud)"
+assert_eq "$(printf '%s\n' '{"allow":false' | known_deny)"                                       ""   "malformed JSON -> NOT known (loud)"
+# Duplicated decision_reason keys parse as fromjson's last-key-wins, accepted as-is
+# (should never happen. Worst case: a quiet deny log instead of a loud one).
+assert_eq "$(printf '%s\n' '{"allow":false,"decision_reason":"x","decision_reason":"'"$reason"'"}' | known_deny)" \
+                                                                                                 "1"  "duplicate decision_reason keys -> fromjson's last key wins (accepted)"
 
 
 # ---------------------------------------------------------------------------

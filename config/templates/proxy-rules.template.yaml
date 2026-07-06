@@ -1,7 +1,7 @@
-# Smokescreen proxy rules list
+# Smokescreen proxy rules: allowlist + known denylist
 #
-# allowed_domains matches the exact host; use a leading "*." for subdomains
-# (e.g. "*.anthropic.com").
+# allowed_domains and global_deny_list match the exact host; use a leading "*."
+# for subdomains (e.g. "*.anthropic.com").
 version: v1
 
 services: []
@@ -23,3 +23,10 @@ default:
     - github-production-user-asset-6210df.s3.amazonaws.com
 
     - pypi.org
+
+# Hosts listed here are refused like any other non-allowed host, but chopi treats their
+# denials as *known*, emitting one "deny(known)" line per matching host per proxy run, with
+# no notification.
+global_deny_list:
+    # Claude Code telemetry destination
+    - "*.datadoghq.com"

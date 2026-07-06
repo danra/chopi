@@ -8,7 +8,11 @@
 # result into a delimited record for the shell to re-split:
 #
 #   connection-request.jq  an ACL decision (a connection smokescreen evaluated)?
-#     yes -> deny-host.jq   denied? -> name the host: run the deny hook, format-deny.jq prints it
+#     yes -> deny-host.jq   denied? -> name the host, then known-deny.jq splits the denials
+#                             (format-deny.jq renders both flavors):
+#                             on the configured denylist -> one plain "deny(known)" line
+#                               per host per session, no deny hook
+#                             anything else -> run the deny hook, print a loud DENY line
 #                           allowed -> nothing to show, drop it
 #     no  -> format-misc.jq drop the known noise, pass anything else through unchanged
 #
@@ -24,9 +28,27 @@
 _classify_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONNECTION_FILTER="$_classify_dir/connection-request.jq"
 DENY_HOST_FILTER="$_classify_dir/deny-host.jq"
+KNOWN_DENY_FILTER="$_classify_dir/known-deny.jq"
 FORMAT_DENY_FILTER="$_classify_dir/format-deny.jq"
 FORMAT_MISC_FILTER="$_classify_dir/format-misc.jq"
 unset _classify_dir
+
+# emit the raw line, unless verbose mode already printed it
+surface_raw() {
+    arity 2
+    local verbose="$1" line="$2"
+    [ "$verbose" = true ] || printf '%s\n' "$line"
+}
+
+# Returns 1 iff a denylist-matching host was already logged this session
+known_deny_seen() {
+    arity 1
+    local host="$1" seen
+    for seen in "${known_seen[@]:-}"; do
+        if [ "$seen" = "$host" ]; then return 0; fi
+    done
+    return 1
+}
 
 # classify_log <is_interactive> <script> <on_deny_cmd> <verbose>
 #
@@ -37,14 +59,22 @@ unset _classify_dir
 #                     both are noise in a file or a pipe, so the proxy passes the result of
 #                     its own `[ -t 1 ]` and the tests drive both values explicitly.
 #   <script>          name shown in the "[<script>] DENY host @ time" prefix.
-#   <on_deny_cmd>     called as `<on_deny_cmd> <host>` once per denied connection, or ""
-#                     for none. The proxy passes notify_deny (pops a macOS banner); the
-#                     tests pass "" so a test run never fires real notifications.
+#   <on_deny_cmd>     called as `<on_deny_cmd> <host>` once per denied connection -- except
+#                     known denies, see below -- or "" for none. The proxy passes notify_deny
+#                     (pops a macOS banner); the tests pass "" so a test run never fires
+#                     real notifications.
 #   <verbose>         true/false -- when true, nothing is dropped or replaced: every raw
 #                     smokescreen line is passed through as-is, interleaved with chopi-proxy's
 #                     own output. Normally-dropped lines (allowed connections, known noise)
 #                     become visible, and a DENY's formatted line is emitted *after* its raw
 #                     line rather than in place of it.
+#
+# Denials of hosts matching the configured denylist (smokescreen's global_deny_list, recognized
+# by known-deny.jq) are *known* denies -- the user listed the host precisely because its
+# blocked traffic is expected -- so they stay quiet: no <on_deny_cmd>, no color, and a
+# single plain "deny(known)" line per host per session, with the repeats dropped (their
+# raw lines still show in verbose mode). The classification errs loud: only a line
+# known-deny.jq is certain about takes the quiet route.
 #
 # The `|| [ -n "$line" ]` tail flushes a final line that arrives without a trailing newline.
 #
@@ -56,25 +86,35 @@ unset _classify_dir
 # silently dropped DENY is not, so a failed classifier always errs toward surfacing the raw line.
 classify_log() {
     arity 4
-    local is_interactive="$1" script="$2" on_deny="$3" verbose="$4" line host
+    local is_interactive="$1" script="$2" on_deny="$3" verbose="$4" line host known
+    # Hosts whose denylist denial was already logged this session (read by known_deny_seen)
+    local -a known_seen=()
     while IFS= read -r line || [ -n "$line" ]; do
         [ "$verbose" = true ] && printf '%s\n' "$line"
         if [ -n "$(printf '%s\n' "$line" | jq -R -r -f "$CONNECTION_FILTER")" ]; then
-            # deny-host.jq decides deny-or-allow; if it fails we can't tell, so surface the raw
-            # line (fail-safe) rather than guessing ALLOW and dropping a possible DENY.
+            # deny-host.jq decides deny-or-allow; if it fails we can't tell, so surface the
+            # raw line (fail-safe) rather than guessing ALLOW and dropping a possible DENY.
             if ! host=$(printf '%s\n' "$line" | jq -R -r -f "$DENY_HOST_FILTER"); then
-                [ "$verbose" = true ] || printf '%s\n' "$line"
+                surface_raw "$verbose" "$line"
                 continue
             fi
             if [ -n "$host" ]; then
-                [ -n "$on_deny" ] && "$on_deny" "$host"
+                # known-deny.jq decides known-or-not; if it fails we can't tell, so take the
+                # loud path (fail-safe) rather than guessing known and swallowing an alert.
+                known=$(printf '%s\n' "$line" | jq -R -r -f "$KNOWN_DENY_FILTER") || known=""
+                if [ -n "$known" ]; then
+                    if known_deny_seen "$host"; then continue; fi
+                    known_seen+=("$host")
+                else
+                    [ -n "$on_deny" ] && "$on_deny" "$host"
+                fi
                 printf '%s\n' "$line" | jq -R -r \
                     --argjson is_interactive "$is_interactive" --arg script "$script" \
-                    --arg host "$host" \
-                    -f "$FORMAT_DENY_FILTER" || [ "$verbose" = true ] || printf '%s\n' "$line"
+                    --arg host "$host" --arg known "$known" \
+                    -f "$FORMAT_DENY_FILTER" || surface_raw "$verbose" "$line"
             fi
         elif [ "$verbose" != true ]; then
-            printf '%s\n' "$line" | jq -R -r -f "$FORMAT_MISC_FILTER" || printf '%s\n' "$line"
+            printf '%s\n' "$line" | jq -R -r -f "$FORMAT_MISC_FILTER" || surface_raw "$verbose" "$line"
         fi
     done
 }

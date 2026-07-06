@@ -16,8 +16,7 @@ usage: $SCRIPT_NAME [--rules FILE] [--verbose]   # listens on 127.0.0.1:$PROXY_P
   --rules FILE       use FILE as the proxy rules instead of the default
                      config/proxy-rules.yaml
   --verbose          show smokescreen's output verbatim, interleaved with chopi-proxy's
-                     own: nothing is dropped or replaced (allowed connections and known
-                     noise become visible; each DENY's raw line precedes its formatted one)
+                     own: nothing is dropped or replaced.
 EOF
 }
 
@@ -90,7 +89,8 @@ else
 fi
 
 . "$CHOPI_DIR/.internal/classify-log.sh"
-for f in "$CONNECTION_FILTER" "$DENY_HOST_FILTER" "$FORMAT_DENY_FILTER" "$FORMAT_MISC_FILTER"; do
+for f in "$CONNECTION_FILTER" "$DENY_HOST_FILTER" "$KNOWN_DENY_FILTER" \
+         "$FORMAT_DENY_FILTER" "$FORMAT_MISC_FILTER"; do
     if [ ! -f "$f" ]; then
         echo "error: missing log filter at $f" >&2
         exit 1
@@ -99,6 +99,8 @@ done
 
 # Stream smokescreen's combined output through the shared classifier:
 # - Denied connections show as "DENY host @ time" and trigger notifications
+# - Denials of hosts matching the configured denylist show as a plain "deny(known)" line,
+#   once per host per session -- no notification, repeats dropped
 # - Allowed connections and the known noise are dropped
 # - Every other line passes through. notify_deny pops the macOS banner on each DENY.
 format_smokescreen_log() {
