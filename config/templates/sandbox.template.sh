@@ -3,7 +3,7 @@
 # shellcheck disable=SC2054 # Commas inside an element are intentional (e.g. --enable's value list).
 #
 # sandbox.sh -- sandbox configuration
-#
+
 # Flags passed to safehouse. Run `safehouse --help` for the full option list.
 CHOPI_SAFEHOUSE_FLAGS=(
     --enable xcode,vscode,keychain
@@ -28,7 +28,9 @@ CHOPI_SAFEHOUSE_FLAGS=(
 # --env-pass NAME or --env=FILE.
 CHOPI_EXTRA_ENV=(
     PATH="$HOME/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+
+    CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1
+    DISABLE_ERROR_REPORTING=1
 
     # Forward a host env var into the sandbox. If the host var is unset, chopi hard-errors
     # rather than forwarding an empty value, so a missing var is caught loudly:
