@@ -38,12 +38,25 @@ alias trace_off='{ set +x; } 2>/dev/null'
 
 # Escape a filesystem path for embedding inside a Seatbelt string literal (the "..." of a
 # subpath/literal/prefix matcher).
-sb_string_escape() {
+_sb_string_escape() {
     arity 1
     local s="$1"
     s="${s//\\/\\\\}"   # backslashes first...
     s="${s//\"/\\\"}"   # ...then double-quotes
     printf '%s' "$s"
+}
+
+# Emit one Seatbelt rule: (ACTION (MATCHER "PATH")), PATH escaped for the string literal.
+# An empty PATH is a caller bug: the rule would silently misapply (e.g. an accidentally
+# empty variable turning a targeted subpath rule into one matching somewhere else).
+rule() {
+    arity 3
+    local action="$1" matcher="$2" path="$3"
+    if [ -z "$path" ]; then
+        printf 'BUG: rule called with an empty path\n' >&2
+        exit 2
+    fi
+    printf '(%s (%s "%s"))\n' "$action" "$matcher" "$(_sb_string_escape "$path")"
 }
 
 # Is directory $1 the same as, or nested inside, directory $2? Both are absolute and

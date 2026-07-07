@@ -8,6 +8,8 @@
 #     command could be handed read/write to its own sandboxing policy.
 #   * preflight's observable behavior: the chopi-dir overlap refusal (and its
 #     CHOPI_ALLOW_SELF downgrade), and the --config-inside-the-workspace refusal.
+#   * rule / the Seatbelt-rule emitter -- its empty-PATH refusal keeps an
+#     accidentally-empty variable from becoming a silently misapplied rule.
 
 set -euo pipefail
 
@@ -126,6 +128,18 @@ assert_contains "$out" "is inside the workspace" "config under a symlinked works
 out="$(cd "$work" && "$repo/.internal/preflight.sh" --config 2>&1)"; st=$?
 assert_contains "$out" "--config requires a file path" "--config with no argument is rejected"
 if [ "$st" -ne 0 ]; then ok "  -> and exits non-zero"; else bad "  -> should exit non-zero (got $st)"; fi
+
+
+# ---------------------------------------------------------------------------
+echo "rule (the Seatbelt-rule emitter)"
+# ---------------------------------------------------------------------------
+out="$(rule 'allow file-read*' subpath '/a b/c')"
+assert_eq "$out" '(allow file-read* (subpath "/a b/c"))' "emits the (ACTION (MATCHER \"PATH\")) form"
+
+# An empty PATH is a caller bug, not a rule (it would silently misapply). The guard
+# hard-exits, so probe it in a subshell.
+( rule 'deny file-write*' subpath '' ) >/dev/null 2>&1; st=$?
+if [ "$st" -eq 2 ]; then ok "an empty PATH is a hard error (exit 2)"; else bad "an empty PATH should be a hard error (got $st)"; fi
 
 
 # ---------------------------------------------------------------------------

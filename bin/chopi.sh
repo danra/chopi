@@ -87,7 +87,7 @@ main() {
         || { echo "chopi: could not create a temp file for the git-config append wrapper profile" >&2; return 1; }
     {
         echo ";; chopi: the git-config append wrapper is read and executed in the sandbox."
-        printf '(allow file-read* process-exec* (literal "%s"))\n' "$(sb_string_escape "$wrapper_path")"
+        rule 'allow file-read* process-exec*' literal "$wrapper_path"
     } > "$wrapper_profile"
 
     local proxy="http://127.0.0.1:$PROXY_PORT"
