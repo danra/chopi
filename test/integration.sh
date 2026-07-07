@@ -164,7 +164,7 @@ else
     ok  "write OUTSIDE the workspace is denied (no file created)"
 fi
 
-out="$(chopi_t /bin/sh -c "cat '$repo/.internal/chopi-preflight.sh' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+out="$(chopi_t /bin/sh -c "cat '$repo/.internal/preflight.sh' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_not_contains "$out" "preflight"             "read of chopi's OWN dir is denied (config stays out of reach)"
 assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
 

@@ -47,7 +47,7 @@ main() {
     # array is an "unbound variable" error.
     local preflight_args=()
     [ -n "$config_given" ] && preflight_args=(--config "$config")
-    "$CHOPI_DIR/.internal/chopi-preflight.sh" "${preflight_args[@]+"${preflight_args[@]}"}" || return $?
+    "$CHOPI_DIR/.internal/preflight.sh" "${preflight_args[@]+"${preflight_args[@]}"}" || return $?
 
     local CHOPI_SAFEHOUSE_FLAGS=()
     local CHOPI_EXTRA_ENV=()

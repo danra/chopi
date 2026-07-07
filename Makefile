@@ -7,16 +7,16 @@ SHELL_SOURCES = \
 	install.sh \
 	.internal/util.sh \
 	.internal/classify-log.sh \
-	.internal/chopi-preflight.sh \
+	.internal/preflight.sh \
 	config/templates/sandbox.template.sh \
 	test/lib.sh \
-	test/chopi-preflight.sh \
 	test/chopi-proxy.sh \
+	test/preflight.sh \
 	test/integration.sh
 
 test:
-	@./test/chopi-preflight.sh
 	@./test/chopi-proxy.sh
+	@./test/preflight.sh
 	@./test/integration.sh
 
 lint:

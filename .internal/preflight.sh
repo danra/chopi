@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# chopi-preflight.sh -- pre-run checks for `chopi`.
+# preflight.sh -- pre-run checks for `chopi`.
 #
 # Not run directly; `chopi` calls this before invoking safehouse.
 #
@@ -11,7 +11,7 @@
 #   * the outgoing proxy is already up, and
 #   * the safehouse CLI is on PATH.
 #
-# usage: chopi-preflight.sh [--config FILE]
+# usage: preflight.sh [--config FILE]
 #   --config FILE  custom sandbox config to verify not placed inside the workspace.
 
 set -euo pipefail
