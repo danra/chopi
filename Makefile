@@ -13,6 +13,7 @@ SHELL_SOURCES = \
 	.internal/git-isolate.sh \
 	.internal/git-harden.sh \
 	.internal/git-protect.sh \
+	.internal/worktree.sh \
 	.internal/preflight.sh \
 	config/templates/sandbox.template.sh \
 	test/lib.sh \
@@ -21,6 +22,7 @@ SHELL_SOURCES = \
 	test/git-isolate.sh \
 	test/git-harden.sh \
 	test/chopi-proxy.sh \
+	test/worktree.sh \
 	test/preflight.sh \
 	test/integration.sh
 
@@ -30,6 +32,7 @@ test:
 	@./test/git-isolate.sh
 	@./test/git-harden.sh
 	@./test/chopi-proxy.sh
+	@./test/worktree.sh
 	@./test/preflight.sh
 	@./test/integration.sh
 

@@ -219,7 +219,7 @@ fi
 # ---------------------------------------------------------------------------
 echo "git config injection (CHOPI_GIT_CONFIG)"
 # ---------------------------------------------------------------------------
-# CHOPI_GIT_CONFIG pairs reach the sandboxed command through the append
+# CHOPI_GIT_CONFIG pairs reach a plain (non-worktree) sandboxed command through the append
 # wrapper -- which the sandboxed process itself must read and exec. chopi's dir is otherwise
 # unreadable (asserted above), so this exercises the gitconf-wrapper profile; and the grant
 # must cover exactly the wrapper file, nothing else in chopi's dir.
@@ -233,7 +233,7 @@ chopi_gc() { ( cd "$ws" && "$repo/bin/chopi" --config "$cfg_gitcfg" -- "$@" ); }
 
 # shellcheck disable=SC2016 # the $GIT_CONFIG_* probe expands in the sandboxed shell, not here
 out="$(chopi_gc /bin/sh -c 'echo "$GIT_CONFIG_COUNT|$GIT_CONFIG_KEY_0=$GIT_CONFIG_VALUE_0"' 2>/dev/null)"
-assert_eq "$out" "1|chopi.plain=plainmarker"       "a CHOPI_GIT_CONFIG pair reaches the sandboxed command"
+assert_eq "$out" "1|chopi.plain=plainmarker"       "a CHOPI_GIT_CONFIG pair reaches a plain (non-worktree) sandboxed command"
 
 out="$(chopi_gc /bin/sh -c "cat '$repo/.internal/util.sh' >/dev/null 2>&1 && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_eq "$out" "READ_FAIL"                       "  -> the gitconf wrapper does not open the rest of chopi's dir"
@@ -531,6 +531,236 @@ if command -v git >/dev/null 2>&1; then
     assert_eq "$(cat "$sgd_dotgit")" "$sgd_dotgit_before" \
                                                        "the root's .git pointer file cannot be rewritten from the sandbox"
     assert_absent "$sgdgit_real/hooks/post-commit" "planting a hook in the detached gitdir is denied (no file created)"
+fi
+
+
+# ---------------------------------------------------------------------------
+echo "git protections (--worktree)"
+# ---------------------------------------------------------------------------
+if ! command -v git >/dev/null 2>&1; then
+    echo "  SKIP worktree tests (git not on PATH)"
+else
+    nested_wt2="$gitrepo_real/.worktrees/nested_wt2"
+    nested_wt2_admin="$shared_git/worktrees/nested_wt2"
+    nested_wt2_sub="$nested_wt2/submod"
+    cfg_wt="$base/config/sandbox-wt.sh"
+
+    dummy_origin="$(mktemp -d "$TMPDIR/chopi-itest-origin.XXXXXX")"
+    git init -q --bare "$dummy_origin"
+    git -C "$gitrepo" remote add origin "$dummy_origin"
+
+    # Two commits on a side branch to cherry-pick later
+    mainbr="$(git -C "$gitrepo" symbolic-ref --short HEAD)"
+    git -C "$gitrepo" checkout -q -b pickable
+    printf 'p1\n' > "$gitrepo/p1.txt"; git -C "$gitrepo" add p1.txt; git -C "$gitrepo" commit -q -m p1
+    printf 'p2\n' > "$gitrepo/p2.txt"; git -C "$gitrepo" add p2.txt; git -C "$gitrepo" commit -q -m p2
+    pick1="$(git -C "$gitrepo" rev-parse HEAD~1)"
+    pick2="$(git -C "$gitrepo" rev-parse HEAD)"
+    git -C "$gitrepo" checkout -q "$mainbr"
+
+    cat > "$cfg_wt" <<EOF
+. '$repo/config/templates/sandbox.template.sh'
+CHOPI_SAFEHOUSE_FLAGS=()
+CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
+EOF
+
+    chopi_wt() { ( cd "$gitrepo" && "$repo/bin/chopi" --worktree nested_wt2 --config "$cfg_wt" -- "$@" ); }
+
+    workdir_wt="$(chopi_wt /bin/sh -c 'pwd' 2>/dev/null)"
+    assert_eq "$workdir_wt" "$nested_wt2"                             "the command runs with the worktree as its workdir"
+
+    chopi_wt /bin/sh -c 'echo HELLO > ./ws-file.txt' >/dev/null 2>&1 || true
+    assert_eq "$(cat "$nested_wt2/ws-file.txt" 2>/dev/null)" "HELLO" \
+                                                       "a write inside the worktree lands in the worktree"
+
+    # The root repo's working tree is unreadable from the worktree.
+    out="$(chopi_wt /bin/sh -c "cat '$root_only' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+    assert_not_contains "$out" "ROOT_ONLY_MARKER"      "the root repo's working files are NOT readable from the worktree"
+    assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
+    out="$(chopi_wt /bin/sh -c "stat -f '%z' '$root_only' >/dev/null 2>&1 && echo STAT_OK || echo STAT_FAIL" 2>/dev/null)"
+    assert_contains     "$out" "STAT_FAIL"             "the root repo's file METADATA is not readable either"
+    # ...and unwritable.
+    chopi_wt /bin/sh -c "echo x > '$gitrepo_real/root-evil.txt'" >/dev/null 2>&1 || true
+    assert_absent "$gitrepo_real/root-evil.txt" "a write into the root repo's working tree is denied"
+
+    # A sibling worktree nested under the repo root is unreadable.
+    out="$(chopi_wt /bin/sh -c "cat '$nested_wt/nested.txt' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+    assert_not_contains "$out" "NESTED_ONLY_MARKER"   "a sibling worktree's working files are NOT readable"
+    assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
+    # ...and unwritable.
+    chopi_wt /bin/sh -c "echo x > '$nested_wt/nested-evil.txt'" >/dev/null 2>&1 || true
+    assert_absent "$nested_wt/nested-evil.txt" "a write into a sibling worktree is denied"
+
+    # An external worktree is unreadable too.
+    out="$(chopi_wt /bin/sh -c "cat '$external_wt/ext.txt' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+    assert_not_contains "$out" "EXTERNAL_ONLY_MARKER"  "an external (outside-the-repo) worktree's files are NOT readable"
+    assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
+    # ...and unwritable.
+    chopi_wt /bin/sh -c "echo x > '$external_wt/ext-evil.txt'" >/dev/null 2>&1 || true
+    assert_absent "$external_wt/ext-evil.txt" "a write into an external worktree is denied"
+
+    # The two appended protection profiles (isolation + hardening) are unreadable.
+    # shellcheck disable=SC2016
+    probe='n=$(ls "$TMPDIR" 2>/dev/null | grep -cE "^chopi-git-(isolate|harden)\.")
+echo "PROTECTION_COUNT=$n"
+for f in $(ls "$TMPDIR" 2>/dev/null | grep -E "^chopi-git-(isolate|harden)\."); do
+  cat "$TMPDIR/$f" 2>/dev/null && echo READ_OK || echo READ_FAIL
+  echo x >> "$TMPDIR/$f" 2>/dev/null && echo WRITE_OK || echo WRITE_FAIL
+done'
+    out="$(chopi_wt /bin/sh -c "$probe" 2>/dev/null)"
+    assert_contains     "$out" "PROTECTION_COUNT=2"    "both protection profiles (isolation + hardening) exist while the command runs"
+    assert_not_contains "$out" "READ_OK"               "the command cannot read the protection profiles that sandbox it"
+    assert_not_contains "$out" "isolate the command to the worktree" \
+                                                       "  -> and none of the isolation profile's contents leak"
+    assert_not_contains "$out" "harden the git internals" \
+                                                       "  -> nor the hardening profile's"
+    # ...and unwritable.
+    assert_not_contains "$out" "WRITE_OK"              "the command cannot write to the protection profiles either"
+
+    # git still works inside the isolated worktree
+    top="$(chopi_wt /usr/bin/git rev-parse --show-toplevel 2>/dev/null)"
+    assert_eq "$top" "$nested_wt2"                     "git resolves the worktree as its toplevel"
+    out="$(chopi_wt /bin/sh -c 'git tag chopi-probe && echo TAG_OK' 2>/dev/null)"
+    assert_contains "$out" "TAG_OK"                    "git can write a ref into the shared .git from inside the sandbox"
+    if git -C "$gitrepo" tag | grep -qx chopi-probe; then
+        ok  "  -> and the tag really landed in the repo"
+    else
+        bad "  -> but the tag did not land in the repo"
+    fi
+
+    # Re-running the same NAME reuses the existing worktree rather than failing.
+    out="$(chopi_wt /bin/sh -c 'echo REUSED' 2>/dev/null)"
+    assert_eq "$out" "REUSED"                          "re-running --worktree reuses the existing worktree and runs there"
+
+    # -- The shared .git is READABLE but code-execution paths are NOT WRITABLE ---------------
+    config_before="$(cat "$shared_git/config")"
+
+    chopi_wt /bin/sh -c "echo pwn > '$shared_git/hooks/post-checkout'" >/dev/null 2>&1 || true
+    assert_absent "$shared_git/hooks/post-checkout" "planting a hook in the shared .git/hooks is denied (no file created)"
+
+    # `git config` from the linked worktree targets the shared .git/config (no
+    # extensions.worktreeConfig here), so it is denied and the file stays byte-identical.
+    chopi_wt /usr/bin/git config core.hooksPath /tmp/evil >/dev/null 2>&1 || true
+
+    # An [include]/[includeIf] path= in a pre-existing config could point at any of these;
+    # leaving them writable would reopen the hole. All are under the default write-deny.
+    chopi_wt /bin/sh -c "echo x > '$shared_git/config.local'"    >/dev/null 2>&1 || true
+    chopi_wt /bin/sh -c "echo '* filter=evil' > '$shared_git/info/attributes'" >/dev/null 2>&1 || true
+    for f in config.local info/attributes; do
+        assert_absent "$shared_git/$f" "writing shared .git/$f is denied (no file created)"
+    done
+
+    # A sibling worktree's admin dir is denied
+    chopi_wt /bin/sh -c "echo x > '$nested_wt_admin/config.worktree'" >/dev/null 2>&1 || true
+    if [ -s "$nested_wt_admin/config.worktree" ]; then
+        bad "writing a sibling worktree's admin dir is denied (file must stay empty/absent)"
+    else
+        ok  "writing a sibling worktree's admin dir is denied"
+    fi
+
+    # The gitdir pointers that unsandboxed git follows are read-only
+    wt_dotgit="$nested_wt2/.git"
+    wt_commondir="$nested_wt2_admin/commondir"
+    dotgit_before="$(cat "$wt_dotgit")"
+    commondir_before="$(cat "$wt_commondir")"
+    chopi_wt /bin/sh -c "echo 'gitdir: /tmp/evil-admin' > '$wt_dotgit'"   >/dev/null 2>&1 || true
+    chopi_wt /bin/sh -c "echo '/tmp/evil-common' > '$wt_commondir'"       >/dev/null 2>&1 || true
+    assert_eq "$(cat "$wt_dotgit")" "$dotgit_before" \
+                                                       "the worktree's own .git pointer file cannot be rewritten from the sandbox"
+    assert_eq "$(cat "$wt_commondir")" "$commondir_before" \
+                                                       "the admin dir's commondir shared-dir pointer cannot be rewritten from the sandbox"
+
+    # Submodules in the worktree similarly have their code-execution surface write-denied
+    for sub_main_wt in "$nested_wt2_sub" "$nested_wt2_sub/nested"; do
+        sub_rel="${sub_main_wt#"$nested_wt2/"}"
+        sub_gitdir="$(realpath "$(git -C "$sub_main_wt" rev-parse --absolute-git-dir 2>/dev/null)" 2>/dev/null)"
+        sub_dotgit_before="$(cat "$sub_main_wt/.git")"
+        sub_config_before="$(cat "$sub_gitdir/config")"
+        chopi_wt /bin/sh -c "echo 'gitdir: /tmp/evil' > '$sub_main_wt/.git'"    >/dev/null 2>&1 || true
+        chopi_wt /bin/sh -c "printf '[core]\n' > '$sub_gitdir/config'"              >/dev/null 2>&1 || true
+        chopi_wt /bin/sh -c "echo pwn > '$sub_gitdir/hooks/post-checkout'"          >/dev/null 2>&1 || true
+        assert_eq "$(cat "$sub_main_wt/.git")" "$sub_dotgit_before" \
+                                                       "submodule '$sub_rel': its .git pointer file cannot be rewritten from the sandbox"
+        assert_eq "$(cat "$sub_gitdir/config")" "$sub_config_before" \
+                                                       "submodule '$sub_rel': its gitdir config cannot be written from the sandbox"
+        assert_absent "$sub_gitdir/hooks/post-checkout" "submodule '$sub_rel': planting a hook in its gitdir is denied (no file created)"
+    done
+
+    # Legitimate git flows still work
+    out="$(chopi_wt /bin/sh -c 'echo CHG > ./commitme.txt && git add commitme.txt && git commit -q -m wtcommit && echo COMMIT_OK' 2>/dev/null)"
+    assert_contains "$out" "COMMIT_OK"                 "a commit inside the worktree succeeds"
+
+    out="$(chopi_wt /bin/sh -c 'git push 2>&1 && echo PUSH_OK' 2>/dev/null)"
+    assert_contains "$out" "PUSH_OK"                   "bare git push (pre-recorded upstream) succeeds from the sandbox"
+    if git -C "$dummy_origin" rev-parse --verify --quiet refs/heads/nested_wt2 >/dev/null; then
+        ok  "  -> and the branch landed in the origin"
+    else
+        bad "  -> but the branch did not land in the origin"
+    fi
+
+    # branch create/delete writes refs with a packed backend.
+    out="$(chopi_wt /bin/sh -c 'git pack-refs --all && git branch tmpbr && git branch -d tmpbr && echo PACK_OK' 2>/dev/null)"
+    assert_contains "$out" "PACK_OK"                   "pack-refs + branch create/delete succeed"
+
+    out="$(chopi_wt /bin/sh -c "git cherry-pick $pick1 $pick2 && echo PICK_OK" 2>/dev/null)"
+    assert_contains "$out" "PICK_OK"                   "a multi-commit cherry-pick succeeds"
+
+    out="$(chopi_wt /bin/sh -c 'echo dirty >> ./commitme.txt && git stash push -q -m t && git stash pop -q && echo STASH_OK' 2>/dev/null)"
+    assert_contains "$out" "STASH_OK"                  "git stash push/pop succeed"
+
+    out="$(chopi_wt /bin/sh -c 'cd submod && echo more >> sub.txt && git add sub.txt && git -c user.email=w@t.t -c user.name=w commit -q -m subchg && echo SUBCOMMIT_OK' 2>/dev/null)"
+    assert_contains "$out" "SUBCOMMIT_OK"              "a commit inside an initialized submodule succeeds"
+
+    out="$(chopi_wt /bin/sh -c 'cd submod/nested && echo more >> nested.txt && git add nested.txt && git -c user.email=w@t.t -c user.name=w commit -q -m nestedchg && echo NESTEDCOMMIT_OK' 2>/dev/null)"
+    assert_contains "$out" "NESTEDCOMMIT_OK"           "a commit inside the NESTED submodule succeeds too"
+
+    # `git submodule update` is expected to fail loudly with the config untouched
+    sub_cfg="$(realpath "$(git -C "$nested_wt2_sub" rev-parse --absolute-git-dir)")/config"
+    sub_cfg_before="$(cat "$sub_cfg")"
+    rc=0; out="$(chopi_wt /usr/bin/git submodule update 2>&1 >/dev/null)" || rc=$?
+    assert_nonzero "$rc" "in-sandbox git submodule update fails"
+    assert_contains "$out" "core.worktree"             "  -> naming the denied core.worktree write"
+    assert_eq "$(cat "$sub_cfg")" "$sub_cfg_before"    "  -> and the submodule's config is untouched"
+
+    # Host-forwarded git config (safehouse --env-pass) survives, and overridable by CHOPI_GIT_CONFIG
+    cfg_envpass="$base/config/sandbox-envpass.sh"
+    cat > "$cfg_envpass" <<EOF
+. '$repo/config/templates/sandbox.template.sh'
+CHOPI_SAFEHOUSE_FLAGS=( --enable xcode
+                        --env-pass GIT_CONFIG_COUNT,GIT_CONFIG_KEY_0,GIT_CONFIG_VALUE_0,GIT_CONFIG_KEY_1,GIT_CONFIG_VALUE_1,GIT_CONFIG_KEY_2,GIT_CONFIG_VALUE_2 )
+CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
+CHOPI_GIT_CONFIG=( chopi.conflict=fromconfig )
+EOF
+    chopi_ep() { ( cd "$gitrepo" && env \
+        GIT_CONFIG_COUNT=3 \
+        GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always \
+        GIT_CONFIG_KEY_1=chopi.hostpassed GIT_CONFIG_VALUE_1=hostmarker \
+        GIT_CONFIG_KEY_2=chopi.conflict GIT_CONFIG_VALUE_2=fromhost \
+        "$repo/bin/chopi" --worktree nested_wt2 --config "$cfg_envpass" -- "$@" ); }
+    out="$(chopi_ep /usr/bin/git config chopi.hostpassed 2>/dev/null)"
+    assert_eq "$out" "hostmarker"                      "a host GIT_CONFIG_* pair forwarded via safehouse --env-pass survives the append"
+    out="$(chopi_ep /usr/bin/git config chopi.conflict 2>/dev/null)"
+    assert_eq "$out" "fromconfig"                      "  -> and on a conflicting key, the appended CHOPI_GIT_CONFIG pair wins"
+
+    # CHOPI_WORKTREE_SETUP: the config customizes the pre-sandbox setup, and
+    # CHOPI_WORKTREE_NAME expands to the worktree name at setup time.
+    wt_cfg="$base/config/sandbox-setup.sh"
+    setup_marker="$base/setup-marker.txt"
+    cat > "$wt_cfg" <<EOF
+CHOPI_SAFEHOUSE_FLAGS=( --enable xcode )
+CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
+CHOPI_WORKTREE_SETUP=( 'echo "\$CHOPI_WORKTREE_NAME" > "$setup_marker"' )
+EOF
+    ( cd "$gitrepo" && "$repo/bin/chopi" --worktree wtcfg --config "$wt_cfg" -- /bin/sh -c 'true' ) >/dev/null 2>&1 || true
+    assert_eq "$(cat "$setup_marker" 2>/dev/null)" "wtcfg" \
+        "a custom CHOPI_WORKTREE_SETUP command runs (unsandboxed) with CHOPI_WORKTREE_NAME set"
+
+    # --worktree mode refuses a config without CHOPI_WORKTREE_SETUP
+    st=0
+    out="$(cd "$gitrepo" && "$repo/bin/chopi" --worktree wtnone --config "$cfg" -- /bin/sh -c 'true' 2>&1)" || st=$?
+    assert_contains "$out" "CHOPI_WORKTREE_SETUP" "--worktree refuses a config without CHOPI_WORKTREE_SETUP"
+    assert_nonzero "$st" "  -> and exits non-zero"
+    assert_absent "$gitrepo/.worktrees/wtnone" "  -> and no worktree is created"
 fi
 
 

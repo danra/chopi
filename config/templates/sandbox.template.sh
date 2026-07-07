@@ -55,3 +55,19 @@ CHOPI_GIT_CONFIG=(
     # Add your own as needed, e.g.:
     # protocol.file.allow=always
 )
+
+# Setup commands for `chopi --worktree NAME`, run just before the sandboxed command starts.
+# They run UNSANDBOXED, each in the worktree as the working directory, with the worktree
+# name exported as CHOPI_WORKTREE_NAME. They run on every invocation -- including a reused
+# worktree -- so keep each command idempotent. A failing command aborts the run.
+CHOPI_WORKTREE_SETUP=(
+    'git submodule update --init --recursive'
+
+    # chopi-provided helper that pre-records the upstream branch for push and pull, because
+    # the sandboxed command cannot do so (e.g. with `push -u`)
+    'chopi_record_upstream'
+
+    # Add your own as needed, e.g.:
+    # 'git lfs install --local'
+    # '"$HOME/my-worktree-setup.sh"'
+)

@@ -4,7 +4,10 @@
 #
 # Not run directly; `chopi` calls this before generating the git protection profiles.
 #
-# usage: git-preflight.sh
+# usage: git-preflight.sh [DIR]
+#
+#   DIR  the directory the sandboxed command will run in (default: the current dir);
+#        chopi passes the worktree for --worktree runs.
 #
 # Exits non-zero iff the setup is refused.
 
@@ -14,7 +17,20 @@ SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
 . "$SCRIPT_DIR/git-layout.sh"
 
 main() {
-    arity 0
+    local target_dir=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -*) echo "error: git-preflight: unknown option: $1" >&2; return 1 ;;
+            *)
+                if [ -n "$target_dir" ]; then echo "error: git-preflight: unexpected args" >&2; return 1; fi
+                target_dir="$1"; shift ;;
+        esac
+    done
+    if [ -n "$target_dir" ]; then
+        local resolved_target
+        resolved_target="$(realpath "$target_dir")" || { echo "error: cannot resolve '$target_dir'" >&2; return 1; }
+        cd "$resolved_target" || { echo "error: cannot enter '$target_dir'" >&2; return 1; }
+    fi
 
     local run_dir
     run_dir="$(pwd -P)"

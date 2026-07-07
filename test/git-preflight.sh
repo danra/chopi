@@ -194,4 +194,13 @@ assert_zero "$st" "with the fixtures reverted, the submodule repo passes again"
 
 
 # ---------------------------------------------------------------------------
+echo "the DIR argument selects the checked worktree (as --worktree runs use)"
+# ---------------------------------------------------------------------------
+out="$(run_preflight_in_dir "$plain" "$repo_with_alternates")"; st=$?
+assert_nonzero "$st" "an unsupported repo passed as DIR is refused (the check runs there, not in the cwd)"
+out="$(run_preflight_in_dir "$repo_with_alternates" "$standard_repo")"; st=$?
+assert_zero "$st" "a supported repo passed as DIR exits zero (whatever the cwd)"
+
+
+# ---------------------------------------------------------------------------
 summary

@@ -77,14 +77,14 @@ assert_rule_order "$profile_path" "$objects_allow" '(deny file-write* (literal "
 
 
 # ---------------------------------------------------------------------------
-echo "a linked worktree's hardening profile"
+echo "a linked worktree's hardening profile (DIR argument, as --worktree runs use)"
 # ---------------------------------------------------------------------------
 feat="$root/.worktrees/feat"
 git -C "$main_repo" worktree add -q -b feat "$feat"
 admin="$gitdir/worktrees/feat"
 
-profile_path="$(harden_in "$feat")"; st=$?
-assert_zero "$st" "hardening a linked worktree exits zero"
+profile_path="$(harden_in "$main_repo" "$feat")"; st=$?
+assert_zero "$st" "hardening a linked worktree via DIR exits zero"
 profile="$(cat "$profile_path" 2>/dev/null)"
 
 assert_contains "$profile" '(deny file-write* (subpath "'"$gitdir"'"))'                           "profile denies writing the shared git dir by default"
@@ -99,6 +99,13 @@ assert_contains "$profile" '(deny file-write* (literal "'"$gitdir/config"'"))'  
 assert_contains "$profile" '(deny file-write* (subpath "'"$gitdir/hooks"'"))'                     "  -> and the shared hooks/"
 assert_contains "$profile" '(deny file-write* (literal "'"$feat/.git"'"))'                        "the worktree's own .git pointer file is read-only"
 assert_contains "$profile" '(deny file-read* file-write* (literal "'"$profile_path"'"))'               "profile denies access to itself"
+
+# Running WITHOUT the DIR argument from inside the linked worktree hardens the same way.
+profile_path="$(harden_in "$feat")"; st=$?
+assert_zero "$st" "a bare run from inside a linked worktree exits zero"
+profile="$(cat "$profile_path" 2>/dev/null)"
+assert_contains "$profile" '(allow file-write* (subpath "'"$admin/refs"'"))'                      "  -> its per-worktree refs are re-allowed"
+assert_contains "$profile" '(deny file-write* (literal "'"$admin/config.worktree"'"))'            "  -> and its config.worktree stays pinned"
 
 
 # ---------------------------------------------------------------------------
@@ -162,8 +169,8 @@ git -C "$repo_with_submod" checkout -q -- .gitmodules
 # ---------------------------------------------------------------------------
 echo "a worktree whose admin dir escapes .git/worktrees is refused"
 # ---------------------------------------------------------------------------
-# How a sandbox reaches this: a command confined to the worktree at .worktrees/host may
-# write anywhere INSIDE it -- including .worktrees/host/nested,
+# How a sandbox reaches this: a `chopi --worktree host` command is isolated to
+# .worktrees/host but may write anywhere INSIDE it -- including .worktrees/host/nested,
 # itself a valid nested worktree name. So the host sandbox can plant a nested "worktree"
 # whose .git points at a fake admin dir it also controls (adm/, here placed in host's tree
 # but OUTSIDE host/nested). adm carries a commondir resolving back to the real shared
@@ -186,7 +193,7 @@ if is_path_within "$forged_gitdir" "$gitdir/worktrees"; then
 else
     ok  "forge sanity: its admin dir escapes .git/worktrees ($forged_gitdir)"
 fi
-out="$(harden_in_err "$nested")"; st=$?
+out="$(harden_in_err "$main_repo" "$nested")"; st=$?
 assert_contains "$out" "must be a linked worktree's admin dir under" "the escaping admin dir is refused"
 assert_nonzero "$st" "  -> and exits non-zero"
 rm -rf "$host"

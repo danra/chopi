@@ -84,13 +84,13 @@ assert_not_contains "$err" "CHOPI_GIT_" "without --verbose the layout is not pri
 
 
 # ---------------------------------------------------------------------------
-echo "a linked worktree's isolation profile"
+echo "a linked worktree's isolation profile (DIR argument, as --worktree runs use)"
 # ---------------------------------------------------------------------------
 feat="$root/.worktrees/feat"
 git -C "$main_repo" worktree add -q -b feat "$feat"
 
-profile_path="$(isolate_in "$feat")"; st=$?
-assert_zero "$st" "isolating a linked worktree exits zero"
+profile_path="$(isolate_in "$main_repo" "$feat")"; st=$?
+assert_zero "$st" "isolating a linked worktree via DIR exits zero"
 profile="$(cat "$profile_path" 2>/dev/null)"
 
 assert_contains "$profile" '(deny file-read* file-write* (subpath "'"$root"'"))'                  "profile denies the main repo tree"
@@ -104,9 +104,15 @@ assert_contains "$profile" '(allow file-read* file-write* (subpath "'"$feat"'"))
 assert_not_contains "$profile" '(deny file-write* (literal "'"$feat/.git"'"))'                    "  -> and does NOT pin the worktree's .git pointer (git-harden's job)"
 assert_contains "$profile" '(deny file-read* file-write* (literal "'"$profile_path"'"))'               "profile denies access to itself"
 
+profile_path="$(isolate_in "$feat")"; st=$?
+assert_zero "$st" "a bare run from inside a linked worktree exits zero"
+profile="$(cat "$profile_path" 2>/dev/null)"
+assert_contains "$profile" '(deny file-read* file-write* (subpath "'"$root"'"))'                  "  -> it denies the main repo tree"
+assert_contains "$profile" '(allow file-read* file-write* (subpath "'"$feat"'"))'                 "  -> and re-allows the current worktree"
+
 inner="$feat/inner"
 git -C "$main_repo" worktree add -q -b inner "$inner"
-profile_path="$(isolate_in "$feat")"; st=$?
+profile_path="$(isolate_in "$main_repo" "$feat")"; st=$?
 assert_zero "$st" "a sibling nested inside the target worktree exits zero"
 assert_rule_order "$profile_path" \
     '(allow file-read* file-write* (subpath "'"$feat"'"))' \

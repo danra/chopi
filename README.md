@@ -89,16 +89,30 @@ configuration.
    proxy isn't already up. This is intentional: this way, denials are always clearly
    visible in the separate terminal dedicated to running the proxy in the foreground.
 
-   When run in a git repo, `chopi` also isolates the command to a single worktree
-   and applies additional hardening to prevent rogue commands compromising the host
-   system.
+   To run a sandboxed command in a separate git worktree instead of the repo root, you
+   can either `cd` to an existing worktree and launch `chopi` as usual, or add and setup
+   a new worktree by running `chopi` in `--worktree` mode:
+
+   ```sh
+   chopi --worktree NAME <executable> [args...]
+   ```
+
+   Run from the root of the repo (or a worktree), this creates a new linked worktree at
+   `<repo>/.worktrees/NAME`, checks out branch `NAME` (creating it in case it doesn't already
+   exist), and runs the command with that worktree folder as its workspace. Or, if the
+   worktree at that path already exists, it is reused (on whatever branch or detached `HEAD`
+   it has checked out), so you can resume previous sessions.
+
+   In both normal and `--worktree` modes, `chopi` also isolates the command to a single
+   worktree and applies additional hardening to prevent rogue commands compromising the
+   host system.
 
    ### Git Protection in Detail
 
-   When the workspace is the root of a git repo (main worktree) or a linked worktree,
-   `chopi` isolates access to that worktree, which keeps an agent from wandering
-   outside its assigned task and picking up irrelevant information from another worktree.
-   This undoes safehouse's own default grants to all other worktrees.
+   When the workspace is the root of a git repo (main worktree) or a linked worktree
+   (including `--worktree` mode), `chopi` isolates access to that worktree, which keeps an
+   agent from wandering outside its assigned task and picking up irrelevant information
+   from another worktree. This undoes safehouse's own default grants to all other worktrees.
    A submodule's root counts as a main worktree of its own repo: its git dir lives under
    the superproject's `.git/modules/`, and `chopi` grants exactly that subtree (hardened
    like any shared git dir) while the rest of the superproject stays out of reach. A repo
@@ -113,8 +127,11 @@ configuration.
    Operations that write to the denied paths fail inside the sandbox: repo-local
    `git config`, `git remote add`, `git worktree add`, `git submodule update` (git
    insists on rewriting `core.worktree` in the submodule's read-only config), and
-   hook installers (e.g. husky). Run these outside the sandbox; for config keys the
-   sandboxed command needs, use `CHOPI_GIT_CONFIG` in `config/sandbox.sh`.
+   hook installers (e.g. husky), so run these outside the sandbox. For `--worktree`
+   runs, `chopi` provides the `CHOPI_WORKTREE_SETUP` config to set commands to run
+   before the sandboxed command starts. The default initializes and updates submodules
+   and pre-sets the upstream for `push`/`pull` (`push -u` can't write the upstream
+   to the config while sandboxed).
 
    The writable data paths in the common git dir mean the worktree isolation isn't
    perfect and agents still have access to, e.g., objects and refs only used in other
@@ -143,9 +160,10 @@ can write its own allowlist can modify its own limits.
 
 To use a different sandbox config for a single run, pass `chopi --config FILE`. The file 
 must define the same `CHOPI_SAFEHOUSE_FLAGS` / `CHOPI_EXTRA_ENV` arrays as `config/sandbox.sh`
-(`CHOPI_GIT_CONFIG` is optional). `chopi` enforces this file being **outside** of the
-workspace you're sandboxing, so the confined command can't rewrite its own config (set
-`CHOPI_ALLOW_SELF=1` in your environment to downgrade the enforcement to a warning).
+(plus `CHOPI_WORKTREE_SETUP` for `--worktree` runs; `CHOPI_GIT_CONFIG` is optional).
+`chopi` enforces this file being **outside** of the workspace you're sandboxing,
+so the confined command can't rewrite its own config (set `CHOPI_ALLOW_SELF=1` in your
+environment to downgrade the enforcement to a warning).
 
 `CHOPI_GIT_CONFIG` sets extra git config for the sandboxed command, as `key=value` pairs
 (e.g. `protocol.file.allow=always`). It's applied through git's `GIT_CONFIG_*` environment

@@ -12,11 +12,13 @@ SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 . "$SCRIPT_DIR/../.internal/util.sh"
 . "$SCRIPT_DIR/../.internal/git-layout.sh"
 
-usage="usage: chopi [--config FILE] [--verbose] <executable> [args...]
+usage="usage: chopi [--config FILE] [--verbose] [--worktree NAME] <executable> [args...]
 
-  --config FILE   use FILE as the sandbox config instead of the default
-                  config/sandbox.sh
-  --verbose       enable verbose output showing chopi's sandbox setup"
+  --config FILE    use FILE as the sandbox config instead of the default
+                   config/sandbox.sh
+  --verbose        enable verbose output showing chopi's sandbox setup
+  --worktree NAME  create (or reuse) a git worktree named NAME under the repo's
+                   .worktrees/ directory and run the command isolated to it"
 
 # Every chopi run gets its own private subfolder under TMPDIR (or /tmp), exported into TMPDIR.
 # chopi's mktemp calls all resolve "$TMPDIR", and safehouse forwards TMPDIR to the sandboxed
@@ -31,6 +33,9 @@ main() {
     local config="$CHOPI_DIR/config/sandbox.sh"
     local config_given=""
     local verbose=""
+    local worktree_name=""
+    local worktree_dir=""
+    local worktree_given=""
 
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -39,6 +44,9 @@ main() {
                 if [ "$#" -lt 2 ]; then echo "chopi: --config requires a file path" >&2; return 1; fi
                 config="$2"; config_given=1; shift 2 ;;
             --verbose)  verbose=1; shift ;;
+            --worktree)
+                if [ "$#" -lt 2 ]; then echo "chopi: --worktree requires a name" >&2; return 1; fi
+                worktree_name="$2"; worktree_given=1; shift 2 ;;
             --)         shift; break ;;
             -*)         echo "chopi: unknown option: $1" >&2; echo "$usage" >&2; return 1 ;;
             *)          break ;;
@@ -68,18 +76,34 @@ main() {
     # shellcheck source=/dev/null  # can't follow user-supplied config path at lint time
     . "$config"
 
+    if [ -n "$worktree_given" ]; then
+        local wt_out_file
+        wt_out_file="$(mktemp "$TMPDIR/chopi-wt-out.XXXXXX")" \
+            || { echo "chopi: could not create a temp file for the worktree contract" >&2; return 1; }
+        "$CHOPI_DIR/.internal/worktree.sh" --config "$config" "$worktree_name" >"$wt_out_file" \
+            || return $?
+        IFS= read -r -d '' worktree_dir <"$wt_out_file" || true
+        if [ -z "$worktree_dir" ]; then
+            echo "chopi: the worktree helper returned no worktree path" >&2
+            return 1
+        fi
+    fi
+
     # Refuse running with git setups that chopi doesn't support.
-    "$CHOPI_DIR/.internal/git-preflight.sh" || return $?
+    local protection_args=()
+    [ -n "$worktree_dir" ] && protection_args+=("$worktree_dir")
+    "$CHOPI_DIR/.internal/git-preflight.sh" "${protection_args[@]+"${protection_args[@]}"}" || return $?
 
     # Git protections apply only at the root of a git worktree. Note that safehouse itself
     # (verified against 0.10.1) also only gives its git grants in this case.
     local run_dir
     run_dir="$(pwd -P)"
+    [ -n "$worktree_dir" ] && run_dir="$worktree_dir"
     local protection_flags=()
     if is_worktree_root "$run_dir"; then
         # Build chopi's git protection profiles and append them in the order
         # git-protect.sh emits them.
-        local protect_args=()
+        local protect_args=("${protection_args[@]+"${protection_args[@]}"}")
         [ -n "$verbose" ] && protect_args+=(--verbose)
         local protect_out_file protect_profile
         protect_out_file="$(mktemp "$TMPDIR/chopi-git-protect-out.XXXXXX")" \
@@ -93,6 +117,10 @@ main() {
             echo "chopi: the git protection helper returned no profiles" >&2
             return 1
         fi
+    elif [ -n "$worktree_given" ]; then
+        # Fail closed: isolating the command to the worktree is the mode's whole promise.
+        echo "chopi: worktree '$worktree_dir' is not a git worktree root" >&2
+        return 1
     elif [ -n "$verbose" ]; then
         echo "chopi: workspace is not a git worktree root; git protections not applied" >&2
     fi
@@ -121,6 +149,13 @@ main() {
     } > "$wrapper_profile"
 
     local proxy="http://127.0.0.1:$PROXY_PORT"
+
+    if [ -n "$worktree_dir" ]; then
+        # Enter the worktree only now -- after preflight ran and the (possibly relative)
+        # --config was sourced against the invocation dir -- so the command runs inside
+        # the worktree without disturbing those invocation-dir-relative resolutions.
+        cd "$worktree_dir" || { echo "chopi: cannot enter worktree '$worktree_dir'" >&2; return 1; }
+    fi
 
     # chopi's outgoing-pinning network profile is always appended last, so its
     # (deny network*) lands after safehouse's own profile and pins outgoing to the proxy.
