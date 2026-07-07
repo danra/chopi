@@ -32,7 +32,8 @@ of known denied domains that don't generate alerts -- important for keeping bloc
 auto-updates etc. from spamming you with notifications. **Restart the proxy** if it's already
 running for edits to take effect.
 
-To configure the sandbox policy, edit `config/sandbox.sh`:
+To configure the sandbox policy, edit the first two settings in `config/sandbox.sh` (other
+settings can be reviewed later):
 
 - `CHOPI_SAFEHOUSE_FLAGS`: [`safehouse`](https://github.com/eugene1g/agent-safehouse) flags
   for selecting what preset features and additional filesystem access to enable in the 
@@ -95,10 +96,17 @@ that file **outside** of any workspace you sandbox with chopi: a sandboxed comma
 can write its own allowlist can modify its own limits.
 
 To use a different sandbox config for a single run, pass `chopi --config FILE`. The file 
-must define the same `CHOPI_SAFEHOUSE_FLAGS` / `CHOPI_EXTRA_ENV` as `config/sandbox.sh`.
-arrays. `chopi` enforces this file being **outside** of the workspace you're sandboxing,
-so the confined command can't rewrite its own config (set `CHOPI_ALLOW_SELF=1` in your 
-environment to downgrade the enforcement to a warning).
+must define the same `CHOPI_SAFEHOUSE_FLAGS` / `CHOPI_EXTRA_ENV` arrays as `config/sandbox.sh`
+(`CHOPI_GIT_CONFIG` is optional). `chopi` enforces this file being **outside** of the
+workspace you're sandboxing, so the confined command can't rewrite its own config (set
+`CHOPI_ALLOW_SELF=1` in your environment to downgrade the enforcement to a warning).
+
+`CHOPI_GIT_CONFIG` sets extra git config for the sandboxed command, as `key=value` pairs
+(e.g. `protocol.file.allow=always`). It's applied through git's `GIT_CONFIG_*` environment
+variables, appended *inside* the sandbox after the environment is fully composed, so the
+pairs merge with any git config you forward from the host via `safehouse`'s
+`--env-pass`/`--env` flags instead of overwriting it (in case of a conflict,
+`CHOPI_GIT_CONFIG` wins).
 
 `chopi` lives in its own directory, outside of the repos you sandbox, so a command you 
 run under it can't read or tamper with the sandbox's own config. `chopi` enforces

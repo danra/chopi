@@ -26,6 +26,8 @@ CHOPI_SAFEHOUSE_FLAGS=(
 #
 # For secrets or anything else you'd rather keep off the visible command line, use safehouse's
 # --env-pass NAME or --env=FILE.
+#
+# For GIT_CONFIG_* vars, use CHOPI_GIT_CONFIG below instead.
 CHOPI_EXTRA_ENV=(
     PATH="$HOME/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
@@ -35,4 +37,14 @@ CHOPI_EXTRA_ENV=(
     # Forward a host env var into the sandbox. If the host var is unset, chopi hard-errors
     # rather than forwarding an empty value, so a missing var is caught loudly:
     # FOO="$FOO"
+)
+
+# Extra git config for the sandboxed command, as key=value pairs. They are appended to the
+# GIT_CONFIG_* environment inside the sandbox, so they merge with, rather than overwrite,
+# git config forwarded from the host via --env-pass/--env in CHOPI_SAFEHOUSE_FLAGS above.
+# A later entry wins an earlier one for the same key, so a value here overrides a forwarded
+# host value for the same key.
+CHOPI_GIT_CONFIG=(
+    # Add your own as needed, e.g.:
+    # protocol.file.allow=always
 )

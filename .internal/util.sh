@@ -16,6 +16,11 @@ SMOKESCREEN_BIN="$HOME/go/bin/smokescreen"
 
 PROXY_PORT=4760
 
+# mktemp name prefixes of chopi's per-invocation temporaries (created under the private
+# TMPDIR); shared so the tests assert on the same names chopi creates.
+CHOPI_GITCONF_WRAPPER_PREFIX="chopi-gitconf-wrapper."
+CHOPI_CMD_ALIAS_PREFIX="chopi-cmd-alias."
+
 if command -v shopt >/dev/null 2>&1; then shopt -s expand_aliases; fi
 
 # arity -- verify expected number of positional args.
@@ -30,3 +35,13 @@ alias arity='_arity "$#"'
 # trace executed commands on/off
 alias trace_on='set -x'
 alias trace_off='{ set +x; } 2>/dev/null'
+
+# Escape a filesystem path for embedding inside a Seatbelt string literal (the "..." of a
+# subpath/literal/prefix matcher).
+sb_string_escape() {
+    arity 1
+    local s="$1"
+    s="${s//\\/\\\\}"   # backslashes first...
+    s="${s//\"/\\\"}"   # ...then double-quotes
+    printf '%s' "$s"
+}

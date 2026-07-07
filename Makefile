@@ -7,14 +7,17 @@ SHELL_SOURCES = \
 	install.sh \
 	.internal/util.sh \
 	.internal/classify-log.sh \
+	.internal/append-git-config.sh \
 	.internal/preflight.sh \
 	config/templates/sandbox.template.sh \
 	test/lib.sh \
+	test/append-git-config.sh \
 	test/chopi-proxy.sh \
 	test/preflight.sh \
 	test/integration.sh
 
 test:
+	@./test/append-git-config.sh
 	@./test/chopi-proxy.sh
 	@./test/preflight.sh
 	@./test/integration.sh
