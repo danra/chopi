@@ -3,6 +3,12 @@
 #
 # util.sh -- shared helpers
 
+# chopi's repo root (physical path). Every chopi script gets CHOPI_DIR by sourcing this
+# file, which resolves it from its own location in .internal/.
+_util_dir="$(dirname "${BASH_SOURCE[0]}")"
+CHOPI_DIR="$(cd "$_util_dir/.." && pwd -P)"
+unset _util_dir
+
 # smokescreen isn't a Homebrew formula; `go install` drops it in GOBIN, which
 # defaults to $HOME/go/bin. It isn't on PATH, so chopi always invokes it by this
 # absolute path.

@@ -5,9 +5,10 @@
 set -euo pipefail
 
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
-CHOPI_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd -P)"
+SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"   # resolve the bin/chopi-proxy symlink
+SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 
-. "$CHOPI_DIR/.internal/util.sh"
+. "$SCRIPT_DIR/../.internal/util.sh"
 
 usage() {
     cat <<EOF

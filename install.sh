@@ -14,9 +14,9 @@ if [ "$(uname -s)" != "Darwin" ]; then
     exit 1
 fi
 
-CHOPI_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
 
-. "$CHOPI_DIR/.internal/util.sh"
+. "$SCRIPT_DIR/.internal/util.sh"
 
 
 # ----------------------------------------------------------------------------

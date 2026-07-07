@@ -6,9 +6,10 @@
 
 set -euo pipefail
 
-CHOPI_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd -P)"
+SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"   # resolve the bin/chopi symlink
+SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 
-. "$CHOPI_DIR/.internal/util.sh"
+. "$SCRIPT_DIR/../.internal/util.sh"
 
 usage="usage: chopi [--config FILE] <executable> [args...]
 
