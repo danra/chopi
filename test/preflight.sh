@@ -25,7 +25,6 @@ trap 'rm -rf "$TMPDIR"' EXIT
 # ---------------------------------------------------------------------------
 echo "is_path_within (workspace-overlap predicate)"
 # ---------------------------------------------------------------------------
-. "$repo/.internal/preflight.sh"
 set +euo pipefail
 
 assert_within() {

@@ -45,3 +45,14 @@ sb_string_escape() {
     s="${s//\"/\\\"}"   # ...then double-quotes
     printf '%s' "$s"
 }
+
+# Is directory $1 the same as, or nested inside, directory $2? Both are absolute and
+# normalized (no trailing slash except the root "/").
+is_path_within() {
+    arity 2
+    local inner="$1" outer="$2"
+    [ "$inner" = "$outer" ] && return 0
+    [ "$outer" = "/" ] && return 0   # every absolute path is inside the root
+    case "$inner" in "$outer"/*) return 0 ;; esac
+    return 1
+}

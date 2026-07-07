@@ -20,17 +20,6 @@ SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
 
 . "$SCRIPT_DIR/util.sh"
 
-# Is directory $1 the same as, or nested inside, directory $2? Both are absolute and
-# normalized (no trailing slash except the root "/").
-is_path_within() {
-    arity 2
-    local inner="$1" outer="$2"
-    [ "$inner" = "$outer" ] && return 0
-    [ "$outer" = "/" ] && return 0   # every absolute path is inside the root
-    case "$inner" in "$outer"/*) return 0 ;; esac
-    return 1
-}
-
 # self-overlap guard: hard-error, or warn if CHOPI_ALLOW_SELF is set
 refuse_or_warn() {
     arity 3
@@ -123,10 +112,4 @@ preflight() {
     fi
 }
 
-# Only dispatch when run as a program. In production this script is always executed (the
-# chopi function calls it before invoking safehouse), never sourced, so the guard is a
-# no-op there. It exists so the tests can `source` this file to exercise the pure helpers
-# (is_path_within) directly without tripping the dispatch.
-if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
-    preflight "$@"
-fi
+preflight "$@"
