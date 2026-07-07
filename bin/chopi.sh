@@ -11,10 +11,11 @@ SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 
 . "$SCRIPT_DIR/../.internal/util.sh"
 
-usage="usage: chopi [--config FILE] <executable> [args...]
+usage="usage: chopi [--config FILE] [--verbose] <executable> [args...]
 
   --config FILE   use FILE as the sandbox config instead of the default
-                  config/sandbox.sh"
+                  config/sandbox.sh
+  --verbose       enable verbose output showing chopi's sandbox setup"
 
 # Every chopi run gets its own private subfolder under TMPDIR (or /tmp), exported into TMPDIR.
 # safehouse forwards TMPDIR to the sandboxed command, so all generated temporaries (for generation
@@ -27,6 +28,7 @@ trap 'rm -rf "$CHOPI_TMPDIR"' EXIT
 main() {
     local config="$CHOPI_DIR/config/sandbox.sh"
     local config_given=""
+    local verbose=""
 
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -34,6 +36,7 @@ main() {
             --config)
                 if [ "$#" -lt 2 ]; then echo "chopi: --config requires a file path" >&2; return 1; fi
                 config="$2"; config_given=1; shift 2 ;;
+            --verbose)  verbose=1; shift ;;
             --)         shift; break ;;
             -*)         echo "chopi: unknown option: $1" >&2; echo "$usage" >&2; return 1 ;;
             *)          break ;;
@@ -70,7 +73,7 @@ main() {
     # errexit off around safehouse so a non-zero exit from the sandboxed command is captured
     # and propagated (so `chopi cmd && next` short-circuits) instead of aborting here.
     set +e
-    set -x
+    [ -n "$verbose" ] && { echo; set -x; }
     safehouse \
         "${CHOPI_SAFEHOUSE_FLAGS[@]+"${CHOPI_SAFEHOUSE_FLAGS[@]}"}" \
         --append-profile "$CHOPI_DIR/.internal/network.sb" \

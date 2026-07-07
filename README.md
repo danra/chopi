@@ -54,11 +54,6 @@ edits persist on reinstalls. When updating Chopi, you can examine the templates 
 `config/templates` for any upstream changes that you might want to bring in to your local 
 configuration.
 
-`chopi` always prints the `safehouse` command that it executes, so you can inspect it for
-the expected permissions. This also allows you to re-run the command and modify it inline
-before committing to change more persistent configuration in `config/sandbox.sh` or any of
-the other locations that `safehouse` itself provides.
-
 
 ## Usage
 

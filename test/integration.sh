@@ -144,6 +144,23 @@ assert_eq "$rc" "7" "chopi propagates the sandboxed command's exit code"
 
 
 # ---------------------------------------------------------------------------
+echo "--verbose gates the safehouse command echo"
+# ---------------------------------------------------------------------------
+# The safehouse command line is echoed (to stderr, via xtrace) only with --verbose, so a
+# quiet run stays quiet while an inspectable one shows exactly how safehouse was invoked.
+# --append-profile is a distinctive token of chopi's constructed command that appears in the
+# trace but never in safehouse's own output, so it cleanly tells the two runs apart.
+chopi_run() { ( cd "$ws" && "$repo/bin/chopi" "$@" --config "$cfg" -- /bin/sh -c 'echo OK' ); }
+
+err="$(chopi_run 2>&1 >/dev/null)"
+assert_not_contains "$err" "--append-profile"      "without --verbose, the safehouse command line is not echoed"
+
+err="$(chopi_run --verbose 2>&1 >/dev/null)"
+assert_contains     "$err" "safehouse"             "with --verbose, the safehouse command line is echoed to stderr"
+assert_contains     "$err" "--append-profile"      "  -> and the trace shows the full invocation (append-profile flags)"
+
+
+# ---------------------------------------------------------------------------
 echo "filesystem confinement"
 # ---------------------------------------------------------------------------
 out="$(chopi_t /bin/sh -c 'echo M > ./in.txt && echo OK || echo FAIL' 2>/dev/null)"
