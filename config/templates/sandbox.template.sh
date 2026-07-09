@@ -45,6 +45,10 @@ CHOPI_EXTRA_ENV=(
 # A later entry wins an earlier one for the same key, so a value here overrides a forwarded
 # host value for the same key.
 CHOPI_GIT_CONFIG=(
+    # The built-in fsmonitor daemon can't run sandboxed (FSEvents access and its IPC
+    # socket under .git are both denied).
+    core.fsmonitor=false
+
     # Turn off git's automatic housekeeping in the sandbox: auto-maintenance spawned by
     # routine commands (fetch, commit, ...) touches shared .git paths the hardening
     # profile denies, generating warnings.
