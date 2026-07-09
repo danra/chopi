@@ -64,6 +64,10 @@ rule() {
 is_path_within() {
     arity 2
     local inner="$1" outer="$2"
+    if [ -z "$inner" ] || [ -z "$outer" ]; then
+        printf 'BUG: is_path_within called with an empty path\n' >&2
+        exit 2
+    fi
     [ "$inner" = "$outer" ] && return 0
     [ "$outer" = "/" ] && return 0   # every absolute path is inside the root
     case "$inner" in "$outer"/*) return 0 ;; esac

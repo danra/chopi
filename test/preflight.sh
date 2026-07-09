@@ -65,6 +65,13 @@ assert_within     "/a*b/c"   "/a*b"  "literal '*' in outer matches itself"
 assert_not_within "/axxb/c"  "/a*b"  "literal '*' in outer does NOT glob-match other chars"
 assert_not_within "/a*b/c"  "/axxb"  "literal '*' in inner does NOT glob-match other chars"
 
+# An empty argument is a caller bug, not a boolean result: an empty outer would otherwise
+# match every absolute path.
+( is_path_within ""   "/a" ) 2>/dev/null; st=$?
+if [ "$st" -eq 2 ]; then ok "an empty inner path is a hard error (exit 2)"; else bad "an empty inner path should be a hard error (got $st)"; fi
+( is_path_within "/a" ""   ) 2>/dev/null; st=$?
+if [ "$st" -eq 2 ]; then ok "an empty outer path is a hard error (exit 2)"; else bad "an empty outer path should be a hard error (got $st)"; fi
+
 
 # ---------------------------------------------------------------------------
 echo "preflight chopi/workspace directories overlap test"
