@@ -89,6 +89,52 @@ configuration.
    proxy isn't already up. This is intentional: this way, denials are always clearly
    visible in the separate terminal dedicated to running the proxy in the foreground.
 
+   When run in a git repo, `chopi` also isolates the command to a single worktree
+   and applies additional hardening to prevent rogue commands compromising the host
+   system.
+
+   ### Git Protection in Detail
+
+   When the workspace is the root of a git repo (main worktree) or a linked worktree,
+   `chopi` isolates access to that worktree, which keeps an agent from wandering
+   outside its assigned task and picking up irrelevant information from another worktree.
+   This undoes safehouse's own default grants to all other worktrees.
+   A submodule's root counts as a main worktree of its own repo: its git dir lives under
+   the superproject's `.git/modules/`, and `chopi` grants exactly that subtree (hardened
+   like any shared git dir) while the rest of the superproject stays out of reach. A repo
+   whose git dir was detached with `git init --separate-git-dir` gets the same treatment.
+
+   In addition, `chopi` hardens the repo's git internals: `.git` stays readable, but only
+   git's data paths (objects, refs, index, etc.) are writable. Everything else (`config`,
+   `hooks`, etc.) stays read-only, so the sandboxed command can't plant code that could
+   later run *unsandboxed* on some git operation. Submodules (recursive) get the same
+   treatment one level down.
+
+   Operations that write to the denied paths fail inside the sandbox: repo-local
+   `git config`, `git remote add`, `git worktree add`, `git submodule update` (git
+   insists on rewriting `core.worktree` in the submodule's read-only config), and
+   hook installers (e.g. husky). Run these outside the sandbox; for config keys the
+   sandboxed command needs, use `CHOPI_GIT_CONFIG` in `config/sandbox.sh`.
+
+   The writable data paths in the common git dir mean the worktree isolation isn't
+   perfect and agents still have access to, e.g., objects and refs only used in other
+   worktrees; but the worktree isolation's goal is more about minimizing agent errors
+   anyway.
+
+   Hardening-wise, being able to write internal data that another worktree references
+   is certainly a risk, but it's required given git's implementation. Hardening should
+   therefore be considered as applying to the repo as a whole, not to a specific
+   worktree; it's not safe to assume other worktrees remained untouched by a sandboxed
+   session.
+
+   Rather than launch a run these protections cannot cover, `chopi` refuses to start
+   and names the cause: git location overrides in the environment (`GIT_DIR`,
+   `GIT_WORK_TREE`) or in the repo's own files (`core.worktree`, `core.bare`, a corrupt
+   `.git` entry) that make git resolve the workspace root away from where it physically
+   is; object reads through an external store (a non-empty `.git/objects/info/alternates`,
+   also in submodule git dirs); and relocated ref storage (`extensions.refStorage` with a
+   URI payload).
+
 ### Advanced
 
 To run the proxy against a different rules file, pass `chopi-proxy --rules FILE`. Keep

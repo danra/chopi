@@ -45,6 +45,13 @@ CHOPI_EXTRA_ENV=(
 # A later entry wins an earlier one for the same key, so a value here overrides a forwarded
 # host value for the same key.
 CHOPI_GIT_CONFIG=(
+    # Turn off git's automatic housekeeping in the sandbox: auto-maintenance spawned by
+    # routine commands (fetch, commit, ...) touches shared .git paths the hardening
+    # profile denies, generating warnings.
+    gc.auto=0
+    gc.worktreePruneExpire=never
+    maintenance.auto=false
+
     # Add your own as needed, e.g.:
     # protocol.file.allow=always
 )

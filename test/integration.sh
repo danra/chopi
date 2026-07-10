@@ -191,9 +191,9 @@ assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
 echo "private per-invocation temp dir"
 # ---------------------------------------------------------------------------
 # chopi exports a freshly-made TMPDIR for each run (safehouse forwards it into the
-# sandbox). ALL of chopi's own temporaries (gitconf wrapper profiles, the command's
-# tempfiles) live inside it, so the dir being gone after the run IS the
-# cleanup check for every one of them -- the later sections don't re-assert it.
+# sandbox). ALL of chopi's own temporaries (gitconf wrapper profiles, isolation and
+# hardening profiles, the command's tempfiles) live inside it, so the dir being gone after
+# the run IS the cleanup check for every one of them -- the later sections don't re-assert it.
 # shellcheck disable=SC2016  # $TMPDIR expands in the sandboxed shell, not here
 out="$(chopi_t /bin/sh -c 'echo "SBX_TMPDIR=$TMPDIR"; ls "$TMPDIR"; echo probe > "$TMPDIR/probe.txt" && echo WRITE_OK' 2>/dev/null)"
 sbx_tmpdir="$(printf '%s\n' "$out" | sed -n 's/^SBX_TMPDIR=//p')"
@@ -313,6 +313,226 @@ assert_not_contains "$code" "200"                  "a direct outgoing connection
 # (network.sb only allows localhost:4760). Offline-safe.
 code="$(sandbox_curl --max-time 15 --proxy "http://127.0.0.1:4761" "https://$ALLOWED_HOST")"
 assert_not_contains "$code" "200"                  "an outgoing connection to a non-4760 loopback port is blocked by the sandbox"
+
+
+# ---------------------------------------------------------------------------
+echo "git worktree isolation"
+# ---------------------------------------------------------------------------
+if ! command -v git >/dev/null 2>&1; then
+    echo "  SKIP git isolation tests (git not on PATH)"
+else
+    gitrepo="$base/gitrepo"
+    cfg_git="$base/config/sandbox-git.sh"
+    make_repo "$gitrepo"
+    gitrepo_real="$(realpath "$gitrepo")"
+    shared_git="$gitrepo_real/.git"
+    submod="$gitrepo_real/submod"
+    submod_dotgit="$submod/.git"
+    root_only="$gitrepo_real/root-only.txt"
+
+    printf 'ROOT_ONLY_MARKER\n' > "$root_only"
+    git -C "$gitrepo" add root-only.txt
+    git -C "$gitrepo" commit -q -m root-marker
+
+    # Default sandbox config comes from sourcing the shipped template,
+    # so the suite tracks it; the grants and env are re-minimized like the main $cfg's.
+    cat > "$cfg_git" <<EOF
+. '$repo/config/templates/sandbox.template.sh'
+CHOPI_SAFEHOUSE_FLAGS=()
+CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
+EOF
+
+    nested_wt="$gitrepo_real/.worktrees/nested_wt"
+    nested_wt_admin="$shared_git/worktrees/nested_wt"
+    external_wt="$base/external_wt"
+    git -C "$gitrepo" worktree add -q -b sib_wt "$nested_wt"
+    printf 'NESTED_ONLY_MARKER\n' > "$nested_wt/nested.txt"
+    git -C "$gitrepo" worktree add -q -b external_wt "$external_wt"
+    printf 'EXTERNAL_ONLY_MARKER\n' > "$external_wt/ext.txt"
+
+    chopi_main() { ( cd "$gitrepo" && "$repo/bin/chopi" --config "$cfg_git" -- "$@" ); }
+
+    workdir="$(chopi_main /bin/sh -c 'pwd' 2>/dev/null || true)"
+    assert_eq "$workdir" "$gitrepo_real"                    "the command runs with the repo root as its workdir"
+
+    # Verify isolation
+    out="$(chopi_main /bin/sh -c "cat '$nested_wt/nested.txt' && echo READ_OK || echo READ_FAIL" 2>/dev/null || true)"
+    assert_not_contains "$out" "NESTED_ONLY_MARKER"   "a nested sibling worktree's files are NOT readable"
+    assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
+    chopi_main /bin/sh -c "echo x > '$nested_wt/evil.txt'" >/dev/null 2>&1 || true
+    assert_absent "$nested_wt/evil.txt" "a write into a nested sibling worktree is denied (no file created)"
+    out="$(chopi_main /bin/sh -c "cat '$external_wt/ext.txt' && echo READ_OK || echo READ_FAIL" 2>/dev/null || true)"
+    assert_not_contains "$out" "EXTERNAL_ONLY_MARKER"  "an external worktree's files are NOT readable (safehouse's read grant is undone)"
+    assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
+
+    # git keeps working in the isolated worktree
+    out="$(chopi_main /bin/sh -c 'echo CHG > ./main-commit.txt && git add main-commit.txt && git commit -q -m maincommit && echo COMMIT_OK' 2>/dev/null || true)"
+    assert_contains "$out" "COMMIT_OK"                 "a commit in the main worktree succeeds"
+    # A PARTIAL (pathspec-limited) commit builds its temp index at .git/next-index-<pid>,
+    # not index.lock -- a separate write hole that is easy to miss.
+    out="$(chopi_main /bin/sh -c 'echo one > ./partial.txt && git add partial.txt && git commit -q -m addpartial && echo two >> ./partial.txt && git commit -q -m partial -- partial.txt && echo PARTIAL_OK' 2>/dev/null)"
+    assert_contains "$out" "PARTIAL_OK"                "a pathspec-limited commit succeeds (the next-index temp-index hole)"
+    out="$(chopi_main /bin/sh -c 'git tag chopi-main-probe && echo TAG_OK' 2>/dev/null)"
+    assert_contains "$out" "TAG_OK"                    "a ref write succeeds"
+    out="$(chopi_main /bin/sh -c 'echo dirty >> ./main-commit.txt && git stash push -q -m t && git stash pop -q && echo STASH_OK' 2>/dev/null || true)"
+    assert_contains "$out" "STASH_OK"                  "git stash push/pop succeed"
+fi
+
+
+# ---------------------------------------------------------------------------
+echo "git internals hardening"
+# ---------------------------------------------------------------------------
+if command -v git >/dev/null 2>&1; then
+    for var in "${allow_git_file_protocol[@]}"; do export "${var?}"; done
+
+    # A path submodule, to prove submodule work survives the .git write-allowlist (file-protocol
+    # allowed via the GIT_CONFIG_* env exported above). It carries its OWN submodule, so the
+    # repo gets a NESTED chain (gitrepo -> submod -> nested): the protections must lock down
+    # BOTH levels, and in-sandbox submodule work must still succeed at BOTH.
+    nested_src="$base/nested-src"
+    make_repo "$nested_src"
+    printf 'NESTED_MARKER\n' > "$nested_src/nested.txt"
+    git -C "$nested_src" add nested.txt
+    git -C "$nested_src" commit -q -m nested
+
+    submod_src="$base/submod-src"
+    make_repo "$submod_src"
+    printf 'SUBMODULE_MARKER\n' > "$submod_src/sub.txt"
+    git -C "$submod_src" add sub.txt
+    git -C "$submod_src" submodule add -q "$nested_src" nested
+    git -C "$submod_src" commit -q -m 'sub + nested submodule'
+    git -C "$gitrepo" submodule add -q "$submod_src" submod
+    git -C "$gitrepo" commit -q -m 'add submodule'
+
+    # Verify git is functional under hardening
+    git -C "$gitrepo" checkout -q -- .
+    mainbr="$(git -C "$gitrepo" symbolic-ref --short HEAD)"
+    git -C "$gitrepo" checkout -q -b mainpick
+    printf 'mp1\n' > "$gitrepo/mp1.txt"; git -C "$gitrepo" add mp1.txt; git -C "$gitrepo" commit -q -m mp1
+    printf 'mp2\n' > "$gitrepo/mp2.txt"; git -C "$gitrepo" add mp2.txt; git -C "$gitrepo" commit -q -m mp2
+    mpick1="$(git -C "$gitrepo" rev-parse HEAD~1)"
+    mpick2="$(git -C "$gitrepo" rev-parse HEAD)"
+    git -C "$gitrepo" checkout -q "$mainbr"
+    out="$(chopi_main /bin/sh -c "git cherry-pick $mpick1 $mpick2 && echo PICK_OK" 2>/dev/null || true)"
+    assert_contains "$out" "PICK_OK"                   "a multi-commit cherry-pick succeeds in the main worktree (sequencer + CHERRY_PICK_HEAD)"
+    out="$(chopi_main /bin/sh -c 'git rebase -f HEAD~2 && echo REBASE_OK' 2>/dev/null || true)"
+    assert_contains "$out" "REBASE_OK"                 "a rebase succeeds (merge backend: ORIG_HEAD/REBASE_HEAD + rebase-merge/)"
+    out="$(chopi_main /bin/sh -c 'git rebase --apply -f HEAD~2 && echo APPLY_OK' 2>/dev/null || true)"
+    assert_contains "$out" "APPLY_OK"                  "  -> and with --apply (rebase-apply/ + the rebased-patches spool)"
+
+    # Sparse-checkout works end to end, info/attributes and info/exclude beside it stay denied.
+    sparse_checkout="$shared_git/info/sparse-checkout"
+    git -C "$gitrepo" config core.sparseCheckout true
+    out="$(chopi_main /bin/sh -c "printf '/*\n!/mp1.txt\n' > '$sparse_checkout' && git sparse-checkout reapply && test ! -f mp1.txt && echo SPARSE_OK" 2>/dev/null || true)"
+    assert_contains "$out" "SPARSE_OK"                 "a sparse checkout works via the writable sparse-checkout file in the shared info/"
+    assert_absent "$gitrepo_real/mp1.txt" "  -> the excluded file is really pruned from the main worktree"
+    out="$(chopi_main /bin/sh -c "printf '/*\n' > '$sparse_checkout' && git sparse-checkout reapply && test -f mp1.txt && rm '$sparse_checkout' && echo RESTORE_OK" 2>/dev/null || true)"
+    assert_contains "$out" "RESTORE_OK"                "  -> widening the patterns restores it, and the file is removable"
+    git -C "$gitrepo" config --unset core.sparseCheckout
+    chopi_main /bin/sh -c "echo '* filter=evil' > '$shared_git/info/attributes'" >/dev/null 2>&1 || true
+    assert_absent "$shared_git/info/attributes" "writing the shared .git/info/attributes is denied (no file created)"
+
+    # Verify exec surface is set to read-only
+    config_before="$(cat "$shared_git/config")"
+    chopi_main /bin/sh -c "echo pwn > '$shared_git/hooks/post-commit'" >/dev/null 2>&1 || true
+    assert_absent "$shared_git/hooks/post-commit" "planting a hook in the shared .git/hooks is denied (no file created)"
+    chopi_main /usr/bin/git config core.hooksPath /tmp/evil >/dev/null 2>&1 || true
+    assert_eq "$(cat "$shared_git/config")" "$config_before" \
+                                                       "the shared .git/config cannot be written from the sandbox"
+
+    # A submodule in the main tree: its gitdir (.git/modules/...) keeps its data holes, so
+    # in-sandbox submodule commits work, while its exec surface stays read-only.
+    out="$(chopi_main /bin/sh -c 'cd submod && echo more >> sub.txt && git add sub.txt && git commit -q -m mainsub && echo SUBCOMMIT_OK' 2>/dev/null || true)"
+    assert_contains "$out" "SUBCOMMIT_OK"              "a commit inside the main tree's submodule succeeds"
+    main_sub_gitdir="$(realpath "$(git -C "$submod" rev-parse --absolute-git-dir)" || true)"
+    main_sub_dotgit_before="$(cat "$submod_dotgit")"
+    chopi_main /bin/sh -c "echo 'gitdir: /tmp/evil' > '$submod_dotgit'" >/dev/null 2>&1 || true
+    chopi_main /bin/sh -c "echo pwn > '$main_sub_gitdir/hooks/post-checkout'"          >/dev/null 2>&1 || true
+    assert_eq "$(cat "$submod_dotgit")" "$main_sub_dotgit_before" \
+                                                       "the submodule's .git pointer file cannot be rewritten from the sandbox"
+    assert_absent "$main_sub_gitdir/hooks/post-checkout" "planting a hook in the submodule's gitdir is denied (no file created)"
+
+    # A sibling worktree's admin dir stays unwritable (only holes for the MAIN checkout
+    # state were poked).
+    chopi_main /bin/sh -c "echo x > '$nested_wt_admin/config.worktree'" >/dev/null 2>&1 || true
+    if [ -s "$nested_wt_admin/config.worktree" ]; then
+        bad "writing a sibling worktree's admin dir is denied (file must stay empty/absent)"
+    else
+        ok  "writing a sibling worktree's admin dir is denied"
+    fi
+
+
+    # -----------------------------------------------------------------------
+    echo "git protections (submodule root)"
+    # -----------------------------------------------------------------------
+    # Run chopi from INSIDE the superproject's submodule: the submodule root is the main
+    # worktree of its own repo, whose shared git dir (.git/modules/submod) lives OUTSIDE
+    # the workspace -- chopi allows it, git must work against it, its exec surface stays
+    # read-only, and the superproject stays out of reach. The nested submodule is initialized
+    # first (unsandboxed) so the one-level-down checks below have a populated chain.
+    git -C "$submod" submodule update --init --recursive >/dev/null 2>&1
+    chopi_sub() { ( cd "$submod" && "$repo/bin/chopi" --config "$cfg_git" -- "$@" ); }
+    sub_main_gitdir="$(realpath "$(git -C "$submod" rev-parse --absolute-git-dir)" || true)"
+
+    top="$(chopi_sub /usr/bin/git rev-parse --show-toplevel 2>/dev/null || true)"
+    assert_eq "$top" "$submod"                         "git resolves the submodule root as its toplevel (module gitdir readable)"
+
+    out="$(chopi_sub /bin/sh -c 'echo CHG > ./subroot.txt && git add subroot.txt && git commit -q -m subroot && echo COMMIT_OK' 2>/dev/null || true)"
+    assert_contains "$out" "COMMIT_OK"                 "a commit at the submodule root succeeds (module gitdir data paths writable)"
+
+    # The superproject's working tree and its own .git internals are not granted; only
+    # the module gitdir subtree is.
+    out="$(chopi_sub /bin/sh -c "cat '$root_only' && echo READ_OK || echo READ_FAIL" 2>/dev/null || true)"
+    assert_not_contains "$out" "ROOT_ONLY_MARKER"      "the superproject's working files are NOT readable"
+    assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
+    out="$(chopi_sub /bin/sh -c "cat '$shared_git/config' >/dev/null 2>&1 && echo READ_OK || echo READ_FAIL" 2>/dev/null || true)"
+    assert_contains     "$out" "READ_FAIL"             "the superproject's .git/config is NOT readable"
+    chopi_sub /bin/sh -c "echo x > '$gitrepo_real/super-evil.txt'" >/dev/null 2>&1 || true
+    assert_absent "$gitrepo_real/super-evil.txt" "a write into the superproject's tree is denied (no file created)"
+
+    # The submodule's own exec surface: its .git pointer file, the module config, the
+    # module hooks/ -- all repointable-into-unsandboxed-execution, all read-only.
+    sub_dotgit_before="$(cat "$submod_dotgit")"
+    sub_cfg_before="$(cat "$sub_main_gitdir/config")"
+    chopi_sub /bin/sh -c "echo 'gitdir: /tmp/evil' > '$submod_dotgit'" >/dev/null 2>&1 || true
+    chopi_sub /usr/bin/git config core.hooksPath /tmp/evil >/dev/null 2>&1 || true
+    chopi_sub /bin/sh -c "echo pwn > '$sub_main_gitdir/hooks/post-commit'" >/dev/null 2>&1 || true
+    assert_eq "$(cat "$submod_dotgit")" "$sub_dotgit_before" \
+                                                       "the submodule's .git pointer file cannot be rewritten from the sandbox"
+    assert_eq "$(cat "$sub_main_gitdir/config")" "$sub_cfg_before" \
+                                                       "the module config cannot be written (git config denied)"
+    assert_absent "$sub_main_gitdir/hooks/post-commit" "planting a hook in the module gitdir is denied (no file created)"
+
+    # One level down, the submodule's OWN submodule gets the usual treatment: data paths
+    # writable (a commit works), exec surface pinned.
+    out="$(chopi_sub /bin/sh -c 'cd nested && echo more >> nested.txt && git add nested.txt && git -c user.email=w@t.t -c user.name=w commit -q -m subnested && echo NESTEDCOMMIT_OK' 2>/dev/null)"
+    assert_contains "$out" "NESTEDCOMMIT_OK"           "a commit in the submodule's own nested submodule succeeds"
+    nested_gd="$(realpath "$(git -C "$submod/nested" rev-parse --absolute-git-dir)")"
+    chopi_sub /bin/sh -c "echo pwn > '$nested_gd/hooks/post-commit'" >/dev/null 2>&1 || true
+    assert_absent "$nested_gd/hooks/post-commit" "planting a hook in the nested submodule's gitdir is denied (no file created)"
+
+
+    # -----------------------------------------------------------------------
+    echo "git protections (separate-git-dir root)"
+    # -----------------------------------------------------------------------
+    sgdrepo="$base/sgdrepo"; sgdgit="$base/sgdrepo-git"
+    make_repo "$sgdrepo" --separate-git-dir "$sgdgit"
+    sgdrepo_real="$(realpath "$sgdrepo")"
+    sgdgit_real="$(realpath "$sgdgit")"
+    sgd_dotgit="$sgdrepo_real/.git"
+    chopi_sgd() { ( cd "$sgdrepo" && "$repo/bin/chopi" --config "$cfg_git" -- "$@" ); }
+
+    out="$(chopi_sgd /bin/sh -c 'echo CHG > ./sgd.txt && git add sgd.txt && git commit -q -m sgd && echo COMMIT_OK' 2>/dev/null || true)"
+    assert_contains "$out" "COMMIT_OK"                 "a commit at a separate-git-dir root succeeds (detached gitdir writable on data paths)"
+
+    sgd_dotgit_before="$(cat "$sgd_dotgit")"
+    chopi_sgd /bin/sh -c "echo 'gitdir: /tmp/evil' > '$sgd_dotgit'" >/dev/null 2>&1 || true
+    chopi_sgd /bin/sh -c "echo pwn > '$sgdgit_real/hooks/post-commit'" >/dev/null 2>&1 || true
+    assert_eq "$(cat "$sgd_dotgit")" "$sgd_dotgit_before" \
+                                                       "the root's .git pointer file cannot be rewritten from the sandbox"
+    assert_absent "$sgdgit_real/hooks/post-commit" "planting a hook in the detached gitdir is denied (no file created)"
+fi
+
 
 # ---------------------------------------------------------------------------
 summary

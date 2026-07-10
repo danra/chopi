@@ -8,16 +8,27 @@ SHELL_SOURCES = \
 	.internal/util.sh \
 	.internal/classify-log.sh \
 	.internal/append-git-config.sh \
+	.internal/git-layout.sh \
+	.internal/git-preflight.sh \
+	.internal/git-isolate.sh \
+	.internal/git-harden.sh \
+	.internal/git-protect.sh \
 	.internal/preflight.sh \
 	config/templates/sandbox.template.sh \
 	test/lib.sh \
 	test/append-git-config.sh \
+	test/git-preflight.sh \
+	test/git-isolate.sh \
+	test/git-harden.sh \
 	test/chopi-proxy.sh \
 	test/preflight.sh \
 	test/integration.sh
 
 test:
 	@./test/append-git-config.sh
+	@./test/git-preflight.sh
+	@./test/git-isolate.sh
+	@./test/git-harden.sh
 	@./test/chopi-proxy.sh
 	@./test/preflight.sh
 	@./test/integration.sh

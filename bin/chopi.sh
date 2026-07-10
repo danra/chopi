@@ -10,6 +10,7 @@ SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"   # resolve the bin/chopi symlink
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 
 . "$SCRIPT_DIR/../.internal/util.sh"
+. "$SCRIPT_DIR/../.internal/git-layout.sh"
 
 usage="usage: chopi [--config FILE] [--verbose] <executable> [args...]
 
@@ -67,6 +68,35 @@ main() {
     # shellcheck source=/dev/null  # can't follow user-supplied config path at lint time
     . "$config"
 
+    # Refuse running with git setups that chopi doesn't support.
+    "$CHOPI_DIR/.internal/git-preflight.sh" || return $?
+
+    # Git protections apply only at the root of a git worktree. Note that safehouse itself
+    # (verified against 0.10.1) also only gives its git grants in this case.
+    local run_dir
+    run_dir="$(pwd -P)"
+    local protection_flags=()
+    if is_worktree_root "$run_dir"; then
+        # Build chopi's git protection profiles and append them in the order
+        # git-protect.sh emits them.
+        local protect_args=()
+        [ -n "$verbose" ] && protect_args+=(--verbose)
+        local protect_out_file protect_profile
+        protect_out_file="$(mktemp "$TMPDIR/chopi-git-protect-out.XXXXXX")" \
+            || { echo "chopi: could not create a temp file for the git protection profiles" >&2; return 1; }
+        "$CHOPI_DIR/.internal/git-protect.sh" "${protect_args[@]+"${protect_args[@]}"}" >"$protect_out_file" \
+            || return $?
+        while IFS= read -r -d '' protect_profile; do
+            protection_flags+=(--append-profile "$protect_profile")
+        done <"$protect_out_file"
+        if [ "${#protection_flags[@]}" -eq 0 ]; then
+            echo "chopi: the git protection helper returned no profiles" >&2
+            return 1
+        fi
+    elif [ -n "$verbose" ]; then
+        echo "chopi: workspace is not a git worktree root; git protections not applied" >&2
+    fi
+
     # safehouse selects its sandbox profile from the invoked command's basename, e.g.,
     # `claude` loads the claude-code profile. Alias the git-config wrapper to the same name
     # so safehouse's detection loads the right profile. The symlink lives under TMPDIR,
@@ -101,6 +131,7 @@ main() {
     [ -n "$verbose" ] && { echo; set -x; }
     safehouse \
         "${CHOPI_SAFEHOUSE_FLAGS[@]+"${CHOPI_SAFEHOUSE_FLAGS[@]}"}" \
+        "${protection_flags[@]+"${protection_flags[@]}"}" \
         --append-profile "$wrapper_profile" \
         --append-profile "$CHOPI_DIR/.internal/network.sb" \
         -- \
