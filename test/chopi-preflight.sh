@@ -17,6 +17,10 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 header "test/chopi-preflight.sh -- unit tests preflight checks"
 
+# Exported so the scripts under test leave their temporaries here too.
+TMPDIR="$(mktemp -d)"; export TMPDIR
+trap 'rm -rf "$TMPDIR"' EXIT
+
 
 # ---------------------------------------------------------------------------
 echo "is_path_within (workspace-overlap predicate)"
@@ -81,7 +85,6 @@ assert_contains "$out" "continuing anyway" "CHOPI_ALLOW_SELF proceeds past the o
 tmp="$(mktemp -d)"
 out="$(cd "$tmp" && "$repo/.internal/chopi-preflight.sh" 2>&1)"
 assert_not_contains "$out" "overlaps chopi's own directory" "non-overlapping workspace clears the overlap check"
-rm -rf "$tmp"
 
 
 # ---------------------------------------------------------------------------
@@ -120,13 +123,10 @@ real="$(mktemp -d)"; : > "$real/cfg.sh"
 linkdir="$(mktemp -d)"; ln -s "$real" "$linkdir/ws"
 out="$(cd "$linkdir/ws" && "$repo/.internal/chopi-preflight.sh" --config "$real/cfg.sh" 2>&1)"
 assert_contains "$out" "is inside the workspace" "config under a symlinked workspace is caught via its real path"
-rm -rf "$real" "$linkdir"
 
 out="$(cd "$work" && "$repo/.internal/chopi-preflight.sh" --config 2>&1)"; st=$?
 assert_contains "$out" "--config requires a file path" "--config with no argument is rejected"
 if [ "$st" -ne 0 ]; then ok "  -> and exits non-zero"; else bad "  -> should exit non-zero (got $st)"; fi
-
-rm -rf "$work"; rm -f "$cfg_outside"
 
 
 # ---------------------------------------------------------------------------

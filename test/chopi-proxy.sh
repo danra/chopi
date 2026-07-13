@@ -14,6 +14,10 @@ set +euo pipefail
 
 header "test/chopi-proxy.sh -- unit tests for bin/chopi-proxy.sh's log logic + proxy-port invariant"
 
+# Exported so the scripts under test leave their temporaries here too.
+TMPDIR="$(mktemp -d)"; export TMPDIR
+trap 'rm -rf "$TMPDIR"' EXIT
+
 
 # ---------------------------------------------------------------------------
 echo "log classifier (connection-request / deny-host / format-deny / format-misc)"
@@ -95,7 +99,6 @@ out="$(
     printf '%s\n' 'POISON-LINE' '{"allow":false,"requested_host":"late.example","time":"T"}' \
         | classify_log false "chopi-proxy.sh" "" false
 )"
-rm -f "$poison_filter"
 assert_contains "$out" "[chopi-proxy.sh] DENY  late.example  @ T" \
     "a jq failure on one line does not abort the loop and silence later DENYs (under set -e)"
 
@@ -209,7 +212,6 @@ out="$(
     printf '%s\n' "$known_deny" '{"allow":false,"requested_host":"late.example","time":"T"}' \
         | classify_log false "chopi-proxy.sh" "" false
 )"
-rm -f "$poison_filter"
 assert_eq "$out" "[chopi-proxy.sh] DENY  tele.example:443  @ T
 [chopi-proxy.sh] DENY  late.example  @ T" \
     "a known-deny.jq failure -> the deny surfaces LOUD and the loop continues (under set -e)"

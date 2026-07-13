@@ -41,11 +41,13 @@ fi
 
 
 # ---------------------------------------------------------------------------
-# Fixtures -- everything under one base dir UNDER \$HOME (not /tmp or /var/folders, which
-# safehouse grants read+write by default.
+# Fixtures -- a private TMPDIR (exported so the scripts under test leave their
+# temporaries here too), and everything else under one base dir UNDER \$HOME
+# (not /tmp or /var/folders, which safehouse grants read+write by default).
 # ---------------------------------------------------------------------------
+TMPDIR="$(mktemp -d)"; export TMPDIR
 base="$(mktemp -d "$HOME/.chopi-itest.XXXXXX")" || { echo "error: mktemp failed" >&2; exit 1; }
-trap 'if [ -n "${proxy_pid:-}" ]; then kill "$proxy_pid" 2>/dev/null || true; wait "$proxy_pid" 2>/dev/null || true; fi; rm -rf "$base"' EXIT
+trap 'if [ -n "${proxy_pid:-}" ]; then kill "$proxy_pid" 2>/dev/null || true; wait "$proxy_pid" 2>/dev/null || true; fi; rm -rf "$base" "$TMPDIR"' EXIT
 
 ws="$base/workspace"            # the sandbox workspace (read/write granted, as the workdir)
 outside="$base/outside"         # sibling under $HOME -> reliably denied
@@ -176,8 +178,8 @@ echo "private per-invocation temp dir"
 out="$(chopi_t /bin/sh -c 'echo "SBX_TMPDIR=$TMPDIR"; echo probe > "$TMPDIR/probe.txt" && echo WRITE_OK' 2>/dev/null)"
 sbx_tmpdir="$(printf '%s\n' "$out" | sed -n 's/^SBX_TMPDIR=//p')"
 case "$sbx_tmpdir" in
-    "${TMPDIR:-/tmp}"*chopi.*) ok "the sandboxed TMPDIR is a chopi-private dir under the invoking temp dir" ;;
-    *) bad "the sandboxed TMPDIR should be a chopi-private dir under '${TMPDIR:-/tmp}' (got '$sbx_tmpdir')" ;;
+    "$TMPDIR"*chopi.*) ok "the sandboxed TMPDIR is a chopi-private dir under the invoking temp dir" ;;
+    *) bad "the sandboxed TMPDIR should be a chopi-private dir under '$TMPDIR' (got '$sbx_tmpdir')" ;;
 esac
 assert_contains "$out" "WRITE_OK"                  "  -> and the sandboxed command can write in it"
 if [ -n "$sbx_tmpdir" ] && [ ! -e "$sbx_tmpdir" ]; then
