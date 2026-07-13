@@ -1,8 +1,22 @@
 ;; chopi's seatbelt network profile. Disallows any incoming connections and
 ;; only allows outgoing traffic through the smokescreen proxy. chopi appends
 ;; this (with safehouse's --append-profile) on every run, so it lands LAST in
-;; the composed policy and its (deny network*) overrides whatever network
-;; access safehouse's own profile leaves open.
+;; the composed policy.
+;;
+;; Seatbelt precedence subtlety: an UNFILTERED rule such as (deny network*) only
+;; sets the default decision for an operation; it does NOT override a *filtered*
+;; allow, no matter the order. safehouse grants network with filtered allows, e.g.
+;; (allow network-outbound (remote ip)) and (allow network-bind (local ip)), so a
+;; lone (deny network*) leaves those holes wide open. (This silently failed open
+;; when safehouse 0.11.0 changed its network module from an unfiltered
+;; (allow network*) to filtered allows.) To actually close the holes we mirror
+;; safehouse's filter shapes with denies, then re-open only the proxy. Among
+;; matching filtered rules the last one wins, so the trailing localhost:4760 allow
+;; beats the (remote ip) deny for that single address.
 
-(deny network*)
-(allow network-outbound (remote ip "localhost:4760"))
+(deny network*)                                       ;; default: deny every network op
+(deny network-outbound (remote ip))                   ;; beat safehouse's outbound-to-any-ip allow
+(deny network-outbound (subpath "/"))                 ;;   ...incl. unix sockets (e.g. DNS via mDNSResponder)
+(deny network-bind     (local ip))                    ;; beat safehouse's bind allow -> no listening sockets
+(deny network-inbound  (local ip))                    ;; beat safehouse's inbound allow -> no incoming connections
+(allow network-outbound (remote ip "localhost:4760")) ;; the only hole: the smokescreen proxy
