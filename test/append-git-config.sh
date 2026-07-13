@@ -62,7 +62,7 @@ if command -v git >/dev/null 2>&1; then
         "$WRAP" chopi.t=appended -- git config chopi.t)"
     assert_eq "$out" "appended" "git resolves a conflicting single-valued key to the APPENDED entry"
 else
-    echo "  SKIP git-precedence check (git not on PATH)"
+    bad "git-precedence check needs git on PATH"
 fi
 
 

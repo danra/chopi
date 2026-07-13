@@ -10,7 +10,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
 header "test/worktree.sh -- unit tests for the --worktree setup helper"
 
-command -v git >/dev/null 2>&1 || { echo "SKIP: git not on PATH"; exit 0; }
+command -v git >/dev/null 2>&1 || { echo "error: git not on PATH" >&2; exit 1; }
 
 worktree_sh="$repo/.internal/worktree.sh"
 default_sandbox_cfg="$repo/config/templates/sandbox.template.sh"

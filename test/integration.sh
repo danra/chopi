@@ -322,7 +322,7 @@ assert_not_contains "$code" "200"                  "an outgoing connection to a 
 echo "git worktree isolation"
 # ---------------------------------------------------------------------------
 if ! command -v git >/dev/null 2>&1; then
-    echo "  SKIP git isolation tests (git not on PATH)"
+    bad "git isolation tests need git on PATH"
 else
     gitrepo="$base/gitrepo"
     cfg_git="$base/config/sandbox-git.sh"
@@ -541,7 +541,7 @@ fi
 echo "git protections (--worktree)"
 # ---------------------------------------------------------------------------
 if ! command -v git >/dev/null 2>&1; then
-    echo "  SKIP worktree tests (git not on PATH)"
+    bad "worktree tests need git on PATH"
 else
     nested_wt2="$gitrepo_real/.worktrees/nested_wt2"
     nested_wt2_admin="$shared_git/worktrees/nested_wt2"

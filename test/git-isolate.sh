@@ -10,7 +10,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
 header "test/git-isolate.sh -- unit tests for the worktree-isolation profile"
 
-command -v git >/dev/null 2>&1 || { echo "SKIP: git not on PATH"; exit 0; }
+command -v git >/dev/null 2>&1 || { echo "error: git not on PATH" >&2; exit 1; }
 
 protect_sh="$repo/.internal/git-protect.sh"
 
