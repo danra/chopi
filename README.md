@@ -113,10 +113,6 @@ configuration.
    (including `--worktree` mode), `chopi` isolates access to that worktree, which keeps an
    agent from wandering outside its assigned task and picking up irrelevant information
    from another worktree. This undoes safehouse's own default grants to all other worktrees.
-   A submodule's root counts as a main worktree of its own repo: its git dir lives under
-   the superproject's `.git/modules/`, and `chopi` grants exactly that subtree (hardened
-   like any shared git dir) while the rest of the superproject stays out of reach. A repo
-   whose git dir was detached with `git init --separate-git-dir` gets the same treatment.
 
    In addition, `chopi` hardens the repo's git internals: `.git` stays readable, but only
    git's data paths (objects, refs, index, etc.) are writable. Everything else (`config`,
