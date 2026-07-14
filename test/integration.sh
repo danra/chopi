@@ -191,6 +191,21 @@ assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
 
 
 # ---------------------------------------------------------------------------
+echo "context files in parent dirs of the workspace"
+# ---------------------------------------------------------------------------
+printf 'PARENT_CLAUDE_MARKER\n' > "$base/CLAUDE.md"
+printf 'PARENT_NOTES_MARKER\n'  > "$base/NOTES.md"
+
+out="$(chopi_t /bin/sh -c "cat '$base/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+assert_contains "$out" "PARENT_CLAUDE_MARKER"      "a CLAUDE.md in a parent dir of the workspace is readable"
+assert_contains "$out" "READ_OK"                   "  -> and the read succeeds"
+
+out="$(chopi_t /bin/sh -c "cat '$base/NOTES.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+assert_not_contains "$out" "PARENT_NOTES_MARKER"   "a non-CLAUDE.md file in the same parent dir stays denied (the hole is narrow)"
+assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
+
+
+# ---------------------------------------------------------------------------
 echo "private per-invocation temp dir"
 # ---------------------------------------------------------------------------
 # chopi exports a freshly-made TMPDIR for each run (safehouse forwards it into the
@@ -601,6 +616,16 @@ EOF
     # ...and unwritable.
     chopi_wt /bin/sh -c "echo x > '$external_wt/ext-evil.txt'" >/dev/null 2>&1
     assert_absent "$external_wt/ext-evil.txt" "a write into an external worktree is denied"
+
+    # A context file above the repo root stays readable from the worktree (e.g. a developer-dir
+    # CLAUDE.md meant for every repo beneath it), but the repo root's own copy are unreadable.
+    printf 'ABOVE_REPO_CLAUDE_MARKER\n' > "$base/CLAUDE.md"          # $base is the repo's parent dir
+    printf 'REPO_ROOT_CLAUDE_MARKER\n'  > "$gitrepo_real/CLAUDE.md"
+    out="$(chopi_wt /bin/sh -c "cat '$base/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+    assert_contains "$out" "ABOVE_REPO_CLAUDE_MARKER"  "a CLAUDE.md ABOVE the repo root is readable from the worktree"
+    out="$(chopi_wt /bin/sh -c "cat '$gitrepo_real/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+    assert_not_contains "$out" "REPO_ROOT_CLAUDE_MARKER" "the repo root's OWN CLAUDE.md is NOT readable from the worktree (isolation wins)"
+    assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
 
     # The two appended protection profiles (isolation + hardening) are unreadable.
     # shellcheck disable=SC2016

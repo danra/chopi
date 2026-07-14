@@ -11,6 +11,7 @@ SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 
 . "$SCRIPT_DIR/../.internal/util.sh"
 . "$SCRIPT_DIR/../.internal/git-layout.sh"
+. "$SCRIPT_DIR/../.internal/context-reads.sh"
 
 usage="usage: chopi [--config FILE] [--verbose] [--worktree NAME] <executable> [args...]
 
@@ -99,6 +100,14 @@ main() {
     local run_dir
     run_dir="$(pwd -P)"
     [ -n "$worktree_dir" ] && run_dir="$worktree_dir"
+
+    # Let the agent read context files in the workspace's ancestor dirs.
+    local context_profile
+    context_profile="$(mktemp "$TMPDIR/chopi-context-reads.XXXXXX")" \
+        || { echo "chopi: could not create a temp file for the context-reads profile" >&2; return 1; }
+    write_context_reads_profile "$context_profile" "$run_dir" \
+        || { echo "chopi: could not write the context-reads profile" >&2; return 1; }
+
     local protection_flags=()
     if is_worktree_root "$run_dir"; then
         # Build chopi's git protection profiles and append them in the order
@@ -166,6 +175,7 @@ main() {
     [ -n "$verbose" ] && { echo; set -x; }
     safehouse \
         "${CHOPI_SAFEHOUSE_FLAGS[@]+"${CHOPI_SAFEHOUSE_FLAGS[@]}"}" \
+        --append-profile "$context_profile" \
         "${protection_flags[@]+"${protection_flags[@]}"}" \
         --append-profile "$wrapper_profile" \
         --append-profile "$CHOPI_DIR/.internal/network.sb" \

@@ -13,6 +13,7 @@ SHELL_SOURCES = \
 	.internal/git-isolate.sh \
 	.internal/git-harden.sh \
 	.internal/git-protect.sh \
+	.internal/context-reads.sh \
 	.internal/worktree.sh \
 	.internal/preflight.sh \
 	config/templates/sandbox.template.sh \
@@ -24,6 +25,7 @@ SHELL_SOURCES = \
 	test/chopi-proxy.sh \
 	test/worktree.sh \
 	test/preflight.sh \
+	test/context-reads.sh \
 	test/integration.sh
 
 test:
@@ -34,6 +36,7 @@ test:
 	@./test/chopi-proxy.sh
 	@./test/worktree.sh
 	@./test/preflight.sh
+	@./test/context-reads.sh
 	@./test/integration.sh
 
 lint:

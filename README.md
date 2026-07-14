@@ -113,6 +113,8 @@ configuration.
    (including `--worktree` mode), `chopi` isolates access to that worktree, which keeps an
    agent from wandering outside its assigned task and picking up irrelevant information
    from another worktree. This undoes safehouse's own default grants to all other worktrees.
+   Read access is also granted to specific allowlisted context files (e.g. `CLAUDE.md`) in
+   folders above the repo.
 
    In addition, `chopi` hardens the repo's git internals: `.git` stays readable, but only
    git's data paths (objects, refs, index, etc.) are writable. Everything else (`config`,
