@@ -150,6 +150,13 @@ configuration.
    also in submodule git dirs); and relocated ref storage (`extensions.refStorage` with a
    URI payload).
 
+   On termination, `chopi` aborts any in-progress sequenced rebase or cherry-pick: resuming
+   one outside of the sandbox could execute rogue `exec` lines injected into the todo list,
+   with no warning in `git status`, and without expecting a rebase to be able to execute
+   code unless that's a feature the user is familiar with. The abort runs inside the sandbox
+   so anything possibly triggered by the cleanup itself stays confined. `chopi` also refuses
+   to start when a sequenced operation is in progress to avoid losing the state on exit.
+
 ### Advanced
 
 To run the proxy against a different rules file, pass `chopi-proxy --rules FILE`. Keep

@@ -18,6 +18,9 @@ git_preflight_sh="$repo/.internal/git-preflight.sh"
 TMPDIR="$(mktemp -d)"; export TMPDIR
 trap 'rm -rf "$TMPDIR"' EXIT
 
+# Isolate git from the developer's config so the fixtures are reproducible.
+isolate_git_config
+
 run_preflight_in_dir() {
     local dir="$1"; shift
     (cd "$dir" && "$git_preflight_sh" "$@" 2>&1)
@@ -200,6 +203,42 @@ out="$(run_preflight_in_dir "$plain" "$repo_with_alternates")"; st=$?
 assert_nonzero "$st" "an unsupported repo passed as DIR is refused (the check runs there, not in the cwd)"
 out="$(run_preflight_in_dir "$repo_with_alternates" "$standard_repo")"; st=$?
 assert_zero "$st" "a supported repo passed as DIR exits zero (whatever the cwd)"
+
+
+# ---------------------------------------------------------------------------
+echo "an in-progress rebase or cherry-pick/revert sequence is refused up front"
+# ---------------------------------------------------------------------------
+repo_rebasing="$TMPDIR/repo_rebasing"; make_repo "$repo_rebasing"
+stop_a_rebase_in "$repo_rebasing"
+assert_eq "$(in_progress "$repo_rebasing")" "rebase" "fixture: a rebase is in progress"
+out="$(run_preflight_in_dir "$repo_rebasing")"; st=$?
+assert_nonzero "$st" "an in-progress rebase is refused"
+assert_contains "$out" "rebase" "  -> naming the operation"
+git -C "$repo_rebasing" rebase --abort >/dev/null 2>&1
+out="$(run_preflight_in_dir "$repo_rebasing")"; st=$?
+assert_zero "$st" "  -> and once it's aborted, the repo passes again"
+
+repo_sequencing="$TMPDIR/repo_sequencing"; make_repo "$repo_sequencing"
+stop_a_cherry_pick_in "$repo_sequencing"
+assert_eq "$(in_progress "$repo_sequencing")" "sequencer" "fixture: a cherry-pick sequence is in progress"
+out="$(run_preflight_in_dir "$repo_sequencing")"; st=$?
+assert_nonzero "$st" "an in-progress cherry-pick sequence is refused"
+assert_contains "$out" "sequence" "  -> naming the operation"
+
+repo_reverting="$TMPDIR/repo_reverting"; make_repo "$repo_reverting"
+stop_a_revert_in "$repo_reverting"
+assert_eq "$(in_progress "$repo_reverting")" "sequencer" "fixture: a revert sequence is in progress"
+out="$(run_preflight_in_dir "$repo_reverting")"; st=$?
+assert_nonzero "$st" "an in-progress revert sequence is refused"
+assert_contains "$out" "sequence" "  -> naming the operation"
+
+stop_a_rebase_in "$repo_with_submod/thesub"
+assert_eq "$(in_progress "$repo_with_submod/thesub")" "rebase" "fixture: a rebase is in progress in the submodule"
+out="$(run_preflight_in_dir "$repo_with_submod")"; st=$?
+assert_nonzero "$st" "an in-progress rebase inside a submodule is refused"
+git -C "$repo_with_submod/thesub" rebase --abort >/dev/null 2>&1
+out="$(run_preflight_in_dir "$repo_with_submod")"; st=$?
+assert_zero "$st" "  -> and with it aborted, the submodule repo passes again"
 
 
 # ---------------------------------------------------------------------------

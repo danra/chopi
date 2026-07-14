@@ -1,23 +1,35 @@
 #!/usr/bin/env bash
 #
 # git-protect-wrapper.sh -- wrap the sandboxed command to perform additional
-# in-sandbox setup supporting chopi's git protections. Currently appends git
-# config entries to the existing GIT_CONFIG_* environment, if any.
+# in-sandbox setup supporting chopi's git protections:
+# - appends git config entries to the existing GIT_CONFIG_* environment, if any.
+# - on exit, aborts any in-progress git rebase/cherry-pick left behind by the command.
 #
-# usage: git-protect-wrapper.sh [key=value ...] -- <executable> [args...]
+# usage: git-protect-wrapper.sh CLEANUP_SCRIPT_PATH [key=value ...] -- <executable> [args...]
 #
-# Not run directly; chopi prepends it to the sandboxed command when its environment
-# is available. Per git rules, a later GIT_CONFIG_* pair for the same key wins an earlier
-# one, so because we *append* ours to the host's, a value here overrides a forwarded host
-# value for the same key.
-#
-# Deliberately self-contained, so the sandbox profile only needs a single additional
-# allow read+exec entry for this specific file.
+# Not run directly; Whenever the run dir is a git worktree root, chopi prepends this
+# wrapper to the sandboxed command, when its environment is available. Per git rules,
+# a later GIT_CONFIG_* pair for the same key wins an earlier one, so because we *append*
+# ours to the host's, a value here overrides a forwarded host value for the same key.
 
 set -euo pipefail
 
+_cleanup_script_path=""
+
+_cleanup() {
+    local rc=$?
+    "$_cleanup_script_path" || true
+    exit "$rc"
+}
+
 main() {
     local prog="git-protect-wrapper"
+    if [ "$#" -eq 0 ] || [ "$1" = "--" ]; then
+        echo "$prog: error: invalid args" >&2
+        return 2
+    fi
+    _cleanup_script_path="$1"; shift
+
     local pairs=()
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -47,7 +59,15 @@ main() {
     done
     export GIT_CONFIG_COUNT="$count"
 
-    exec "$@"
+    # We must outlive the command to run the cleanup -- even if a signal kills the command --
+    # while keeping the command itself interruptible. Trap the signals with a handler (NOT ''),
+    # so on exec the child resets them to their default disposition; bash defers a trapped signal
+    # until the foreground command completes, so the command runs to completion first, then
+    # _cleanup (EXIT trap) runs the cleanup.
+    trap _cleanup EXIT
+    trap 'exit' INT TERM HUP
+    set +e
+    "$@"
 }
 
 main "$@"

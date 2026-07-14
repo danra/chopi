@@ -46,13 +46,18 @@ main() {
     refuse_relocated_ref_storage "$git_common_dir"
     refuse_object_alternates "$git_common_dir"
 
-    # Submodule gitdirs can relocate their own ref storage, and can read objects through
-    # alternates of their own.
+    # An in-progress rebase/sequence would be aborted at teardown (see git-protect-cleanup.sh);
+    # refuse to start on top of one so chopi only ever aborts operations the sandboxed run left.
+    refuse_inflight_sequencing "$run_dir"
+
+    # Submodule gitdirs can relocate their own ref storage, can read objects through alternates
+    # of their own, and can hold their own in-progress sequencing state.
     collect_submodules "$run_dir"
     local i
     for ((i = 0; i < ${#CHOPI_GIT_TARGET_SUB_GITDIRS[@]}; i++)); do
         refuse_relocated_ref_storage "${CHOPI_GIT_TARGET_SUB_GITDIRS[i]}"
         refuse_object_alternates "${CHOPI_GIT_TARGET_SUB_GITDIRS[i]}"
+        refuse_inflight_sequencing "${CHOPI_GIT_TARGET_SUB_MAIN_WORKTREES[i]}"
     done
 }
 

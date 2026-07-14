@@ -68,6 +68,56 @@ refuse_relocated_ref_storage() {
     return 1
 }
 
+# Report the exec-capable git sequencing operation in progress in worktree $1, if any:
+# prints 'rebase' or 'sequencer' (a cherry-pick/revert sequence), else nothing.
+#
+# The apply/`git am` backend and a single (non-sequence) cherry-pick/revert have no `exec`
+# support, so they are deliberately not reported.
+inflight_exec_sequencing() {
+    arity 1
+    local worktree="$1"
+    (
+        cd "$worktree" || exit 0
+        local marker
+        if marker="$(git rev-parse --git-path rebase-merge 2>/dev/null)" && [ -d "$marker" ]; then
+            printf 'rebase'; exit 0
+        fi
+        if marker="$(git rev-parse --git-path sequencer 2>/dev/null)" && [ -d "$marker" ]; then
+            printf 'sequencer'; exit 0
+        fi
+    )
+}
+
+# Map an operation token from inflight_exec_sequencing ('rebase'|'sequencer') to the human
+# phrase used in the refuse/abort messages, so the two callers state it identically.
+sequencing_phrase() {
+    arity 1
+    case "$1" in
+        rebase) printf 'rebase' ;;
+        *)      printf 'cherry-pick/revert sequence' ;;
+    esac
+}
+
+# Refuse to start when worktree $1 already has an exec-capable sequencing op in progress.
+# Chopi aborts such an op when it exits, so refusing up front guarantees it never aborts
+# one the developer began outside chopi.
+refuse_inflight_sequencing() {
+    arity 1
+    local worktree="$1" op
+    op="$(inflight_exec_sequencing "$worktree")"
+    [ -n "$op" ] || return 0
+    local phrase
+    phrase="$(sequencing_phrase "$op")"
+    {
+        echo "error: refusing to run: a git $phrase is already in progress in:"
+        echo "           $worktree"
+        echo "chopi aborts an in-progress rebase or cherry-pick/revert sequence when it exits, because a"
+        echo "sandboxed command can plant 'exec' lines in it that would then run unsandboxed if the sequence"
+        echo "is --continued. Finish or abort it before running chopi."
+    } >&2
+    return 1
+}
+
 # True iff $1 (a physical path, as from `pwd -P`) is the root of a git worktree.
 is_worktree_root() {
     arity 1

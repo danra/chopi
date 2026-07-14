@@ -13,6 +13,7 @@ SHELL_SOURCES = \
 	.internal/git-isolate.sh \
 	.internal/git-harden.sh \
 	.internal/git-protect.sh \
+	.internal/git-protect-cleanup.sh \
 	.internal/context-reads.sh \
 	.internal/worktree.sh \
 	.internal/preflight.sh \
@@ -20,6 +21,7 @@ SHELL_SOURCES = \
 	test/lib.sh \
 	test/git-protect-wrapper.sh \
 	test/git-preflight.sh \
+	test/git-protect-cleanup.sh \
 	test/git-isolate.sh \
 	test/git-harden.sh \
 	test/chopi-proxy.sh \
@@ -31,6 +33,7 @@ SHELL_SOURCES = \
 test:
 	@./test/git-protect-wrapper.sh
 	@./test/git-preflight.sh
+	@./test/git-protect-cleanup.sh
 	@./test/git-isolate.sh
 	@./test/git-harden.sh
 	@./test/chopi-proxy.sh

@@ -286,8 +286,15 @@ EOF
     assert_contains "$out" "$CHOPI_GIT_PROTECT_WRAPPER_PREFIX"  "  -> the git-protect wrapper profile is created for the run"
     assert_contains "$out" "$CHOPI_CMD_ALIAS_PREFIX"            "  -> as is the command-alias dir"
 
-    out="$(chopi_wrap /bin/sh -c "cat '$repo/.internal/util.sh' >/dev/null 2>&1 && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
-    assert_eq "$out" "READ_FAIL"                            "  -> the git-protect wrapper does not open the rest of chopi's dir"
+    # The wrapper profile opens the wrapper, the cleanup script, and the libs it sources
+    # (git-layout.sh -> util.sh) for reading only, and nothing else in chopi's dir.
+    for f in git-protect-wrapper.sh git-protect-cleanup.sh git-layout.sh util.sh; do
+        out="$(chopi_wrap /bin/sh -c "cat '$repo/.internal/$f' >/dev/null 2>&1 && echo READ_OK || echo READ_FAIL; echo x >> '$repo/.internal/$f' 2>/dev/null && echo WRITE_OK || echo WRITE_FAIL" 2>/dev/null)"
+        assert_contains     "$out" "READ_OK"   "  -> the git-protect wrapper opens $f"
+        assert_not_contains "$out" "WRITE_OK"  "  -> and only for reading: $f is not writable"
+    done
+    out="$(chopi_wrap /bin/sh -c "cat '$repo/.internal/preflight.sh' >/dev/null 2>&1 && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+    assert_eq "$out" "READ_FAIL"                            "  -> but not the rest of chopi's dir"
 
     # safehouse appends profiles based on the invoked command's BASENAME. chopi runs the
     # sandboxed command through the git-protect wrapper (which is argv[0]), so it must present the

@@ -119,6 +119,65 @@ make_repo() {
     git -C "$dir" commit -q --allow-empty -m init
 }
 
+# in_progress DIR -- print the exec-capable op git sees in worktree DIR ('rebase'|'sequencer'),
+# else nothing. Kept independent of the production inflight_exec_sequencing it mirrors, so tests
+# don't lean on the code they exercise.
+in_progress() {
+    arity 1
+    ( cd "$1" || exit 0
+      [ -d "$(git rev-parse --git-path rebase-merge)" ] && { printf 'rebase'; exit 0; }
+      [ -d "$(git rev-parse --git-path sequencer)" ]    && { printf 'sequencer'; exit 0; }
+      exit 0 )
+}
+
+# isolate_git_config -- ignore the developer's global/system git config so the real-git fixtures
+# (stop_a_rebase_in and friends) build the same state everywhere: it pins the default rebase
+# backend so a stopped rebase lands in rebase-merge (what the code under test detects), and keeps
+# rerere / merge drivers from auto-resolving the conflict the fixture needs to pause on. Opt-in,
+# not global: other suites keep the developer's config (e.g. init.defaultBranch) that they assume.
+isolate_git_config() {
+    arity 0
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0
+}
+
+# stop_a_rebase_in DIR -- leave worktree DIR paused mid-rebase on a conflict. Needs a repo with
+# at least one commit; builds two branches whose same-region edits collide on rebase.
+stop_a_rebase_in() {
+    arity 1
+    local dir="$1"
+    git -C "$dir" checkout -q -b _sideA
+    printf 'base\n' > "$dir/_c.txt"; git -C "$dir" add _c.txt; git -C "$dir" commit -qm _cbase
+    printf 'A\n'    >> "$dir/_c.txt"; git -C "$dir" commit -qam _ca
+    git -C "$dir" checkout -q -b _sideB HEAD~1
+    printf 'B\n'    >> "$dir/_c.txt"; git -C "$dir" commit -qam _cb
+    git -C "$dir" rebase _sideA >/dev/null 2>&1
+}
+
+# stop_a_cherry_pick_in DIR -- leave worktree DIR paused mid cherry-pick sequence on a conflict.
+stop_a_cherry_pick_in() {
+    arity 1
+    local dir="$1"
+    git -C "$dir" checkout -q -b _base
+    printf 'base\n'   > "$dir/_q.txt"; git -C "$dir" add _q.txt; git -C "$dir" commit -qm _qbase
+    git -C "$dir" checkout -q -b _topic
+    printf 'topicA\n' >> "$dir/_q.txt"; git -C "$dir" commit -qam _tA
+    printf 'z\n'       > "$dir/_z.txt"; git -C "$dir" add _z.txt; git -C "$dir" commit -qam _tB
+    git -C "$dir" checkout -q _base
+    printf 'baseX\n'  >> "$dir/_q.txt"; git -C "$dir" commit -qam _bx
+    git -C "$dir" cherry-pick _topic~1 _topic >/dev/null 2>&1
+}
+
+# stop_a_revert_in DIR -- leave worktree DIR paused mid revert sequence on a conflict. Reverting
+# the file's creation collides with its later edit, and two args make it a `sequencer` sequence.
+stop_a_revert_in() {
+    arity 1
+    local dir="$1"
+    git -C "$dir" checkout -q -b _revbranch
+    printf 'A\n' > "$dir/_v.txt"; git -C "$dir" add _v.txt; git -C "$dir" commit -qm _rA
+    printf 'B\n' > "$dir/_v.txt"; git -C "$dir" commit -qam _rB
+    git -C "$dir" revert --no-edit HEAD~1 HEAD >/dev/null 2>&1
+}
+
 # Print the N'th (1-based) NUL-terminated record from stdin; prints nothing when there
 # are fewer records. Reads stdin to the end and always exits zero.
 nul_record() {

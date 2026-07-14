@@ -28,7 +28,31 @@ usage="usage: chopi [--config FILE] [--verbose] [--worktree NAME] <executable> [
 CHOPI_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/chopi.XXXXXX")" \
     || { echo "chopi: could not create a temp dir for the run" >&2; exit 1; }
 export TMPDIR="$CHOPI_TMPDIR"
-trap 'rm -rf "$CHOPI_TMPDIR"' EXIT
+
+chopi_torn_down=""
+
+# On exit (normal or forced), remove the run's temp dir. The in-progress rebase/cherry-pick
+# cleanup runs earlier and INSIDE the sandbox -- git-protect-wrapper.sh runs it as its
+# CLEANUP_SCRIPT_PATH so anything it triggers stays confined -- so by the time we get here the
+# sandboxed run, cleanup and all, is already done.
+chopi_teardown() {
+    [ -n "$chopi_torn_down" ] && return 0
+    chopi_torn_down=1
+    rm -rf "$CHOPI_TMPDIR"
+}
+
+# On a signal, tear down then re-raise it under the default handler so chopi exits with the
+# conventional signal status. The EXIT trap fires too, but chopi_teardown runs only once.
+chopi_on_signal() {
+    chopi_teardown
+    trap - "$1"
+    kill -"$1" "$$"
+}
+
+trap chopi_teardown EXIT
+trap 'chopi_on_signal INT'  INT
+trap 'chopi_on_signal TERM' TERM
+trap 'chopi_on_signal HUP'  HUP
 
 main() {
     local config="$CHOPI_DIR/config/sandbox.sh"
@@ -143,13 +167,21 @@ main() {
         cmd_alias="$cmd_alias_dir/$(basename -- "$command")"
         ln -s "$wrapper_path" "$cmd_alias" \
             || { echo "chopi: could not create the command-alias symlink" >&2; return 1; }
-        wrapper_cmd=("$cmd_alias" "${CHOPI_GIT_CONFIG[@]+"${CHOPI_GIT_CONFIG[@]}"}" --)
+        local cleanup_script_path="$CHOPI_DIR/.internal/git-protect-cleanup.sh"
+        wrapper_cmd=("$cmd_alias" "$cleanup_script_path")
+        wrapper_cmd+=("${CHOPI_GIT_CONFIG[@]+"${CHOPI_GIT_CONFIG[@]}"}" --)
         local wrapper_profile
         wrapper_profile="$(mktemp "$TMPDIR/${CHOPI_GIT_PROTECT_WRAPPER_PREFIX}XXXXXX")" \
             || { echo "chopi: could not create a temp file for the git-protect wrapper profile" >&2; return 1; }
         {
             echo ";; chopi: the git-protect wrapper is read and executed in the sandbox."
             rule 'allow file-read* process-exec*' literal "$wrapper_path"
+            # The wrapper runs the cleanup script in-sandbox; allow reading+running it and the
+            # libs it sources.
+            echo ";; chopi: the in-sandbox teardown cleanup and the libs it sources."
+            rule 'allow file-read* process-exec*' literal "$cleanup_script_path"
+            rule 'allow file-read*'               literal "$CHOPI_DIR/.internal/git-layout.sh"
+            rule 'allow file-read*'               literal "$CHOPI_DIR/.internal/util.sh"
         } > "$wrapper_profile"
         wrapper_flags=(--append-profile "$wrapper_profile")
     elif [ -n "$worktree_given" ]; then
