@@ -1,0 +1,52 @@
+	# The GitHub relay public repos fragment: public fetch and LFS download for any repo,
+	# no credential attached. Followed by deny paths.
+	#
+	# DENY_PKT_{FETCH,PUSH} below provide clear error messages instead of unscrutable ones
+	# in case of errors.
+
+	# any other repo: fetch and Git-LFS download only
+	@pub_refs {
+		method GET
+		path_regexp ^/[^/]+/[^/]+/info/refs$
+		query service=git-upload-pack
+	}
+	@pub_post {
+		method POST
+		path_regexp ^/[^/]+/[^/]+/(git-upload-pack|info/lfs/objects/batch)$
+	}
+	handle @pub_refs {
+		import redirecting_ghproxy {
+			# GitHub 401s anonymous ref discovery of private and nonexistent repos alike
+			@unauth status 401
+			handle_response @unauth {
+				header Content-Type application/x-git-upload-pack-advertisement
+				respond <<PKT
+@@DENY_PKT_FETCH@@
+PKT 200
+			}
+		}
+	}
+	handle @pub_post {
+		# No redirect rewrite: git only follows redirects on the initial info/refs request, never
+		# on these POSTs.
+		import ghproxy
+	}
+
+	# push did not take the allowed route: the repo is not allowlisted
+	@push_refs {
+		method GET
+		path_regexp ^/[^/]+/[^/]+/info/refs$
+		query service=git-receive-pack
+	}
+	handle @push_refs {
+		header Content-Type application/x-git-receive-pack-advertisement
+		respond <<PKT
+@@DENY_PKT_PUSH@@
+PKT 200
+	}
+
+	handle {
+		respond "chopi GitHub relay: not an allowed git operation" 403
+	}
+}
+# GitHub relay end

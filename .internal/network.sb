@@ -10,13 +10,14 @@
 ;; lone (deny network*) leaves those holes wide open. (This silently failed open
 ;; when safehouse 0.11.0 changed its network module from an unfiltered
 ;; (allow network*) to filtered allows.) To actually close the holes we mirror
-;; safehouse's filter shapes with denies, then re-open only the proxy. Among
-;; matching filtered rules the last one wins, so the trailing localhost:4760 allow
-;; beats the (remote ip) deny for that single address.
+;; safehouse's filter shapes with denies, then re-open only the loopback proxies.
+;; Among matching filtered rules the last one wins, so the trailing per-port
+;; localhost allows beat the (remote ip) blanket denies.
 
 (deny network*)                                       ;; default: deny every network op
 (deny network-outbound (remote ip))                   ;; beat safehouse's outbound-to-any-ip allow
 (deny network-outbound (subpath "/"))                 ;;   ...incl. unix sockets (e.g. DNS via mDNSResponder)
 (deny network-bind     (local ip))                    ;; beat safehouse's bind allow -> no listening sockets
 (deny network-inbound  (local ip))                    ;; beat safehouse's inbound allow -> no incoming connections
-(allow network-outbound (remote ip "localhost:4760")) ;; the only hole: the smokescreen proxy
+(allow network-outbound (remote ip "localhost:4760")) ;; hole: the smokescreen forward proxy
+(allow network-outbound (remote ip "localhost:4761")) ;; hole: the GitHub relay

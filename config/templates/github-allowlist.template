@@ -1,0 +1,15 @@
+# chopi GitHub allowlist
+#
+# Injects the host's GitHub token ONLY for entries matching the allowlist.
+# git-pushing to any repo requires a matching entry, and so does any access to a private repo.
+#
+# Fetching/cloning any PUBLIC repo works regardless of this list.
+#
+# One entry per line, naming a repository on github.com (the "github.com/" prefix is implicit),
+# in one of two forms:
+#   owner/*      -- any repository under that owner or org
+#   owner/repo   -- exactly that repository
+#
+# Examples (uncomment / edit):
+# owner/*
+# owner/repo

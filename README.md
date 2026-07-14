@@ -1,17 +1,19 @@
 # Chopi 🐶
 
-Run an agent or any other command under a macOS sandbox that confines 
-**filesystem** access and restricts outgoing **network** connections to an
-explicit hosts allowlist.
+Run an agent or any other command under a macOS sandbox that:
+- Confines filesystem access
+- Restricts outgoing network connections to an explicit hosts allowlist
+- Restricts git pushes to a repos allowlist (currently GitHub only)
+- Hardens git internals
 
 This is **not** a container- or VM-based solution. Chopi runs the command
 directly on your own machine with your real tools and environment, using
-the OS's native sandboxing and an outbound network proxy to put guardrails
+the OS's native sandboxing and additional network proxies to put guardrails
 around it.
 
 Chopi uses [**Agent Safehouse**](https://github.com/eugene1g/agent-safehouse) for building
-most of the underlying macOS Seatbelt policy, and [**smokescreen**](https://github.com/stripe/smokescreen),
-for the proxy.
+most of the underlying macOS Seatbelt policy, [**smokescreen**](https://github.com/stripe/smokescreen),
+for its CONNECT proxy, and [**Caddy**](https://github.com/caddyserver/caddy) for its GitHub reverse proxy.
 
 
 ## Install
@@ -31,6 +33,8 @@ To add or remove allowed domains, edit `config/proxy-rules.yaml`. You can also m
 of known denied domains that don't generate alerts -- important for keeping blocked telemetry,
 auto-updates etc. from spamming you with notifications. You can add and remove domains while
 the proxy is running and they'll take effect immediately.
+
+To set the GitHub repos allowlist, edit `config/github-allowlist`.
 
 To configure the sandbox policy, edit the first two settings in `config/sandbox.sh` (other
 settings can be reviewed later):
@@ -178,20 +182,31 @@ run under it can't read or tamper with the sandbox's own config. `chopi` enforce
 this, refusing to run when it finds its own folder in the workspace (and also in 
 the more obscure case where the workspace is within `chopi`'s own folder).
 
-## Why two layers
+## Why a sandbox isn't enough
 
 macOS Seatbelt (`sandbox-exec`) can confine the filesystem and pin outgoing network
 connections to an IP/port, but it **cannot** filter by hostname; its network rules only
-understand `localhost`/IP. Host-based filtering is therefore split across two cooperating
-layers:
+understand `localhost`/IP. It obviously can't filter by repo, either. Filtering is
+therefore split across cooperating layers:
 
 | Layer | Tool | Enforces |
 |-------|------|----------|
-| Sandbox | [`safehouse`](https://github.com/eugene1g/agent-safehouse) (wraps `sandbox-exec`) | Filesystem and preset features; the only outgoing network traffic permitted is to the local proxy at `127.0.0.1:4760`. |
-| Outgoing proxy | [`smokescreen`](https://github.com/stripe/smokescreen) | Of the traffic that reaches it, only connections to allowed hosts are forwarded; everything else is refused and logged. |
+| Sandbox | [`safehouse`](https://github.com/eugene1g/agent-safehouse) (wraps `sandbox-exec`) | Filesystem and preset features; the only outgoing network permitted is to the local proxies at `127.0.0.1:4760` (smokescreen) and `:4761` (the GitHub relay). |
+| Domain-level proxy | [`smokescreen`](https://github.com/stripe/smokescreen) (CONNECT proxy) | Of the traffic that reaches it, only connections to allowed hosts are forwarded; everything else is refused and logged. |
+| GitHub repo-level proxy | [`caddy`](https://caddyserver.com) (reverse proxy) | `github.com` git is reached *only* through this relay, which scopes it to a repo allowlist: fetching a **public** repo is unrestricted, but reading a **private** repo and **any push** are limited to allowlisted repos. |
 
-Neither layer is sufficient alone: the sandbox makes the proxy the *only* way out,
-and the proxy is what actually enforces the hostname rules.
+**The sandbox** makes the proxies the *only* way to communicate over the network.
+
+**The domain-level proxy** allows communication only with trusted hosts, so a rogue
+agent can't connect anywhere else to exfiltrate user data. Be careful not to add
+innocent domains that can still be abused by an attacker for exfiltration! (e.g.
+pastebin.com)
+
+**The repo-level proxy** exists to prevent a misbehaving agent pushing stolen code to
+*any* repo on GitHub (possibly using an attacker-provided token). Currently, this
+protection layer only supports GitHub; other repo-hosting domains can be allowlisted by
+domain, but be aware of the exfiltration risk. `gh` and GitHub's API are still
+unsupported.
 
 The sandboxed agent must route its traffic through the proxy, i.e., respect
 `HTTP_PROXY`/`HTTPS_PROXY`). The sandbox blocks all other outgoing traffic, so an agent that
@@ -204,11 +219,11 @@ Network path of the sandboxed command:
 
 ```
 <cmd>
-  │  Seatbelt allows outgoing connections ONLY to 127.0.0.1:4760
-  ▼
-smokescreen ──(host allowed?)──────▶  api.anthropic.com / api.github.com / downloads.claude.ai
-  │
-  └────────(not allowed)───────────▶  refused + logged
+  │  Seatbelt allows outgoing connections ONLY to 127.0.0.1:{4760,4761}
+  ├─ github.com (git) ─── 4761 ────▶ caddy relay ─(repo allowlisted?)─▶ GitHub
+  │                                   └─ public fetch: any repo · private fetch or push: allowlisted only
+  └─ everything else ──── 4760 ────▶ smokescreen ─(host allowed?)─▶ api.anthropic.com / ...
+                                          └────(not allowed)────▶ refused + logged
 ```
 
 

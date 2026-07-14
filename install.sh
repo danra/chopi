@@ -18,6 +18,12 @@ SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
 
 . "$SCRIPT_DIR/.internal/util.sh"
 
+if busy_port="$(first_listening_port "$PROXY_PORT" "$GITHUB_RELAY_PORT")"; then
+    echo "error: chopi-proxy (or something else) is currently running and listening on port $busy_port." >&2
+    echo "Shut it down, then re-run this script." >&2
+    exit 1
+fi
+
 
 # ----------------------------------------------------------------------------
 # Dependencies
@@ -46,6 +52,7 @@ ensure_brew go        go
 ensure_brew jq        jq
 ensure_brew alerter   vjeantet/tap/alerter
 ensure_brew safehouse eugene1g/safehouse/agent-safehouse
+ensure_brew caddy     caddy
 
 # A brew install in this same run may have added go to a bin dir that bash has
 # already cached as "not found"; clear the cache before relying on `go` below.
@@ -80,6 +87,7 @@ ensure_copy() {
 }
 
 ensure_copy config/templates/proxy-rules.template.yaml config/proxy-rules.yaml
+ensure_copy config/templates/github-allowlist.template config/github-allowlist
 ensure_copy config/templates/sandbox.template.sh           config/sandbox.sh
 
 
@@ -141,6 +149,7 @@ echo "==> Done."
 echo ""
 echo "Before first use, review your local setup:"
 echo "  * the proxy rules            ($CHOPI_DIR/config/proxy-rules.yaml)"
+echo "  * the GitHub allowlist       ($CHOPI_DIR/config/github-allowlist)"
 echo "  * the sandbox configuration  ($CHOPI_DIR/config/sandbox.sh)"
 echo ""
 echo "To use it:"

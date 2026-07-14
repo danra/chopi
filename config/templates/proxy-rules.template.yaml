@@ -15,12 +15,16 @@ default:
     - platform.claude.com
     - downloads.claude.ai
 
-    - github.com
-    - api.github.com
+    # *INTENTIONALLY NOT ALLOWED* to prevent trivial exfiltration
+    # - github.com
+    # - api.github.com
+
     - raw.githubusercontent.com
     # Images are stored here: Looks random, but this same random-looking identifier is what currently comes up in other reports
     # when googling github-production-user-asset
     - github-production-user-asset-6210df.s3.amazonaws.com
+    # Git-LFS CDN
+    - github-cloud.githubusercontent.com
 
     - pypi.org
 
@@ -30,3 +34,6 @@ default:
 global_deny_list:
     # Claude Code telemetry destination
     - "*.datadoghq.com"
+    # github.com is reachable only for git, and only via the GitHub relay we run for it
+    - github.com
+    - api.github.com

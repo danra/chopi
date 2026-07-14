@@ -1,0 +1,35 @@
+	# The GitHub relay allowed repos fragment: requests matching the compiled allowlist regex are
+	# proxied with the injected GitHub token.
+	#
+	# DENY_PKT_AUTH_{FETCH,PUSH} below provide clear error messages instead of unscrutable ones
+	# in case of errors.
+
+	# allowlisted repos: fetch, push, and the Git-LFS API
+	@allowed path_regexp ^/(@@ALLOWLIST_REGEX@@)/(info/refs|git-upload-pack|git-receive-pack|info/lfs/.*)$
+	handle @allowed {
+		import redirecting_ghproxy {
+			header_up Authorization "@@CHOPI_AUTH@@"
+			# a 401 here means GitHub rejected the token.
+			@unauth status 401
+			handle_response @unauth {
+				@fetch query service=git-upload-pack
+				handle @fetch {
+					header Content-Type application/x-git-upload-pack-advertisement
+					respond <<PKT
+@@DENY_PKT_AUTH_FETCH@@
+PKT 200
+				}
+				@push query service=git-receive-pack
+				handle @push {
+					header Content-Type application/x-git-receive-pack-advertisement
+					respond <<PKT
+@@DENY_PKT_AUTH_PUSH@@
+PKT 200
+				}
+				handle {
+					copy_response_headers
+					copy_response
+				}
+			}
+		}
+	}

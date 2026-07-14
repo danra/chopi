@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # test/git-protect-wrapper.sh -- unit tests for the in-sandbox git-protect wrapper: its
-# git-config appending and its run-the-command-then-cleanup teardown.
+# git-config appending, its GitHub->relay reroute gate, and its run-the-command-then-cleanup
+# teardown.
 
 # shellcheck disable=SC2016  # GIT_CONFIG_* vars expand in the shell the wrapper execs, not in this script
 
@@ -13,11 +14,30 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
 header "test/git-protect-wrapper.sh -- unit tests for the git-protect wrapper"
 
+if ! command -v git >/dev/null 2>&1; then
+    bad "git-protect-wrapper tests need git on PATH"
+    summary
+    exit
+fi
+
 WRAP="$repo/.internal/git-protect-wrapper.sh"
 
 # Exported so the scripts under test leave their temporaries here too.
 TMPDIR="$(mktemp -d)"; export TMPDIR
 trap 'rm -rf "$TMPDIR"' EXIT
+
+# The wrapper gates every run on the GitHub->relay reroute being effective under the ambient git
+# config. For the config test cases, neutralize the developer's config and satisfy the gate by using
+# a global config and running from a clean dir.
+# The gate test cases later override GIT_CONFIG_GLOBAL, so the config setup here doesn't affect them.
+export GIT_CONFIG_SYSTEM=/dev/null
+relay="http://127.0.0.1:$GITHUB_RELAY_PORT"
+relay_global_config="$TMPDIR/relay-global.gitconfig"
+while IFS= read -r pair; do
+    git config --file "$relay_global_config" --add "${pair%%=*}" "${pair#*=}"
+done < <(github_relay_git_config)
+export GIT_CONFIG_GLOBAL="$relay_global_config"
+cd "$TMPDIR"
 
 # The wrapper requires a CLEANUP_SCRIPT_PATH first argument and runs it on every exit path. Most
 # cases don't care what it does, so use a stub that just records that it ran (to a file, so it
@@ -66,15 +86,11 @@ assert_eq "$out" "2|user.key=uservalue|gc.auto=0" \
 # The precedence the merge relies on is git's, not the wrapper's: for a single-valued key,
 # git gives the LATER index the last word, so an appended pair overrides a same-key entry
 # already in the environment.
-if command -v git >/dev/null 2>&1; then
-    tmp="$(mktemp -d)"
-    git init -q "$tmp/r"
-    out="$(cd "$tmp/r" && env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=chopi.t GIT_CONFIG_VALUE_0=preexisting \
-        "$WRAP" "$cleanup_script" chopi.t=appended -- git config chopi.t)"
-    assert_eq "$out" "appended" "git resolves a conflicting single-valued key to the APPENDED entry"
-else
-    bad "git-precedence check needs git on PATH"
-fi
+tmp="$(mktemp -d)"
+git init -q "$tmp/r"
+out="$(cd "$tmp/r" && env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=chopi.t GIT_CONFIG_VALUE_0=preexisting \
+    "$WRAP" "$cleanup_script" chopi.t=appended -- git config chopi.t)"
+assert_eq "$out" "appended" "git resolves a conflicting single-valued key to the APPENDED entry"
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +126,34 @@ assert_eq "$(cat "$cleanup_marker")" "CLEANUP" "  -> and the cleanup runs despit
 : > "$cleanup_marker"
 rc=0; scrubbed "$WRAP" "$cleanup_script" -- /bin/sh -c 'kill -INT $PPID; kill -INT $$; sleep 1' || rc=$?
 assert_eq "$(cat "$cleanup_marker")" "CLEANUP" "the wrapper survives its own SIGINT and still runs the cleanup"
+
+
+# ---------------------------------------------------------------------------
+echo "the run is gated on the GitHub->relay reroute being effective"
+# ---------------------------------------------------------------------------
+relay_pairs=()
+while IFS= read -r pair; do relay_pairs+=("$pair"); done < <(github_relay_git_config)
+empty_global="$TMPDIR/empty.gitconfig"; : > "$empty_global"
+
+out=""; rc=0
+out="$(env -u GIT_CONFIG_COUNT GIT_CONFIG_GLOBAL="$empty_global" \
+    "$WRAP" "$cleanup_script" "${relay_pairs[@]}" -- git ls-remote --get-url https://github.com/o/r)" || rc=$?
+assert_eq "$rc" "0"           "chopi's rewrites, passed as pairs, satisfy the gate"
+assert_eq "$out" "$relay/o/r" "  -> and the command itself sees github rerouted to the relay"
+
+# A competing insteadOf of the same prefix in an earlier-read scope (here: global) wins the
+# longest-prefix tie against the appended command-scope rewrite, so github git would leave the
+# relay -- the wrapper must refuse without running the command.
+competing_global="$TMPDIR/competing.gitconfig"
+printf '[url "git@github.com:"]\n\tinsteadOf = https://github.com/\n' > "$competing_global"
+: > "$cleanup_marker"
+out=""; rc=0
+out="$(env -u GIT_CONFIG_COUNT GIT_CONFIG_GLOBAL="$competing_global" \
+    "$WRAP" "$cleanup_script" "${relay_pairs[@]}" -- /bin/sh -c 'echo RAN' 2>&1)" || rc=$?
+assert_contains     "$out" "overrides chopi's GitHub relay routing" "a competing insteadOf that overrides the reroute is refused"
+assert_not_contains "$out" "RAN"                                    "  -> and the command does not run"
+if [ "$rc" -ne 0 ]; then ok "  -> and exits non-zero"; else bad "  -> should exit non-zero (got $rc)"; fi
+assert_eq "$(cat "$cleanup_marker")" "" "  -> the cleanup is not run (no command ran)"
 
 
 # ---------------------------------------------------------------------------

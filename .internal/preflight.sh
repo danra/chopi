@@ -11,6 +11,9 @@
 #   * preflight_config_placement -- deferred until chopi has resolved the workspace (the
 #                                   --worktree target), since that is the dir a custom
 #                                   --config must stay outside of.
+#   * preflight_github_relay     -- deferred until chopi knows the run dir is a git worktree
+#                                   root, the only case that routes GitHub git through the
+#                                   relay.
 
 _preflight_dir="$(dirname "${BASH_SOURCE[0]}")"
 . "$_preflight_dir/util.sh"
@@ -27,6 +30,24 @@ refuse_or_warn() {
     else
         echo "error: $reason;" >&2
         echo "       $detail." >&2
+        echo "$hint" >&2
+        return 1
+    fi
+}
+
+# check_listener -- confirm something is listening on 127.0.0.1:PORT, else print an error naming
+# WHAT (e.g. "no outgoing proxy") and HINT, then fail. Liveness only: it confirms something is
+# listening, not that it's ours. We deliberately don't verify the listener's identity because no
+# purely-local check can: hijacking the port takes separate local code execution (the sandboxed
+# command itself can't bind it), and a same-user attacker who can do that can equally run
+# smokescreen/chopi-proxy or forge any pidfile or token we'd check -- same-user processes have equal
+# OS authority. An identity check would add cost and a false sense of security without changing what
+# such an attacker must do.
+check_listener() {
+    arity 3
+    local port="$1" what="$2" hint="$3"
+    if ! port_has_listener "$port"; then
+        echo "error: $what on 127.0.0.1:$port" >&2
         echo "$hint" >&2
         return 1
     fi
@@ -56,19 +77,8 @@ preflight_initial() {
     # The outgoing proxy must already be running in its own terminal. We deliberately
     # don't start it here, so it stays in the foreground where you can watch refused
     # connections and stop it to edit the list of allowed domains.
-    #
-    # This is a liveness check only -- it confirms something is listening, not that it's
-    # our smokescreen. We deliberately don't verify the listener's identity because no
-    # purely-local check can: hijacking the port takes separate local code execution (the
-    # sandboxed command itself can't bind it), and a same-user attacker who can do that can
-    # equally run smokescreen/chopi-proxy or forge any pidfile or token we'd check -- same-user
-    # processes have equal OS authority. An identity check would add cost and a false sense of
-    # security without changing what such an attacker must do.
-    if ! nc -z 127.0.0.1 "$PROXY_PORT" 2>/dev/null; then
-        echo "error: no outgoing proxy on 127.0.0.1:$PROXY_PORT" >&2
-        echo "Start it first in a separate terminal:  chopi-proxy" >&2
-        return 1
-    fi
+    check_listener "$PROXY_PORT" "no outgoing proxy" \
+        "Start it first in a separate terminal:  chopi-proxy" || return 1
 
     # Agent Safehouse builds the sandbox policy and execs the command inside it, so
     # it's a per-run dependency. Fail fast with a pointer rather than a bare
@@ -100,4 +110,10 @@ preflight_config_placement() {
             "Keep the sandbox config outside the workspace you're sandboxing." \
             || return 1
     fi
+}
+
+preflight_github_relay() {
+    arity 0
+    check_listener "$GITHUB_RELAY_PORT" "no GitHub relay" \
+        "It runs alongside the outgoing proxy; (re)start both in a separate terminal:  chopi-proxy"
 }

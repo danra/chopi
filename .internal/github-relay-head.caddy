@@ -1,0 +1,44 @@
+# GitHub relay caddyfile head fragment
+{
+	admin off
+	auto_https off
+	persist_config off
+}
+
+# Allowlisted git headers
+(githdrs) {
+	header_up Content-Type {http.request.header.Content-Type}
+	header_up Content-Encoding {content_encoding}
+	header_up Accept {http.request.header.Accept}
+	header_up Git-Protocol {http.request.header.Git-Protocol}
+	header_up User-Agent {http.request.header.User-Agent}
+}
+
+# Proxy to GitHub: wipe all inbound headers, re-add only the allowlisted git set. Routes add
+# their extra header lines via the import block.
+(ghproxy) {
+	reverse_proxy https://github.com {
+		header_up -*
+		header_up Host github.com
+		import githdrs
+		flush_interval -1
+		{block}
+	}
+}
+
+# ghproxy, plus rewriting GitHub redirects (e.g. renamed repos) back through the relay.
+(redirecting_ghproxy) {
+	import ghproxy {
+		header_down Location "^https://github\.com/(.*)$" "http://127.0.0.1:@@GITPORT@@/$1"
+		{block}
+	}
+}
+
+# GitHub relay start
+http://127.0.0.1:@@GITPORT@@ {
+	map {http.request.header.Content-Encoding} {content_encoding} {
+		gzip gzip
+		default identity
+	}
+
+	# ... Followed by caddyfile fragments for allowed and pub routes

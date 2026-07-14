@@ -171,6 +171,14 @@ main() {
         cmd_alias="$cmd_alias_dir/$(basename -- "$command")"
         ln -s "$wrapper_path" "$cmd_alias" \
             || { echo "chopi: could not create the command-alias symlink" >&2; return 1; }
+
+        # Route GitHub git traffic to the GitHub relay.
+        preflight_github_relay || return $?
+        local relay_pair
+        while IFS= read -r relay_pair; do
+            CHOPI_GIT_CONFIG+=("$relay_pair")
+        done < <(github_relay_git_config)
+
         local cleanup_script_path="$CHOPI_DIR/.internal/git-protect-cleanup.sh"
         wrapper_cmd=("$cmd_alias" "$cleanup_script_path")
         wrapper_cmd+=("${CHOPI_GIT_CONFIG[@]+"${CHOPI_GIT_CONFIG[@]}"}" --)
@@ -180,13 +188,11 @@ main() {
         {
             echo ";; chopi: the git-protect wrapper is read and executed in the sandbox."
             rule 'allow file-read* process-exec*' literal "$wrapper_path"
-            # The wrapper runs the cleanup script in-sandbox; allow reading+running it and the
-            # libs it sources.
-            echo ";; chopi: the in-sandbox teardown cleanup and the libs it sources."
+            echo ";; chopi: the in-sandbox teardown cleanup and the libs it and the wrapper source."
             rule 'allow file-read* process-exec*' literal "$cleanup_script_path"
             rule 'allow file-read*'               literal "$CHOPI_DIR/.internal/git-layout.sh"
             rule 'allow file-read*'               literal "$CHOPI_DIR/.internal/util.sh"
-            echo ";; chopi: stat-only on chopi's dir chain for in-sandbox cleanup's CHOPI_DIR resolution."
+            echo ";; chopi: stat-only on chopi's dir chain for in-sandbox CHOPI_DIR resolution."
             local ancestor="$CHOPI_DIR/.internal"
             while :; do
                 rule 'allow file-read-metadata' literal "$ancestor"
@@ -227,6 +233,8 @@ main() {
         HTTP_PROXY="$proxy"  HTTPS_PROXY="$proxy" \
         http_proxy="$proxy"  https_proxy="$proxy" \
         NODE_USE_ENV_PROXY=1 \
+        NO_PROXY="127.0.0.1"  no_proxy="127.0.0.1" \
+        GIT_TERMINAL_PROMPT=0 \
         "${wrapper_cmd[@]+"${wrapper_cmd[@]}"}" \
         "$@"
     { local rc=$?; set +x; } 2>/dev/null

@@ -3,6 +3,8 @@
 # git-protect-wrapper.sh -- wrap the sandboxed command to perform additional
 # in-sandbox setup supporting chopi's git protections:
 # - appends git config entries to the existing GIT_CONFIG_* environment, if any.
+# - refuses to launch the command when the resulting config does not route github git to
+#   chopi's GitHub relay (a competing user insteadOf overrides the rewrite).
 # - on exit, aborts any in-progress git rebase/cherry-pick left behind by the command.
 #
 # usage: git-protect-wrapper.sh CLEANUP_SCRIPT_PATH [key=value ...] -- <executable> [args...]
@@ -13,6 +15,11 @@
 # ours to the host's, a value here overrides a forwarded host value for the same key.
 
 set -euo pipefail
+
+_wrapper_path="$(realpath "${BASH_SOURCE[0]}")"
+_wrapper_dir="$(dirname "$_wrapper_path")"
+. "$_wrapper_dir/util.sh"
+unset _wrapper_path _wrapper_dir
 
 _cleanup_script_path=""
 
@@ -58,6 +65,17 @@ main() {
         count=$((count + 1))
     done
     export GIT_CONFIG_COUNT="$count"
+
+    # With the final command-scope config now exported, confirm chopi's GitHub->relay rewrite
+    # actually wins it: a competing insteadOf in the user's config takes the longest-prefix tie
+    # (earlier-read scopes win it) and would divert github git off the relay onto a transport
+    # the sandbox blocks. Checked here, in-sandbox, against exactly the config "$@" will see.
+    if ! is_github_relay_reroute_effective; then
+        echo "chopi: error: a git 'insteadOf' rewrite in your config overrides chopi's GitHub relay routing;" >&2
+        echo "       find it with: git config --show-origin --get-regexp 'url\\..*\\.insteadof' github.com" >&2
+        echo "       then remove or narrow the rewrite." >&2
+        return 1
+    fi
 
     # We must outlive the command to run the cleanup -- even if a signal kills the command --
     # while keeping the command itself interruptible. Trap the signals with a handler (NOT ''),

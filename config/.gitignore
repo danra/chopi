@@ -1,3 +1,4 @@
 # Local configuration, copied from templates and customized
 proxy-rules.yaml
 sandbox.sh
+github-allowlist

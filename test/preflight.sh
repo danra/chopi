@@ -8,6 +8,7 @@
 #     command could be handed read/write to its own sandboxing policy.
 #   * preflight_initial -- the chopi-dir overlap refusal (and its CHOPI_ALLOW_SELF downgrade).
 #   * preflight_config_placement -- refusing a custom --config that lives inside the workspace.
+#   * preflight_github_relay -- refusing a worktree-root run when the GitHub relay's port is dead.
 #   * rule / the Seatbelt-rule emitter -- its empty-PATH refusal keeps an
 #     accidentally-empty variable from becoming a silently misapplied rule.
 
@@ -166,6 +167,32 @@ if [ "$st" -ne 0 ]; then ok "  -> and returns non-zero"; else bad "  -> should r
 
 ( preflight_config_placement "$cfg_outside" ) 2>/dev/null; st=$?
 if [ "$st" -eq 2 ]; then ok "a wrong number of arguments is a hard error (exit 2)"; else bad "wrong arity should be a hard error (got $st)"; fi
+
+
+# ---------------------------------------------------------------------------
+echo "preflight_github_relay (the GitHub relay must be live for a worktree-root run)"
+# ---------------------------------------------------------------------------
+# Stub `nc` -- inherited into the command-substitution subshell -- so the check is hermetic: it
+# must not depend on a real chopi-proxy being up, nor probe the live ports. The stub echoes its
+# args so we can assert preflight_github_relay probes GITHUB_RELAY_PORT (the relay), not PROXY_PORT (smokescreen).
+# relay_probe RC runs preflight_github_relay with nc reporting the relay up (RC 0) or down (RC != 0).
+relay_probe() {
+    arity 1
+    local rc="$1"
+    ( nc() { echo "nc $*"; return "$rc"; }; preflight_github_relay 2>&1 )
+}
+
+out="$(relay_probe 1)"; st=$?
+assert_contains "$out" "nc -z 127.0.0.1 $GITHUB_RELAY_PORT" "probes the relay port (GITHUB_RELAY_PORT), not the smokescreen port"
+assert_contains "$out" "no GitHub relay"         "a dead relay is refused with a clear message"
+if [ "$st" -ne 0 ]; then ok "  -> and returns non-zero"; else bad "  -> should return non-zero (got $st)"; fi
+
+out="$(relay_probe 0)"; st=$?
+assert_not_contains "$out" "no GitHub relay" "a live relay clears the check"
+if [ "$st" -eq 0 ]; then ok "  -> and returns zero"; else bad "  -> should return zero (got $st)"; fi
+
+( preflight_github_relay extra-arg ) 2>/dev/null; st=$?
+if [ "$st" -eq 2 ]; then ok "wrong arity is a hard error (exit 2)"; else bad "wrong arity should be a hard error (got $st)"; fi
 
 
 # ---------------------------------------------------------------------------

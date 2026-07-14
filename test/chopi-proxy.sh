@@ -12,7 +12,7 @@ BEL="$(printf '\007')"   # U+0007 BEL: format-deny.jq prefixes an interactive DE
 ESC="$(printf '\033')"   # U+001B ANSI escape: introduces the DENY color code
 set +euo pipefail
 
-header "test/chopi-proxy.sh -- unit tests for bin/chopi-proxy.sh's log logic + proxy-port invariant"
+header "test/chopi-proxy.sh -- unit tests for bin/chopi-proxy.sh's log logic + proxy-port invariant + github migration refusal"
 
 # Exported so the scripts under test leave their temporaries here too.
 TMPDIR="$(mktemp -d)"; export TMPDIR
@@ -354,13 +354,60 @@ assert_eq "$(printf '%s\n' '{"allow":false,"decision_reason":"x","decision_reaso
 
 
 # ---------------------------------------------------------------------------
+echo "exfiltration-prone github allowed domains (migration-oriented refusal)"
+# ---------------------------------------------------------------------------
+old_rules="$TMPDIR/pre-relay-rules.yaml"
+cat > "$old_rules" <<'EOF'
+version: v1
+services: []
+default:
+  name: default
+  action: enforce
+  allowed_domains:
+    - api.anthropic.com
+
+    - github.com
+    - api.github.com
+    - raw.githubusercontent.com
+
+    - pypi.org
+global_deny_list:
+    - "*.datadoghq.com"
+EOF
+assert_eq "$(exfiltration_prone_github_allowed_domains "$old_rules")" "github.com
+api.github.com" "a pre-relay rules file -> both GitHub domains named (blank lines don't end the list)"
+
+assert_eq "$(exfiltration_prone_github_allowed_domains "$repo/config/templates/proxy-rules.template.yaml")" "" \
+    "the shipped template is clean (github.com in global_deny_list / comments doesn't match)"
+
+quoted_rules="$TMPDIR/quoted-rules.yaml"
+cat > "$quoted_rules" <<'EOF'
+default:
+  allowed_domains:
+    - "api.github.com"   # quoted, with a trailing comment
+EOF
+assert_eq "$(exfiltration_prone_github_allowed_domains "$quoted_rules")" "api.github.com" \
+    "a quoted entry with a trailing comment still matches"
+
+lookalike_rules="$TMPDIR/lookalike-rules.yaml"
+cat > "$lookalike_rules" <<'EOF'
+default:
+  allowed_domains:
+    - raw.githubusercontent.com
+    - mygithub.com
+    - github.com.evil.example
+EOF
+assert_eq "$(exfiltration_prone_github_allowed_domains "$lookalike_rules")" "" \
+    "lookalike domains don't match (exact github.com / api.github.com entries only)"
+
+
+# ---------------------------------------------------------------------------
 echo "proxy port consistency (network.sb <-> util.sh)"
 # ---------------------------------------------------------------------------
-# The network Seatbelt profile permits exactly one outgoing loopback port; it must match the
-# port the proxy actually listens on.
-digits() { tr -cd '0-9'; }
-port_sb="$(grep -oE 'localhost:[0-9]+' "$repo/.internal/network.sb" | head -1 | digits)"
-assert_eq "$port_sb" "$PROXY_PORT" "network.sb outgoing port matches util.sh PROXY_PORT ($PROXY_PORT)"
+ports_sb="$(grep -oE 'localhost:[0-9]+' "$repo/.internal/network.sb" | grep -oE '[0-9]+')"
+want_ports="$PROXY_PORT
+$GITHUB_RELAY_PORT"
+assert_eq "$ports_sb" "$want_ports" "network.sb loopback ports match util.sh (smokescreen $PROXY_PORT, GitHub relay $GITHUB_RELAY_PORT)"
 
 
 # ---------------------------------------------------------------------------

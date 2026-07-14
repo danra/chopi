@@ -10,7 +10,7 @@
 #     chopi's own dir) are denied.
 #   * network: an allowed host is reachable THROUGH the proxy; a host that's not allowed
 #     is refused by the proxy (and the denial is logged + notified); any direct outgoing connection
-#     that bypasses the proxy, or aims at a non-4760 port, is blocked by Seatbelt.
+#     that bypasses the proxy, or aims at a non-allowlisted loopback port, is blocked by Seatbelt.
 #   * rules hot reload: an edit to the rules file takes effect while the proxy runs; a
 #     broken edit is refused loudly and the previous rules stay in effect.
 
@@ -33,13 +33,13 @@ OTHER_DENIED_HOST="www.wikipedia.org"  # never allowed -> stays refused across t
 skip() { arity 1; echo "SKIP: $1"; exit 0; }
 
 [ "$(uname -s)" = "Darwin" ] || skip "not macOS (the sandbox needs Seatbelt/safehouse)"
-for t in safehouse jq alerter nc; do
+for t in safehouse jq alerter nc caddy; do
     command -v "$t" >/dev/null 2>&1 || skip "missing required tool on PATH: $t"
 done
 # The proxy binary is invoked by absolute path (it isn't on PATH); mirror chopi-proxy.sh's check.
 [ -x "$SMOKESCREEN_BIN" ] || skip "proxy binary not built at $SMOKESCREEN_BIN (run: make build)"
-if nc -z 127.0.0.1 "$PROXY_PORT" 2>/dev/null; then
-    skip "port $PROXY_PORT is already in use -- stop your running chopi-proxy first"
+if busy_port="$(first_listening_port "$PROXY_PORT" "$GITHUB_RELAY_PORT")"; then
+    skip "port $busy_port is already in use -- stop your running chopi-proxy first"
 fi
 
 
@@ -119,23 +119,124 @@ wait_for() {
     wait_for_count "$f" "$pat" 1
 }
 
+# Poll ~5s for child PID to exit and reap it: returns 0 with its exit status in
+# WAIT_FOR_EXIT_RC. On timeout kills PID, reaps it, and returns 1.
+wait_for_exit() {
+    arity 1
+    local pid="$1" _
+    for _ in {1..50}; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            WAIT_FOR_EXIT_RC=0
+            wait "$pid" || WAIT_FOR_EXIT_RC=$?
+            return 0
+        fi
+        sleep 0.1
+    done
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    return 1
+}
+
+# assert_no_listeners STAGE -- a refused chopi-proxy start must exit before binding anything:
+# assert both proxy ports are free ("refused before STAGE").
+assert_no_listeners() {
+    arity 1
+    local stage="$1"
+    if first_listening_port "$PROXY_PORT" "$GITHUB_RELAY_PORT" >/dev/null; then
+        bad "  -> but a port stayed bound (it must refuse before $stage)"
+    else
+        ok  "  -> and neither port was bound (refused before $stage)"
+    fi
+}
+
+
+# ---------------------------------------------------------------------------
+echo "the proxy refuses a populated allowlist with no GitHub token"
+# ---------------------------------------------------------------------------
+nonempty_github_allow="$base/config/itest-github-allowlist-nonempty"
+printf 'soundradix/*\n' > "$nonempty_github_allow"
+refuse_log="$base/refuse.log"
+
+GH_TOKEN='' "$repo/bin/chopi-proxy.sh" --rules "$rules" --github-allowlist "$nonempty_github_allow" > "$refuse_log" 2>&1 &
+refuse_pid=$!
+
+if ! wait_for_exit "$refuse_pid"; then
+    bad "chopi-proxy kept running for a populated allowlist with no token (it must refuse)"
+else
+    assert_nonzero  "$WAIT_FOR_EXIT_RC" "chopi-proxy refuses a populated allowlist with no token"
+    assert_contains "$(cat "$refuse_log")" "no GitHub token is set" "  -> and logs the reason"
+    assert_no_listeners "starting Caddy"
+fi
+
+
+# ---------------------------------------------------------------------------
+echo "the proxy refuses rules that allow github.com/api.github.com (pre-relay leftovers)"
+# ---------------------------------------------------------------------------
+exfil_rules="$base/config/itest-rules-exfil.yaml"
+cat > "$exfil_rules" <<EOF
+version: v1
+services: []
+default:
+  name: default
+  action: enforce
+  allowed_domains:
+    - $ALLOWED_HOST
+    - github.com
+    - api.github.com
+EOF
+exfil_github_allow="$base/config/itest-github-allowlist-exfil"
+: > "$exfil_github_allow"
+exfil_log="$base/exfil-refuse.log"
+
+"$repo/bin/chopi-proxy.sh" --rules "$exfil_rules" --github-allowlist "$exfil_github_allow" > "$exfil_log" 2>&1 &
+exfil_pid=$!
+
+if ! wait_for_exit "$exfil_pid"; then
+    bad "chopi-proxy kept running with github.com allowed in the rules (it must refuse)"
+else
+    assert_nonzero  "$WAIT_FOR_EXIT_RC" "chopi-proxy refuses rules that allow github.com and api.github.com"
+    assert_contains "$(cat "$exfil_log")" "github.com, api.github.com"  "  -> the refusal names the domains"
+    assert_contains "$(cat "$exfil_log")" "proxy-rules.template.yaml"   "  -> and directs to the current template"
+    assert_contains "$(cat "$exfil_log")" "global_deny_list"            "  -> or to moving the domains to the denylist"
+    assert_contains "$(cat "$exfil_log")" "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS" "  -> and names the override"
+    assert_no_listeners "starting anything"
+fi
+
+# The override: the same rules only warn with CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS=1, and
+# the proxy comes up.
+override_log="$base/exfil-override.log"
+CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS=1 "$repo/bin/chopi-proxy.sh" --rules "$exfil_rules" --github-allowlist "$exfil_github_allow" > "$override_log" 2>&1 &
+override_pid=$!
+if wait_for_listener "$PROXY_PORT" "$override_pid"; then
+    ok "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS=1 lets the proxy start"
+    assert_contains "$(cat "$override_log")" "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS is set" \
+        "  -> with the refusal downgraded to a warning"
+else
+    bad "the proxy did not come up with CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS=1"
+    sed 's/^/  /' "$override_log" >&2 || true
+fi
+kill "$override_pid" 2>/dev/null || true
+wait "$override_pid" 2>/dev/null || true
+# Free the ports for the real proxy below (Caddy exits ~0.2s after smokescreen).
+for _ in {1..50}; do
+    first_listening_port "$PROXY_PORT" "$GITHUB_RELAY_PORT" >/dev/null || break
+    sleep 0.1
+done
+
 
 # ---------------------------------------------------------------------------
 # Start the real proxy.
 # ---------------------------------------------------------------------------
 echo "proxy + sandbox setup"
 
+empty_github_allow="$base/config/itest-github-allowlist-empty"
+: > "$empty_github_allow"
+
 # The stub alerter goes first on the proxy's PATH; jq/nc/etc. stay reachable via the rest.
-PATH="$alerter_stub:$PATH" "$repo/bin/chopi-proxy.sh" --rules "$rules" > "$proxy_log" 2>&1 &
+PATH="$alerter_stub:$PATH" "$repo/bin/chopi-proxy.sh" --rules "$rules" --github-allowlist "$empty_github_allow" > "$proxy_log" 2>&1 &
 proxy_pid=$!
 
-ready=""
-for _ in {1..50}; do
-    nc -z 127.0.0.1 "$PROXY_PORT" 2>/dev/null && { ready=1; break; }
-    kill -0 "$proxy_pid" 2>/dev/null || break   # proxy died -- stop waiting
-    sleep 0.1
-done
-if [ -z "$ready" ]; then
+if ! wait_for_listener "$PROXY_PORT" "$proxy_pid"; then
     echo "error: the test proxy did not come up on 127.0.0.1:$PROXY_PORT" >&2
     echo "--- proxy.log ---" >&2; cat "$proxy_log" >&2
     exit 1
@@ -262,7 +363,7 @@ chopi_plain() { ( cd "$ws" && "$repo/bin/chopi" --config "$cfg_gitcfg" -- "$@" )
 
 # shellcheck disable=SC2016
 out="$(chopi_plain /bin/sh -c 'echo "gc=[$GIT_CONFIG_COUNT]"; ls "$TMPDIR"' 2>/dev/null)"
-assert_contains     "$out" "gc=[]"                             "outside a worktree root, CHOPI_GIT_CONFIG is not injected"
+assert_contains     "$out" "gc=[]"                             "outside a worktree root, neither CHOPI_GIT_CONFIG nor the github->relay rewrite is injected"
 assert_not_contains "$out" "$CHOPI_GIT_PROTECT_WRAPPER_PREFIX"  "  -> the git-protect wrapper profile is not created"
 assert_not_contains "$out" "$CHOPI_CMD_ALIAS_PREFIX"           "  -> nor the command-alias dir"
 
@@ -297,8 +398,9 @@ EOF
     chopi_wrap() { ( cd "$wrap_repo" && "$repo/bin/chopi" --config "$cfg_agent" -- "$@" ); }
 
     # shellcheck disable=SC2016
-    out="$(chopi_wrap /bin/sh -c 'echo "$GIT_CONFIG_COUNT|$GIT_CONFIG_KEY_0=$GIT_CONFIG_VALUE_0"; ls "$TMPDIR"' 2>/dev/null)"
-    assert_contains "$out" "1|chopi.wrapped=wrappedmarker"      "a CHOPI_GIT_CONFIG pair reaches the sandboxed command at a worktree root"
+    out="$(chopi_wrap /bin/sh -c 'echo "$GIT_CONFIG_KEY_0=$GIT_CONFIG_VALUE_0"; git ls-remote --get-url https://github.com/o/r; ls "$TMPDIR"' 2>/dev/null)"
+    assert_contains "$out" "chopi.wrapped=wrappedmarker"   "a CHOPI_GIT_CONFIG pair reaches the sandboxed command at a worktree root"
+    assert_contains "$out" "http://127.0.0.1:$GITHUB_RELAY_PORT/o/r"   "  -> and github.com git reroutes to the relay in the sandbox"
     assert_contains "$out" "$CHOPI_GIT_PROTECT_WRAPPER_PREFIX"  "  -> the git-protect wrapper profile is created for the run"
     assert_contains "$out" "$CHOPI_CMD_ALIAS_PREFIX"            "  -> as is the command-alias dir"
 
@@ -329,6 +431,25 @@ EOF
     out="$(chopi_wrap /bin/sh -c "$read_probe" sh "$marker_file" 2>/dev/null)"
     assert_not_contains "$out" "CLAUDE_PROFILE_MARKER" "a non-agent basename (sh) selects no profile, so the same file stays unreadable"
     assert_contains     "$out" "READ_FAIL"             "  -> and that read is denied"
+fi
+
+
+# ---------------------------------------------------------------------------
+echo "chopi refuses when a competing insteadOf would override the GitHub relay routing"
+# ---------------------------------------------------------------------------
+if ! command -v git >/dev/null 2>&1; then
+    bad "reroute-refusal test needs git on PATH"
+else
+    conflict_repo="$base/conflict_repo"
+    make_repo "$conflict_repo"
+    # A local https->ssh rewrite of the same prefix wins the longest-prefix tie against chopi's
+    # command-scope rewrite, so github git would leave the relay -- the in-sandbox wrapper must
+    # refuse before running the command.
+    git -C "$conflict_repo" config url."git@github.com:".insteadOf https://github.com/
+    both="$( ( cd "$conflict_repo" && "$repo/bin/chopi" --config "$cfg_gitcfg" -- /bin/sh -c 'echo RAN' ) 2>&1 )"; rc=$?
+    assert_nonzero  "$rc"                                            "chopi refuses at a worktree root when a competing insteadOf overrides the relay routing"
+    assert_contains "$both" "overrides chopi's GitHub relay routing" "  -> with an informative error naming the cause"
+    assert_not_contains "$both" "RAN"                                "  -> and does not run the command"
 fi
 
 
@@ -365,10 +486,32 @@ fi
 code="$(sandbox_curl --max-time 15 --noproxy '*' "https://$ALLOWED_HOST")"
 assert_not_contains "$code" "200"                  "a direct outgoing connection bypassing the proxy is blocked by the sandbox"
 
-# (4) Outgoing connections are pinned to 4760 SPECIFICALLY: a different loopback proxy port is blocked
-# (network.sb only allows localhost:4760). Offline-safe.
-code="$(sandbox_curl --max-time 15 --proxy "http://127.0.0.1:4761" "https://$ALLOWED_HOST")"
-assert_not_contains "$code" "200"                  "an outgoing connection to a non-4760 loopback port is blocked by the sandbox"
+# (4) Outgoing connections are pinned to the allowed proxy ports SPECIFICALLY: a loopback port
+# that network.sb does not allow (it allows 4760-4761) is blocked by Seatbelt. Offline-safe.
+code="$(sandbox_curl --max-time 15 --proxy "http://127.0.0.1:9999" "https://$ALLOWED_HOST")"
+assert_not_contains "$code" "200"                  "an outgoing connection to a non-allowlisted loopback port is blocked by the sandbox"
+
+
+# ---------------------------------------------------------------------------
+echo "github git public fetch through the relay (end-to-end: sandbox -> :$GITHUB_RELAY_PORT -> Caddy -> github.com)"
+# ---------------------------------------------------------------------------
+if ! command -v git >/dev/null 2>&1; then
+    bad "github-through-relay test needs git on PATH"
+elif ! curl -sS -o /dev/null --max-time 15 "https://github.com" 2>/dev/null; then
+    echo "  SKIP github-through-relay (no host connectivity to github.com)"
+else
+
+    relay_repo="$base/relay_repo"
+    make_repo "$relay_repo"
+    chopi_relay() { ( cd "$relay_repo" && "$repo/bin/chopi" --config "$cfg" -- "$@" ); }
+
+    # A real ls-remote drives GET .../info/refs through the relay to github and streams the refs back.
+    refs="$(chopi_relay git ls-remote https://github.com/octocat/Hello-World 2>/dev/null)"
+    assert_contains "$refs" "refs/heads/master" "anonymous public fetch of a github repo works through the relay"
+
+    code="$(chopi_relay /usr/bin/curl -sS -o /dev/null -w '%{http_code}' --max-time 15 --noproxy '*' "https://github.com" 2>/dev/null)"
+    assert_not_contains "$code" "200"           "a direct (non-relay) connection to github is blocked by the sandbox"
+fi
 
 
 # ---------------------------------------------------------------------------
