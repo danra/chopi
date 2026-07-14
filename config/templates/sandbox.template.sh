@@ -34,6 +34,17 @@ CHOPI_EXTRA_ENV=(
     CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1
     DISABLE_ERROR_REPORTING=1
 
+    # Disable Claude Code background tasks under the sandbox
+    #
+    # Avoids "couldn't start in the background -- press Enter to retry" that never
+    # succeeds (Opus analyzed this is because Claude Code can't communicate with its
+    # background daemon on a unix socket at (/tmp/cc-daemon-<uid>/<hash>/control.sock).
+    #
+    # It's not that we can't open up the socket in the policy; but if we did, that would
+    # defeat the purpose of the sandbox, since Claude Code could have the daemon start
+    # unsandboxed processes to do work on its behalf.
+    CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1
+
     # Forward a host env var into the sandbox. If the host var is unset, chopi hard-errors
     # rather than forwarding an empty value, so a missing var is caught loudly:
     # FOO="$FOO"
