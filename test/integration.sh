@@ -224,8 +224,7 @@ assert_contains "$out" "WRITE_OK"                  "  -> and the sandboxed comma
 # This run's artifacts show up in the in-sandbox listing of $TMPDIR -- the dir is fresh
 # and private to the invocation, so their presence pins them as subpaths of it. Guards the
 # containment assumption the one-shot cleanup below relies on.
-assert_contains "$out" "$CHOPI_GITCONF_WRAPPER_PREFIX" "the gitconf wrapper profile lives inside the invocation temp dir"
-assert_contains "$out" "$CHOPI_CMD_ALIAS_PREFIX"       "the command-alias dir lives inside the invocation temp dir"
+assert_contains "$out" "$CHOPI_CONTEXT_READS_PREFIX" "the context-reads profile lives inside the invocation temp dir"
 
 if [ -n "$sbx_tmpdir" ] && [ ! -e "$sbx_tmpdir" ]; then
     ok  "chopi removes the entire invocation temp dir (all temporaries with it) after the run"
@@ -235,63 +234,76 @@ fi
 
 
 # ---------------------------------------------------------------------------
-echo "git config injection (CHOPI_GIT_CONFIG)"
+echo "git-config wrapper is skipped outside a git worktree root"
 # ---------------------------------------------------------------------------
-# CHOPI_GIT_CONFIG pairs reach a plain (non-worktree) sandboxed command through the append
-# wrapper -- which the sandboxed process itself must read and exec. chopi's dir is otherwise
-# unreadable (asserted above), so this exercises the gitconf-wrapper profile; and the grant
-# must cover exactly the wrapper file, nothing else in chopi's dir.
 cfg_gitcfg="$base/config/sandbox-gitcfg.sh"
 cat > "$cfg_gitcfg" <<'EOF'
 CHOPI_SAFEHOUSE_FLAGS=()
 CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
 CHOPI_GIT_CONFIG=( chopi.plain=plainmarker )
 EOF
-chopi_gc() { ( cd "$ws" && "$repo/bin/chopi" --config "$cfg_gitcfg" -- "$@" ); }
+chopi_plain() { ( cd "$ws" && "$repo/bin/chopi" --config "$cfg_gitcfg" -- "$@" ); }
 
-# shellcheck disable=SC2016 # the $GIT_CONFIG_* probe expands in the sandboxed shell, not here
-out="$(chopi_gc /bin/sh -c 'echo "$GIT_CONFIG_COUNT|$GIT_CONFIG_KEY_0=$GIT_CONFIG_VALUE_0"' 2>/dev/null)"
-assert_eq "$out" "1|chopi.plain=plainmarker"       "a CHOPI_GIT_CONFIG pair reaches a plain (non-worktree) sandboxed command"
-
-out="$(chopi_gc /bin/sh -c "cat '$repo/.internal/util.sh' >/dev/null 2>&1 && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
-assert_eq "$out" "READ_FAIL"                       "  -> the gitconf wrapper does not open the rest of chopi's dir"
+# shellcheck disable=SC2016
+out="$(chopi_plain /bin/sh -c 'echo "gc=[$GIT_CONFIG_COUNT]"; ls "$TMPDIR"' 2>/dev/null)"
+assert_contains     "$out" "gc=[]"                          "outside a worktree root, CHOPI_GIT_CONFIG is not injected"
+assert_not_contains "$out" "$CHOPI_GITCONF_WRAPPER_PREFIX"  "  -> the git-config wrapper profile is not created"
+assert_not_contains "$out" "$CHOPI_CMD_ALIAS_PREFIX"        "  -> nor the command-alias dir"
 
 
 # ---------------------------------------------------------------------------
-echo "agent profile survives the git-config wrapper (command-name detection)"
+echo "git-config wrapper at a git worktree root (injection + command-name detection)"
 # ---------------------------------------------------------------------------
-# safehouse appends profiles based on the invoked command's BASENAME. chopi runs the
-# sandboxed command through the git-config wrapper (which is argv[0]), so it must present the
-# wrapper under the real command's basename to get the needed grants. Test via safehouse's
-# `claude` profile, the only one which grants read on ~/.claude.json.*.
-marker_file="$HOME/.claude.json.chopi-itest.$$"      # created here, removed by the EXIT trap
-printf 'CLAUDE_PROFILE_MARKER\n' > "$marker_file"
+if ! command -v git >/dev/null 2>&1; then
+    bad "git-config wrapper tests need git on PATH"
+else
+    wrap_repo="$base/wrap_repo"
+    make_repo "$wrap_repo"
 
-# "claude" below stands in for the real agent. Both the fake agent and the sh probe
-# below run the same body: cat the file named by $1, reporting READ_OK/READ_FAIL.
-# shellcheck disable=SC2016 # $1 expands in the sandboxed shell, not here
-read_probe='cat "$1" 2>/dev/null && echo READ_OK || echo READ_FAIL'
-agentbin="$ws/agentbin"
-mkdir -p "$agentbin"
-cat > "$agentbin/claude" <<EOF
+    # "claude" below stands in for the real agent. Both the fake agent and the sh probe
+    # below run the same body: cat the file named by $1, reporting READ_OK/READ_FAIL.
+    # shellcheck disable=SC2016 # $1 expands in the sandboxed shell, not here
+    read_probe='cat "$1" 2>/dev/null && echo READ_OK || echo READ_FAIL'
+    agentbin="$wrap_repo/agentbin"
+    mkdir -p "$agentbin"
+    cat > "$agentbin/claude" <<EOF
 #!/bin/sh
 $read_probe
 EOF
-chmod +x "$agentbin/claude"
-cfg_agent="$base/config/sandbox-agent.sh"
-cat > "$cfg_agent" <<EOF
+    chmod +x "$agentbin/claude"
+
+    cfg_agent="$base/config/sandbox-agent.sh"
+    cat > "$cfg_agent" <<EOF
 CHOPI_SAFEHOUSE_FLAGS=()
 CHOPI_EXTRA_ENV=( PATH=$agentbin:/usr/bin:/bin:/usr/sbin:/sbin )
+CHOPI_GIT_CONFIG=( chopi.wrapped=wrappedmarker )
 EOF
-chopi_agent() { ( cd "$ws" && "$repo/bin/chopi" --config "$cfg_agent" -- "$@" ); }
+    chopi_wrap() { ( cd "$wrap_repo" && "$repo/bin/chopi" --config "$cfg_agent" -- "$@" ); }
 
-out="$(chopi_agent claude "$marker_file" 2>/dev/null)"
-assert_contains "$out" "CLAUDE_PROFILE_MARKER"     "a command's agent profile is selected through the wrapper (real basename reaches safehouse)"
-assert_contains "$out" "READ_OK"                   "  -> and the profile's ~/.claude.json.* read grant actually applies in the sandbox"
+    # shellcheck disable=SC2016
+    out="$(chopi_wrap /bin/sh -c 'echo "$GIT_CONFIG_COUNT|$GIT_CONFIG_KEY_0=$GIT_CONFIG_VALUE_0"; ls "$TMPDIR"' 2>/dev/null)"
+    assert_contains "$out" "1|chopi.wrapped=wrappedmarker"  "a CHOPI_GIT_CONFIG pair reaches the sandboxed command at a worktree root"
+    assert_contains "$out" "$CHOPI_GITCONF_WRAPPER_PREFIX"  "  -> the git-config wrapper profile is created for the run"
+    assert_contains "$out" "$CHOPI_CMD_ALIAS_PREFIX"        "  -> as is the command-alias dir"
 
-out="$(chopi_agent /bin/sh -c "$read_probe" sh "$marker_file" 2>/dev/null)"
-assert_not_contains "$out" "CLAUDE_PROFILE_MARKER" "a non-agent basename (sh) selects no profile, so the same file stays unreadable"
-assert_contains     "$out" "READ_FAIL"             "  -> and that read is denied"
+    out="$(chopi_wrap /bin/sh -c "cat '$repo/.internal/util.sh' >/dev/null 2>&1 && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+    assert_eq "$out" "READ_FAIL"                            "  -> the gitconf wrapper does not open the rest of chopi's dir"
+
+    # safehouse appends profiles based on the invoked command's BASENAME. chopi runs the
+    # sandboxed command through the git-config wrapper (which is argv[0]), so it must present the
+    # wrapper under the real command's basename to get the needed grants. Test via safehouse's
+    # `claude` profile, the only one which grants read on ~/.claude.json.*.
+    marker_file="$HOME/.claude.json.chopi-itest.$$"      # created here, removed by the EXIT trap
+    printf 'CLAUDE_PROFILE_MARKER\n' > "$marker_file"
+
+    out="$(chopi_wrap claude "$marker_file" 2>/dev/null)"
+    assert_contains "$out" "CLAUDE_PROFILE_MARKER"     "a command's agent profile is selected through the wrapper (real basename reaches safehouse)"
+    assert_contains "$out" "READ_OK"                   "  -> and the profile's ~/.claude.json.* read grant actually applies in the sandbox"
+
+    out="$(chopi_wrap /bin/sh -c "$read_probe" sh "$marker_file" 2>/dev/null)"
+    assert_not_contains "$out" "CLAUDE_PROFILE_MARKER" "a non-agent basename (sh) selects no profile, so the same file stays unreadable"
+    assert_contains     "$out" "READ_FAIL"             "  -> and that read is denied"
+fi
 
 
 # ---------------------------------------------------------------------------

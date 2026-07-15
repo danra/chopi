@@ -103,12 +103,14 @@ main() {
 
     # Let the agent read context files in the workspace's ancestor dirs.
     local context_profile
-    context_profile="$(mktemp "$TMPDIR/chopi-context-reads.XXXXXX")" \
+    context_profile="$(mktemp "$TMPDIR/${CHOPI_CONTEXT_READS_PREFIX}XXXXXX")" \
         || { echo "chopi: could not create a temp file for the context-reads profile" >&2; return 1; }
     write_context_reads_profile "$context_profile" "$run_dir" \
         || { echo "chopi: could not write the context-reads profile" >&2; return 1; }
 
     local protection_flags=()
+    local wrapper_cmd=()
+    local wrapper_flags=()
     if is_worktree_root "$run_dir"; then
         # Build chopi's git protection profiles and append them in the order
         # git-protect.sh emits them.
@@ -126,6 +128,30 @@ main() {
             echo "chopi: the git protection helper returned no profiles" >&2
             return 1
         fi
+
+        # safehouse selects its sandbox profile from the invoked command's basename, e.g.,
+        # `claude` loads the claude-code profile. Alias the git-config wrapper to the same name
+        # so safehouse's detection loads the right profile. The symlink lives under TMPDIR,
+        # which safehouse grants; exec follows it to wrapper_path, which is allowed by the
+        # profile below.
+        local command="$1"
+        local wrapper_path="$CHOPI_DIR/.internal/append-git-config.sh"
+        local cmd_alias_dir
+        cmd_alias_dir="$(mktemp -d "$TMPDIR/${CHOPI_CMD_ALIAS_PREFIX}XXXXXX")" \
+            || { echo "chopi: could not create a temp dir for the command alias" >&2; return 1; }
+        local cmd_alias
+        cmd_alias="$cmd_alias_dir/$(basename -- "$command")"
+        ln -s "$wrapper_path" "$cmd_alias" \
+            || { echo "chopi: could not create the command-alias symlink" >&2; return 1; }
+        wrapper_cmd=("$cmd_alias" "${CHOPI_GIT_CONFIG[@]+"${CHOPI_GIT_CONFIG[@]}"}" --)
+        local wrapper_profile
+        wrapper_profile="$(mktemp "$TMPDIR/${CHOPI_GITCONF_WRAPPER_PREFIX}XXXXXX")" \
+            || { echo "chopi: could not create a temp file for the git-config append wrapper profile" >&2; return 1; }
+        {
+            echo ";; chopi: the git-config append wrapper is read and executed in the sandbox."
+            rule 'allow file-read* process-exec*' literal "$wrapper_path"
+        } > "$wrapper_profile"
+        wrapper_flags=(--append-profile "$wrapper_profile")
     elif [ -n "$worktree_given" ]; then
         # Fail closed: isolating the command to the worktree is the mode's whole promise.
         echo "chopi: worktree '$worktree_dir' is not a git worktree root" >&2
@@ -133,29 +159,6 @@ main() {
     elif [ -n "$verbose" ]; then
         echo "chopi: workspace is not a git worktree root; git protections not applied" >&2
     fi
-
-    # safehouse selects its sandbox profile from the invoked command's basename, e.g.,
-    # `claude` loads the claude-code profile. Alias the git-config wrapper to the same name
-    # so safehouse's detection loads the right profile. The symlink lives under TMPDIR,
-    # which safehouse grants; exec follows it to wrapper_path, which is allowed by the
-    # profile below.
-    local command="$1"
-    local wrapper_path="$CHOPI_DIR/.internal/append-git-config.sh"
-    local cmd_alias_dir
-    cmd_alias_dir="$(mktemp -d "$TMPDIR/${CHOPI_CMD_ALIAS_PREFIX}XXXXXX")" \
-        || { echo "chopi: could not create a temp dir for the command alias" >&2; return 1; }
-    local cmd_alias
-    cmd_alias="$cmd_alias_dir/$(basename -- "$command")"
-    ln -s "$wrapper_path" "$cmd_alias" \
-        || { echo "chopi: could not create the command-alias symlink" >&2; return 1; }
-    local wrapper_cmd=("$cmd_alias" "${CHOPI_GIT_CONFIG[@]+"${CHOPI_GIT_CONFIG[@]}"}" --)
-    local wrapper_profile
-    wrapper_profile="$(mktemp "$TMPDIR/${CHOPI_GITCONF_WRAPPER_PREFIX}XXXXXX")" \
-        || { echo "chopi: could not create a temp file for the git-config append wrapper profile" >&2; return 1; }
-    {
-        echo ";; chopi: the git-config append wrapper is read and executed in the sandbox."
-        rule 'allow file-read* process-exec*' literal "$wrapper_path"
-    } > "$wrapper_profile"
 
     local proxy="http://127.0.0.1:$PROXY_PORT"
 
@@ -177,14 +180,14 @@ main() {
         "${CHOPI_SAFEHOUSE_FLAGS[@]+"${CHOPI_SAFEHOUSE_FLAGS[@]}"}" \
         --append-profile "$context_profile" \
         "${protection_flags[@]+"${protection_flags[@]}"}" \
-        --append-profile "$wrapper_profile" \
+        "${wrapper_flags[@]+"${wrapper_flags[@]}"}" \
         --append-profile "$CHOPI_DIR/.internal/network.sb" \
         -- \
         "${CHOPI_EXTRA_ENV[@]+"${CHOPI_EXTRA_ENV[@]}"}" \
         HTTP_PROXY="$proxy"  HTTPS_PROXY="$proxy" \
         http_proxy="$proxy"  https_proxy="$proxy" \
         NODE_USE_ENV_PROXY=1 \
-        "${wrapper_cmd[@]}" \
+        "${wrapper_cmd[@]+"${wrapper_cmd[@]}"}" \
         "$@"
     { local rc=$?; set +x; } 2>/dev/null
     return "$rc"

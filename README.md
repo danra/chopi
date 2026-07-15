@@ -168,7 +168,8 @@ environment to downgrade the enforcement to a warning).
 variables, appended *inside* the sandbox after the environment is fully composed, so the
 pairs merge with any git config you forward from the host via `safehouse`'s
 `--env-pass`/`--env` flags instead of overwriting it (in case of a conflict,
-`CHOPI_GIT_CONFIG` wins).
+`CHOPI_GIT_CONFIG` wins). Chopi only applies this extra config when run at a git worktree
+root, the same condition under which its git protections apply.
 
 `chopi` lives in its own directory, outside of the repos you sandbox, so a command you 
 run under it can't read or tamper with the sandbox's own config. `chopi` enforces
