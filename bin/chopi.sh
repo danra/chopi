@@ -190,6 +190,15 @@ main() {
         "${wrapper_cmd[@]+"${wrapper_cmd[@]}"}" \
         "$@"
     { local rc=$?; set +x; } 2>/dev/null
+
+    if [ -n "$worktree_dir" ] && [ -t 2 ]; then
+        {
+            echo
+            echo "chopi: worktree ready for inspection:"
+            echo "  cd $worktree_dir"
+        } >&2
+    fi
+
     return "$rc"
 }
 
