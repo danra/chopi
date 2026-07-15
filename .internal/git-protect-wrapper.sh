@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# append-git-config.sh -- run a command with git config entries, appended to the
-# existing GIT_CONFIG_* environment, if any.
+# git-protect-wrapper.sh -- wrap the sandboxed command to perform additional
+# in-sandbox setup supporting chopi's git protections. Currently appends git
+# config entries to the existing GIT_CONFIG_* environment, if any.
 #
-# usage: append-git-config.sh [key=value ...] -- <executable> [args...]
+# usage: git-protect-wrapper.sh [key=value ...] -- <executable> [args...]
 #
 # Not run directly; chopi prepends it to the sandboxed command when its environment
 # is available. Per git rules, a later GIT_CONFIG_* pair for the same key wins an earlier
@@ -16,25 +17,26 @@
 set -euo pipefail
 
 main() {
+    local prog="git-protect-wrapper"
     local pairs=()
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --)  shift; break ;;
-            =*)  echo "append-git-config: key must be non-empty in '$1'" >&2
+            =*)  echo "$prog: key must be non-empty in '$1'" >&2
                  return 2 ;;
             *=*) pairs+=("$1"); shift ;;
-            *)   echo "append-git-config: expected key=value or --, got '$1'" >&2
+            *)   echo "$prog: expected key=value or --, got '$1'" >&2
                  return 2 ;;
         esac
     done
     if [ "$#" -eq 0 ]; then
-        echo "append-git-config: no command given after '--'" >&2
+        echo "$prog: no command given after '--'" >&2
         return 2
     fi
 
     local count="${GIT_CONFIG_COUNT:-0}"
     if ! [[ "$count" =~ ^[0-9]+$ ]]; then
-        echo "append-git-config: preexisting GIT_CONFIG_COUNT must be a non-negative integer (got '$count')" >&2
+        echo "$prog: preexisting GIT_CONFIG_COUNT must be a non-negative integer (got '$count')" >&2
         return 2
     fi
 

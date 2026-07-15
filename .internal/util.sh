@@ -19,7 +19,7 @@ PROXY_PORT=4760
 # mktemp name prefixes of chopi's per-invocation temporaries (created under the private
 # TMPDIR); shared so the tests assert on the same names chopi creates.
 CHOPI_CONTEXT_READS_PREFIX="chopi-context-reads."
-CHOPI_GITCONF_WRAPPER_PREFIX="chopi-gitconf-wrapper."
+CHOPI_GIT_PROTECT_WRAPPER_PREFIX="chopi-git-protect-wrapper."
 CHOPI_CMD_ALIAS_PREFIX="chopi-cmd-alias."
 
 if command -v shopt >/dev/null 2>&1; then shopt -s expand_aliases; fi

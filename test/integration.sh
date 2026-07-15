@@ -209,7 +209,7 @@ assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
 echo "private per-invocation temp dir"
 # ---------------------------------------------------------------------------
 # chopi exports a freshly-made TMPDIR for each run (safehouse forwards it into the
-# sandbox). ALL of chopi's own temporaries (gitconf wrapper profiles, isolation and
+# sandbox). ALL of chopi's own temporaries (git-protect wrapper profiles, isolation and
 # hardening profiles, the command's tempfiles) live inside it, so the dir being gone after
 # the run IS the cleanup check for every one of them -- the later sections don't re-assert it.
 # shellcheck disable=SC2016  # $TMPDIR expands in the sandboxed shell, not here
@@ -234,7 +234,7 @@ fi
 
 
 # ---------------------------------------------------------------------------
-echo "git-config wrapper is skipped outside a git worktree root"
+echo "git-protect wrapper is skipped outside a git worktree root"
 # ---------------------------------------------------------------------------
 cfg_gitcfg="$base/config/sandbox-gitcfg.sh"
 cat > "$cfg_gitcfg" <<'EOF'
@@ -246,16 +246,16 @@ chopi_plain() { ( cd "$ws" && "$repo/bin/chopi" --config "$cfg_gitcfg" -- "$@" )
 
 # shellcheck disable=SC2016
 out="$(chopi_plain /bin/sh -c 'echo "gc=[$GIT_CONFIG_COUNT]"; ls "$TMPDIR"' 2>/dev/null)"
-assert_contains     "$out" "gc=[]"                          "outside a worktree root, CHOPI_GIT_CONFIG is not injected"
-assert_not_contains "$out" "$CHOPI_GITCONF_WRAPPER_PREFIX"  "  -> the git-config wrapper profile is not created"
-assert_not_contains "$out" "$CHOPI_CMD_ALIAS_PREFIX"        "  -> nor the command-alias dir"
+assert_contains     "$out" "gc=[]"                             "outside a worktree root, CHOPI_GIT_CONFIG is not injected"
+assert_not_contains "$out" "$CHOPI_GIT_PROTECT_WRAPPER_PREFIX"  "  -> the git-protect wrapper profile is not created"
+assert_not_contains "$out" "$CHOPI_CMD_ALIAS_PREFIX"           "  -> nor the command-alias dir"
 
 
 # ---------------------------------------------------------------------------
-echo "git-config wrapper at a git worktree root (injection + command-name detection)"
+echo "git-protect wrapper at a git worktree root (injection + command-name detection)"
 # ---------------------------------------------------------------------------
 if ! command -v git >/dev/null 2>&1; then
-    bad "git-config wrapper tests need git on PATH"
+    bad "git-protect wrapper tests need git on PATH"
 else
     wrap_repo="$base/wrap_repo"
     make_repo "$wrap_repo"
@@ -282,15 +282,15 @@ EOF
 
     # shellcheck disable=SC2016
     out="$(chopi_wrap /bin/sh -c 'echo "$GIT_CONFIG_COUNT|$GIT_CONFIG_KEY_0=$GIT_CONFIG_VALUE_0"; ls "$TMPDIR"' 2>/dev/null)"
-    assert_contains "$out" "1|chopi.wrapped=wrappedmarker"  "a CHOPI_GIT_CONFIG pair reaches the sandboxed command at a worktree root"
-    assert_contains "$out" "$CHOPI_GITCONF_WRAPPER_PREFIX"  "  -> the git-config wrapper profile is created for the run"
-    assert_contains "$out" "$CHOPI_CMD_ALIAS_PREFIX"        "  -> as is the command-alias dir"
+    assert_contains "$out" "1|chopi.wrapped=wrappedmarker"      "a CHOPI_GIT_CONFIG pair reaches the sandboxed command at a worktree root"
+    assert_contains "$out" "$CHOPI_GIT_PROTECT_WRAPPER_PREFIX"  "  -> the git-protect wrapper profile is created for the run"
+    assert_contains "$out" "$CHOPI_CMD_ALIAS_PREFIX"            "  -> as is the command-alias dir"
 
     out="$(chopi_wrap /bin/sh -c "cat '$repo/.internal/util.sh' >/dev/null 2>&1 && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
-    assert_eq "$out" "READ_FAIL"                            "  -> the gitconf wrapper does not open the rest of chopi's dir"
+    assert_eq "$out" "READ_FAIL"                            "  -> the git-protect wrapper does not open the rest of chopi's dir"
 
     # safehouse appends profiles based on the invoked command's BASENAME. chopi runs the
-    # sandboxed command through the git-config wrapper (which is argv[0]), so it must present the
+    # sandboxed command through the git-protect wrapper (which is argv[0]), so it must present the
     # wrapper under the real command's basename to get the needed grants. Test via safehouse's
     # `claude` profile, the only one which grants read on ~/.claude.json.*.
     marker_file="$HOME/.claude.json.chopi-itest.$$"      # created here, removed by the EXIT trap

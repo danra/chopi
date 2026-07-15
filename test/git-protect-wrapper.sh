@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# test/append-git-config.sh -- unit tests for the in-sandbox git-config append
-# wrapper
+# test/git-protect-wrapper.sh -- unit tests for the in-sandbox git-protect
+# wrapper (currently only its git-config appending)
 
 # shellcheck disable=SC2016  # GIT_CONFIG_* vars expand in the shell the wrapper execs, not in this script
 
@@ -11,9 +11,9 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 . "$repo/.internal/util.sh"
 . "$repo/test/lib.sh"
 
-header "test/append-git-config.sh -- unit tests for the git-config append wrapper"
+header "test/git-protect-wrapper.sh -- unit tests for the git-protect wrapper's git-config appending"
 
-WRAP="$repo/.internal/append-git-config.sh"
+WRAP="$repo/.internal/git-protect-wrapper.sh"
 
 # Exported so the scripts under test leave their temporaries here too.
 TMPDIR="$(mktemp -d)"; export TMPDIR

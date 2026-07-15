@@ -7,7 +7,7 @@ SHELL_SOURCES = \
 	install.sh \
 	.internal/util.sh \
 	.internal/classify-log.sh \
-	.internal/append-git-config.sh \
+	.internal/git-protect-wrapper.sh \
 	.internal/git-layout.sh \
 	.internal/git-preflight.sh \
 	.internal/git-isolate.sh \
@@ -18,7 +18,7 @@ SHELL_SOURCES = \
 	.internal/preflight.sh \
 	config/templates/sandbox.template.sh \
 	test/lib.sh \
-	test/append-git-config.sh \
+	test/git-protect-wrapper.sh \
 	test/git-preflight.sh \
 	test/git-isolate.sh \
 	test/git-harden.sh \
@@ -29,7 +29,7 @@ SHELL_SOURCES = \
 	test/integration.sh
 
 test:
-	@./test/append-git-config.sh
+	@./test/git-protect-wrapper.sh
 	@./test/git-preflight.sh
 	@./test/git-isolate.sh
 	@./test/git-harden.sh

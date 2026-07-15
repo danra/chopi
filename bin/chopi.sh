@@ -130,12 +130,12 @@ main() {
         fi
 
         # safehouse selects its sandbox profile from the invoked command's basename, e.g.,
-        # `claude` loads the claude-code profile. Alias the git-config wrapper to the same name
+        # `claude` loads the claude-code profile. Alias the git-protect wrapper to the same name
         # so safehouse's detection loads the right profile. The symlink lives under TMPDIR,
         # which safehouse grants; exec follows it to wrapper_path, which is allowed by the
         # profile below.
         local command="$1"
-        local wrapper_path="$CHOPI_DIR/.internal/append-git-config.sh"
+        local wrapper_path="$CHOPI_DIR/.internal/git-protect-wrapper.sh"
         local cmd_alias_dir
         cmd_alias_dir="$(mktemp -d "$TMPDIR/${CHOPI_CMD_ALIAS_PREFIX}XXXXXX")" \
             || { echo "chopi: could not create a temp dir for the command alias" >&2; return 1; }
@@ -145,10 +145,10 @@ main() {
             || { echo "chopi: could not create the command-alias symlink" >&2; return 1; }
         wrapper_cmd=("$cmd_alias" "${CHOPI_GIT_CONFIG[@]+"${CHOPI_GIT_CONFIG[@]}"}" --)
         local wrapper_profile
-        wrapper_profile="$(mktemp "$TMPDIR/${CHOPI_GITCONF_WRAPPER_PREFIX}XXXXXX")" \
-            || { echo "chopi: could not create a temp file for the git-config append wrapper profile" >&2; return 1; }
+        wrapper_profile="$(mktemp "$TMPDIR/${CHOPI_GIT_PROTECT_WRAPPER_PREFIX}XXXXXX")" \
+            || { echo "chopi: could not create a temp file for the git-protect wrapper profile" >&2; return 1; }
         {
-            echo ";; chopi: the git-config append wrapper is read and executed in the sandbox."
+            echo ";; chopi: the git-protect wrapper is read and executed in the sandbox."
             rule 'allow file-read* process-exec*' literal "$wrapper_path"
         } > "$wrapper_profile"
         wrapper_flags=(--append-profile "$wrapper_profile")
