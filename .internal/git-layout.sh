@@ -110,6 +110,7 @@ refuse_steered_worktree() {
 #   CHOPI_GIT_MAIN_WORKTREE          the main worktree (usually <repo>); unset when it
 #                                    can't be resolved (see resolve_main_worktree)
 #   CHOPI_GIT_TARGET_WORKTREE        the worktree the command runs in == the current dir
+#   CHOPI_GIT_TARGET_IS_MAIN         non-empty iff the target worktree is the main worktree
 #   CHOPI_GIT_OTHER_WORKTREES[]      every worktree except the target
 #   CHOPI_GIT_TARGET_SUB_MAIN_WORKTREES[] / CHOPI_GIT_TARGET_SUB_GITDIRS[]
 #                                    the target worktree's submodules (recursive):
@@ -120,6 +121,7 @@ CHOPI_GIT_DIR=""
 CHOPI_GIT_COMMON_DIR=""
 CHOPI_GIT_MAIN_WORKTREE=""
 CHOPI_GIT_TARGET_WORKTREE=""
+CHOPI_GIT_TARGET_IS_MAIN=""
 CHOPI_GIT_OTHER_WORKTREES=()
 CHOPI_GIT_TARGET_SUB_MAIN_WORKTREES=()
 CHOPI_GIT_TARGET_SUB_GITDIRS=()
@@ -213,6 +215,9 @@ collect_layout() {
     fi
 
     CHOPI_GIT_TARGET_WORKTREE="$(pwd -P)"
+
+    CHOPI_GIT_TARGET_IS_MAIN=""
+    [ "$CHOPI_GIT_TARGET_WORKTREE" = "${CHOPI_GIT_MAIN_WORKTREE:-}" ] && CHOPI_GIT_TARGET_IS_MAIN=1
 
     local wt
     for wt in "${all_worktrees[@]+"${all_worktrees[@]}"}"; do

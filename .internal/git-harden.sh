@@ -89,9 +89,6 @@ write_hardening_profile() {
     arity 1
     local profile="$1"
 
-    local is_main=""
-    [ "$CHOPI_GIT_TARGET_WORKTREE" = "${CHOPI_GIT_MAIN_WORKTREE:-}" ] && is_main=1
-
     # shellcheck disable=SC2094  # we embed the profile's own path in a deny rule below
     {
         echo ";; chopi: harden the git internals of the worktree at $CHOPI_GIT_TARGET_WORKTREE"
@@ -106,7 +103,7 @@ write_hardening_profile() {
 
         # The target's own checkout state. For the main worktree it lives directly in the
         # shared dir; for a linked worktree, in its admin dir (.git/worktrees/<id>).
-        if [ -n "$is_main" ]; then
+        if [ -n "$CHOPI_GIT_TARGET_IS_MAIN" ]; then
             allow_checkout_state_writes "$CHOPI_GIT_COMMON_DIR" info-sparse-only
         else
             allow_ref_writes            "$CHOPI_GIT_DIR"
@@ -134,7 +131,7 @@ write_hardening_profile() {
 
         # Re-deny known vectors; They're not included in the grants above, but just in case
         # something accidentally opens them up in the future.
-        if [ -z "$is_main" ]; then
+        if [ -z "$CHOPI_GIT_TARGET_IS_MAIN" ]; then
             rule 'deny file-write*'          literal "$CHOPI_GIT_DIR/config.worktree"
             rule 'deny file-write*'          literal "$CHOPI_GIT_DIR/commondir"
         fi

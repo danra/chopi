@@ -8,15 +8,12 @@ write_isolation_profile() {
     arity 1
     local profile_path="$1"
 
-    local is_main=""
-    [ "$CHOPI_GIT_TARGET_WORKTREE" = "${CHOPI_GIT_MAIN_WORKTREE:-}" ] && is_main=1
-
     # shellcheck disable=SC2094  # we embed the profile's own path in a deny rule below
     {
         echo ";; chopi: isolate the command to the worktree at $CHOPI_GIT_TARGET_WORKTREE"
 
         local wt
-        if [ -n "$is_main" ]; then
+        if [ -n "$CHOPI_GIT_TARGET_IS_MAIN" ]; then
             # Main worktree case
             #
             # The main worktree is already allowed by safehouse, no need to re-allow it
