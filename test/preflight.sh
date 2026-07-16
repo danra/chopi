@@ -134,6 +134,26 @@ assert_contains "$out" "is inside the workspace" "config under a symlinked works
 
 
 # ---------------------------------------------------------------------------
+echo "preflight_config_placement checks the workspace, not the invocation dir"
+# ---------------------------------------------------------------------------
+parent="$(mktemp -d)"
+mkdir -p "$parent/wt"                                   # the "worktree" the command runs in
+repo_cfg="$parent/repo-cfg.sh"; : > "$repo_cfg"         # in the parent, OUTSIDE wt
+
+# Verify no false positives
+out="$( cd "$parent" && preflight_config_placement "$repo_cfg" "$parent/wt" 2>&1 )"; st=$?
+assert_not_contains "$out" "is inside the workspace" "a config under the invocation dir but outside the workspace is allowed"
+if [ "$st" -eq 0 ]; then ok "  -> and returns zero"; else bad "  -> should return zero (got $st)"; fi
+
+# Verify no false negatives
+inside_wt_cfg="$parent/wt/cfg.sh"; : > "$inside_wt_cfg"
+sibling="$(mktemp -d)"
+out="$( cd "$sibling" && preflight_config_placement "$inside_wt_cfg" "$parent/wt" 2>&1 )"; st=$?
+assert_contains "$out" "is inside the workspace" "a config inside the workspace is refused even when invoked from elsewhere"
+if [ "$st" -ne 0 ]; then ok "  -> and returns non-zero"; else bad "  -> should return non-zero (got $st)"; fi
+
+
+# ---------------------------------------------------------------------------
 echo "preflight_config_placement argument handling"
 # ---------------------------------------------------------------------------
 out="$( cd "$work" && preflight_config_placement /no/such/dir/cfg.sh "$work" 2>&1 )"; st=$?

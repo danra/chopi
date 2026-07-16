@@ -1,13 +1,16 @@
 # shellcheck shell=bash
 #
-# preflight.sh -- pre-run checks for `chopi`.
+# preflight.sh -- pre-run checks for chopi, as functions chopi calls at two points.
 #
-# Sourced (never run directly). Exposes chopi's pre-run checks as two functions:
-#   * preflight_initial          -- the workspace doesn't overlap chopi's own dir (a confined
-#                                   command must not reach the policy that confines it), the
-#                                   outgoing proxy is up, and the safehouse CLI is on PATH.
-#   * preflight_config_placement -- a custom --config isn't inside the workspace it would sandbox
-#                                   (whose read/write grant would let a command rewrite it).
+# Sourced (never run directly). The checks are split by WHEN they can run, because chopi
+# only learns the dir the command will actually run in partway through setup:
+#   * preflight_initial          -- runnable up front: the workspace doesn't overlap chopi's
+#                                   own dir (a confined command must not reach the policy
+#                                   that confines it), the outgoing proxy is up, and the
+#                                   safehouse CLI is on PATH.
+#   * preflight_config_placement -- deferred until chopi has resolved the workspace (the
+#                                   --worktree target), since that is the dir a custom
+#                                   --config must stay outside of.
 
 _preflight_dir="$(dirname "${BASH_SOURCE[0]}")"
 . "$_preflight_dir/util.sh"

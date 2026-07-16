@@ -807,6 +807,34 @@ EOF
     assert_contains "$out" "CHOPI_WORKTREE_SETUP" "--worktree refuses a config without CHOPI_WORKTREE_SETUP"
     assert_nonzero "$st" "  -> and exits non-zero"
     assert_absent "$gitrepo/.worktrees/wtnone" "  -> and no worktree is created"
+
+    # --config placement is checked against the WORKTREE (the dir actually sandboxed), not
+    # the invocation dir.
+    #   (a) A config in the repo root but OUTSIDE the target worktree is allowed -- the
+    #       isolated worktree can't write it. (Checking the invocation dir would wrongly
+    #       refuse it.)
+    repo_cfg="$gitrepo_real/wt-repo-cfg.sh"          # in the repo, outside the worktree
+    cat > "$repo_cfg" <<EOF
+. '$repo/config/templates/sandbox.template.sh'
+CHOPI_SAFEHOUSE_FLAGS=()
+CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
+EOF
+    out="$(cd "$gitrepo" && "$repo/bin/chopi" --worktree nested_wt2 --config "$repo_cfg" -- /bin/sh -c 'echo CFG_OK' 2>&1)"; st=$?
+    assert_contains "$out" "CFG_OK"                    "a --config in the repo but outside the target worktree is allowed"
+    assert_zero "$st" "  -> and the run succeeds"
+    #   (b) A config INSIDE the target worktree is refused -- the sandboxed command has
+    #       read/write there and could rewrite the policy that confines its next run.
+    #       (Checking the invocation dir would miss it entirely.)
+    inside_cfg="$nested_wt2/inside-cfg.sh"           # inside the worktree (writable by the command)
+    cat > "$inside_cfg" <<EOF
+. '$repo/config/templates/sandbox.template.sh'
+CHOPI_SAFEHOUSE_FLAGS=()
+CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
+EOF
+    out="$(cd "$gitrepo" && "$repo/bin/chopi" --worktree nested_wt2 --config "$inside_cfg" -- /bin/sh -c 'echo NOPE' 2>&1)"; st=$?
+    assert_contains "$out" "is inside the workspace" "a --config inside the target worktree is refused"
+    assert_not_contains "$out" "NOPE"                  "  -> and the command never runs"
+    assert_nonzero "$st" "  -> and it exits non-zero"
 fi
 
 

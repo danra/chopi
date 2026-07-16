@@ -82,9 +82,6 @@ main() {
     if [ "$#" -eq 0 ]; then echo "$usage" >&2; return 1; fi
 
     preflight_initial || return $?
-    if [ -n "$config_given" ]; then
-        preflight_config_placement "$config" "$(pwd -P)" || return $?
-    fi
 
     local CHOPI_SAFEHOUSE_FLAGS=()
     local CHOPI_EXTRA_ENV=()
@@ -127,6 +124,10 @@ main() {
     local run_dir
     run_dir="$(pwd -P)"
     [ -n "$worktree_dir" ] && run_dir="$worktree_dir"
+
+    if [ -n "$config_given" ]; then
+        preflight_config_placement "$config" "$run_dir" || return $?
+    fi
 
     # Let the agent read context files in the workspace's ancestor dirs.
     local context_profile
@@ -198,9 +199,6 @@ main() {
     local proxy="http://127.0.0.1:$PROXY_PORT"
 
     if [ -n "$worktree_dir" ]; then
-        # Enter the worktree only now -- after preflight ran and the (possibly relative)
-        # --config was sourced against the invocation dir -- so the command runs inside
-        # the worktree without disturbing those invocation-dir-relative resolutions.
         cd "$worktree_dir" || { echo "chopi: cannot enter worktree '$worktree_dir'" >&2; return 1; }
     fi
 
