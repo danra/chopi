@@ -186,6 +186,13 @@ main() {
             rule 'allow file-read* process-exec*' literal "$cleanup_script_path"
             rule 'allow file-read*'               literal "$CHOPI_DIR/.internal/git-layout.sh"
             rule 'allow file-read*'               literal "$CHOPI_DIR/.internal/util.sh"
+            echo ";; chopi: stat-only on chopi's dir chain for in-sandbox cleanup's CHOPI_DIR resolution."
+            local ancestor="$CHOPI_DIR/.internal"
+            while :; do
+                rule 'allow file-read-metadata' literal "$ancestor"
+                [ "$ancestor" = "/" ] && break
+                ancestor="$(dirname "$ancestor")"
+            done
         } > "$wrapper_profile"
         wrapper_flags=(--append-profile "$wrapper_profile")
     elif [ -n "$worktree_given" ]; then
