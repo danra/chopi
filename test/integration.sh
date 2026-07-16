@@ -296,6 +296,9 @@ EOF
     out="$(chopi_wrap /bin/sh -c "cat '$repo/.internal/preflight.sh' >/dev/null 2>&1 && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
     assert_eq "$out" "READ_FAIL"                            "  -> but not the rest of chopi's dir"
 
+    err="$(chopi_wrap /bin/sh -c 'true' 2>&1 >/dev/null)"
+    assert_eq "$err" ""                                     "a no-op run leaves stderr empty"
+
     # safehouse appends profiles based on the invoked command's BASENAME. chopi runs the
     # sandboxed command through the git-protect wrapper (which is argv[0]), so it must present the
     # wrapper under the real command's basename to get the needed grants. Test via safehouse's
