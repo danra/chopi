@@ -208,6 +208,15 @@ assert_nonzero "$st" "  -> and exits non-zero"
 
 
 # ---------------------------------------------------------------------------
+echo "a foreign standalone repo planted at .worktrees/NAME is refused"
+# ---------------------------------------------------------------------------
+git init -q "$repoB/.worktrees/foreign"
+out="$(run_worktree_in_dir_err "$repoB" foreign)"; st=$?
+assert_contains "$out" "not a worktree of this repo" "refuses a foreign standalone repo planted at .worktrees/NAME"
+assert_nonzero "$st" "  -> and exits non-zero"
+
+
+# ---------------------------------------------------------------------------
 echo "an inherited git-location env is refused, naming the offenders"
 # ---------------------------------------------------------------------------
 gitdir="$(realpath "$repoB/.git")"

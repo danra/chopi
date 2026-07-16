@@ -90,6 +90,21 @@ is_prunable_worktree() {
     return 1
 }
 
+is_registered_worktree() {
+    arity 2
+    local wt_list="$1" path="$2"
+    local target
+    target="$(realpath "$path")" || return 1
+    local line listed_path listed
+    while IFS= read -r -d '' line || [ -n "$line" ]; do
+        case "$line" in "worktree "*) ;; *) continue ;; esac
+        listed_path="${line#worktree }"
+        listed="$(realpath "$listed_path" 2>/dev/null)" || continue
+        [ "$listed" = "$target" ] && return 0
+    done < "$wt_list"
+    return 1
+}
+
 setup_worktree() {
     arity 1
     local name="$1"
@@ -162,9 +177,7 @@ setup_worktree() {
     local chopi_worktree_path="$worktrees_dir/$name"
 
     if [ -e "$chopi_worktree_path" ]; then
-        local existing_common
-        if existing_common="$(git -C "$chopi_worktree_path" rev-parse --git-common-dir 2>/dev/null)" \
-            && [ "$(realpath "$existing_common")" = "$git_common_dir" ]; then
+        if is_registered_worktree "$wt_list" "$chopi_worktree_path"; then
             echo "Reusing existing worktree: $chopi_worktree_path" >&2
         else
             echo "error: '$chopi_worktree_path' already exists but is not a worktree of this repo" >&2
