@@ -298,6 +298,20 @@ assert_eq "$out" "$symlinked_wt" "reuse emits the same physical path"
 
 
 # ---------------------------------------------------------------------------
+echo "a manually-deleted worktree is recreated through a symlinked .worktrees"
+# ---------------------------------------------------------------------------
+gone_symlinked="$(realpath "$storage")/gonesym"
+run_worktree_in_dir "$repoD" gonesym >/dev/null
+rm -rf "$gone_symlinked"
+err="$(cd "$repoD" && "$worktree_sh" gonesym 2>&1 >/dev/null)"; st=$?
+assert_zero "$st" "recreate after 'rm -rf' through a symlinked .worktrees exits zero"
+assert_contains "$err" "stale registration" "  -> reporting the stale-registration removal"
+if [ -d "$gone_symlinked" ]; then ok "  -> and the worktree dir is recreated"; else bad "  -> the worktree dir is not recreated"; fi
+assert_eq "$(git -C "$gone_symlinked" rev-parse --abbrev-ref HEAD 2>/dev/null)" "gonesym" \
+    "  -> checked out on the pre-existing branch 'gonesym'"
+
+
+# ---------------------------------------------------------------------------
 echo "the branch upstream is pre-recorded from the repo's remotes"
 # ---------------------------------------------------------------------------
 nonexistent_origin="$TMPDIR/nonexistent-origin.git"

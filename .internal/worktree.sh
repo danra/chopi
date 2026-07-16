@@ -155,7 +155,11 @@ setup_worktree() {
         return 1
     fi
 
-    local chopi_worktree_path="$main_worktree_dir/.worktrees/$name"
+    local worktrees_dir="$main_worktree_dir/.worktrees"
+    if [ -d "$worktrees_dir" ]; then
+        worktrees_dir="$(realpath "$worktrees_dir")"
+    fi
+    local chopi_worktree_path="$worktrees_dir/$name"
 
     if [ -e "$chopi_worktree_path" ]; then
         local existing_common
@@ -171,8 +175,8 @@ setup_worktree() {
             echo "Removing stale registration of manually-deleted worktree: $chopi_worktree_path" >&2
             git worktree remove "$chopi_worktree_path" >&2
         fi
-        if ! mkdir -p "$main_worktree_dir/.worktrees"; then
-            echo "error: could not create worktree parent dir '$main_worktree_dir/.worktrees'" >&2
+        if ! mkdir -p "$worktrees_dir"; then
+            echo "error: could not create worktree parent dir '$worktrees_dir'" >&2
             return 1
         fi
         if git show-ref --verify --quiet "refs/heads/$name"; then
@@ -181,8 +185,6 @@ setup_worktree() {
             git worktree add -b "$name" "$chopi_worktree_path" >&2
         fi
     fi
-
-    chopi_worktree_path="$(realpath "$chopi_worktree_path")"
 
     # Run the pre-sandbox worktree setup
     export CHOPI_WORKTREE_NAME="$name"
