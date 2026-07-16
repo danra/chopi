@@ -6,8 +6,8 @@
 #
 #   * is_path_within / the workspace-overlap predicate -- if this loosens, a sandboxed
 #     command could be handed read/write to its own sandboxing policy.
-#   * preflight's observable behavior: the chopi-dir overlap refusal (and its
-#     CHOPI_ALLOW_SELF downgrade), and the --config-inside-the-workspace refusal.
+#   * preflight_initial -- the chopi-dir overlap refusal (and its CHOPI_ALLOW_SELF downgrade).
+#   * preflight_config_placement -- refusing a custom --config that lives inside the workspace.
 #   * rule / the Seatbelt-rule emitter -- its empty-PATH refusal keeps an
 #     accidentally-empty variable from becoming a silently misapplied rule.
 
@@ -15,6 +15,7 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$repo/.internal/util.sh"
+. "$repo/.internal/preflight.sh"
 . "$repo/test/lib.sh"
 
 header "test/preflight.sh -- unit tests preflight checks"
@@ -74,67 +75,77 @@ if [ "$st" -eq 2 ]; then ok "an empty outer path is a hard error (exit 2)"; else
 
 
 # ---------------------------------------------------------------------------
-echo "preflight chopi/workspace directories overlap test"
+echo "preflight_initial (chopi/workspace directory overlap)"
 # ---------------------------------------------------------------------------
-out="$(cd "$repo"        && env -u CHOPI_ALLOW_SELF ./.internal/preflight.sh 2>&1)"; st=$?
+out="$( cd "$repo" && { unset CHOPI_ALLOW_SELF; preflight_initial; } 2>&1 )"; st=$?
 assert_contains "$out" "overlaps chopi's own directory" "refuses when workspace IS chopi's dir"
-if [ "$st" -ne 0 ]; then ok "  -> and exits non-zero"; else bad "  -> should exit non-zero (got $st)"; fi
+if [ "$st" -ne 0 ]; then ok "  -> and returns non-zero"; else bad "  -> should return non-zero (got $st)"; fi
 
-out="$(cd "$repo/config" && "$repo/.internal/preflight.sh" 2>&1)"
+out="$( cd "$repo/config" && preflight_initial 2>&1 )"
 assert_contains "$out" "overlaps chopi's own directory" "refuses when workspace is INSIDE chopi's dir"
 
-out="$(cd "$(dirname "$repo")" && "$repo/.internal/preflight.sh" 2>&1)"
+out="$( cd "$(dirname "$repo")" && preflight_initial 2>&1 )"
 assert_contains "$out" "overlaps chopi's own directory" "refuses when workspace CONTAINS chopi's dir"
 
-out="$(cd "$repo" && CHOPI_ALLOW_SELF=1 ./.internal/preflight.sh 2>&1)"
+out="$( cd "$repo" && { CHOPI_ALLOW_SELF=1; preflight_initial; } 2>&1 )"
 assert_contains "$out" "warning:"          "CHOPI_ALLOW_SELF downgrades overlap to a warning"
 assert_contains "$out" "continuing anyway" "CHOPI_ALLOW_SELF proceeds past the overlap check"
 
 tmp="$(mktemp -d)"
-out="$(cd "$tmp" && "$repo/.internal/preflight.sh" 2>&1)"
+out="$( cd "$tmp" && preflight_initial 2>&1 )"
 assert_not_contains "$out" "overlaps chopi's own directory" "non-overlapping workspace clears the overlap check"
 
 
 # ---------------------------------------------------------------------------
-echo "preflight --config (custom sandbox config must live outside the workspace)"
+echo "preflight_config_placement (custom --config must live outside the workspace)"
 # ---------------------------------------------------------------------------
 work="$(mktemp -d)"
 cfg_inside="$work/sandbox.sh"; : > "$cfg_inside"
 
-out="$(cd "$work" && env -u CHOPI_ALLOW_SELF "$repo/.internal/preflight.sh" --config "$cfg_inside" 2>&1)"; st=$?
-assert_contains "$out" "is inside the workspace" "refuses a --config placed inside the workspace"
-if [ "$st" -ne 0 ]; then ok "  -> and exits non-zero"; else bad "  -> should exit non-zero (got $st)"; fi
+out="$( cd "$work" && { unset CHOPI_ALLOW_SELF; preflight_config_placement "$cfg_inside" "$work"; } 2>&1 )"; st=$?
+assert_contains "$out" "is inside the workspace" "refuses a --config inside the workspace"
+if [ "$st" -ne 0 ]; then ok "  -> and returns non-zero"; else bad "  -> should return non-zero (got $st)"; fi
 
-out="$(cd "$work" && "$repo/.internal/preflight.sh" --config sandbox.sh 2>&1)"
+# A relative --config resolves against the current dir (the invocation dir), so entering
+# $work and naming it 'sandbox.sh' still lands inside the workspace.
+out="$( cd "$work" && preflight_config_placement sandbox.sh "$work" 2>&1 )"
 assert_contains "$out" "is inside the workspace" "refuses a relative --config that lands inside the workspace"
 
 mkdir -p "$work/sub"; : > "$work/sub/cfg.sh"
-out="$(cd "$work" && "$repo/.internal/preflight.sh" --config "$work/sub/cfg.sh" 2>&1)"
+out="$( cd "$work" && preflight_config_placement "$work/sub/cfg.sh" "$work" 2>&1 )"
 assert_contains "$out" "is inside the workspace" "refuses a --config nested in a workspace subdir"
 
-out="$(cd "$work" && CHOPI_ALLOW_SELF=1 "$repo/.internal/preflight.sh" --config "$cfg_inside" 2>&1)"
+out="$( cd "$work" && { CHOPI_ALLOW_SELF=1; preflight_config_placement "$cfg_inside" "$work"; } 2>&1 )"
 assert_contains "$out" "warning:"          "CHOPI_ALLOW_SELF downgrades the --config overlap to a warning"
 assert_contains "$out" "continuing anyway" "CHOPI_ALLOW_SELF proceeds past the --config overlap check"
 
 cfg_outside="$(mktemp)"
-out="$(cd "$work" && "$repo/.internal/preflight.sh" --config "$cfg_outside" 2>&1)"
+out="$( cd "$work" && preflight_config_placement "$cfg_outside" "$work" 2>&1 )"; st=$?
 assert_not_contains "$out" "is inside the workspace" "a --config outside the workspace clears the overlap check"
+if [ "$st" -eq 0 ]; then ok "  -> and returns zero"; else bad "  -> should return zero (got $st)"; fi
 
-out="$(cd "$work" && "$repo/.internal/preflight.sh" --config /no/such/dir/cfg.sh 2>&1)"; st=$?
-assert_contains "$out" "cannot resolve --config" "a nonexistent --config path fails fast"
-if [ "$st" -ne 0 ]; then ok "  -> and exits non-zero"; else bad "  -> should exit non-zero (got $st)"; fi
-
-# Symlink consistency: enter the workspace through a symlink but name --config by its REAL
-# path. Logical-only handling would miss the overlap (the two spellings share no prefix);
-# canonicalizing both sides (workspace via `pwd -P`, config via `realpath`) catches it.
+# Symlink consistency: name the workspace through a symlink but the --config by its REAL path.
+# Logical-only handling would miss the overlap (the two spellings share no prefix);
+# canonicalizing both sides (via `realpath`) catches it.
 real="$(mktemp -d)"; : > "$real/cfg.sh"
 linkdir="$(mktemp -d)"; ln -s "$real" "$linkdir/ws"
-out="$(cd "$linkdir/ws" && "$repo/.internal/preflight.sh" --config "$real/cfg.sh" 2>&1)"
+out="$(preflight_config_placement "$real/cfg.sh" "$linkdir/ws" 2>&1)"
 assert_contains "$out" "is inside the workspace" "config under a symlinked workspace is caught via its real path"
 
-out="$(cd "$work" && "$repo/.internal/preflight.sh" --config 2>&1)"; st=$?
-assert_contains "$out" "--config requires a file path" "--config with no argument is rejected"
-if [ "$st" -ne 0 ]; then ok "  -> and exits non-zero"; else bad "  -> should exit non-zero (got $st)"; fi
+
+# ---------------------------------------------------------------------------
+echo "preflight_config_placement argument handling"
+# ---------------------------------------------------------------------------
+out="$( cd "$work" && preflight_config_placement /no/such/dir/cfg.sh "$work" 2>&1 )"; st=$?
+assert_contains "$out" "cannot resolve --config" "a nonexistent --config path fails fast"
+if [ "$st" -ne 0 ]; then ok "  -> and returns non-zero"; else bad "  -> should return non-zero (got $st)"; fi
+
+out="$(preflight_config_placement "$cfg_outside" /no/such/run/dir 2>&1)"; st=$?
+assert_contains "$out" "cannot resolve run dir" "a nonexistent run dir fails fast"
+if [ "$st" -ne 0 ]; then ok "  -> and returns non-zero"; else bad "  -> should return non-zero (got $st)"; fi
+
+( preflight_config_placement "$cfg_outside" ) 2>/dev/null; st=$?
+if [ "$st" -eq 2 ]; then ok "a wrong number of arguments is a hard error (exit 2)"; else bad "wrong arity should be a hard error (got $st)"; fi
 
 
 # ---------------------------------------------------------------------------

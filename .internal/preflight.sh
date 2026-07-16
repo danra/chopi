@@ -1,26 +1,18 @@
-#!/usr/bin/env bash
+# shellcheck shell=bash
 #
 # preflight.sh -- pre-run checks for `chopi`.
 #
-# Not run directly; `chopi` calls this before invoking safehouse.
-#
-# Checks, in order:
-#   * the workspace doesn't overlap chopi's own dir (a confined command must not be able
-#     to reach the policy that confines it),
-#   * a custom --config, if given, isn't placed inside the workspace it would sandbox,
-#   * the outgoing proxy is already up, and
-#   * the safehouse CLI is on PATH.
-#
-# usage: preflight.sh [--config FILE]
-#   --config FILE  custom sandbox config to verify not placed inside the workspace.
+# Sourced (never run directly). Exposes chopi's pre-run checks as two functions:
+#   * preflight_initial          -- the workspace doesn't overlap chopi's own dir (a confined
+#                                   command must not reach the policy that confines it), the
+#                                   outgoing proxy is up, and the safehouse CLI is on PATH.
+#   * preflight_config_placement -- a custom --config isn't inside the workspace it would sandbox
+#                                   (whose read/write grant would let a command rewrite it).
 
-set -euo pipefail
+_preflight_dir="$(dirname "${BASH_SOURCE[0]}")"
+. "$_preflight_dir/util.sh"
+unset _preflight_dir
 
-SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
-
-. "$SCRIPT_DIR/util.sh"
-
-# self-overlap guard: hard-error, or warn if CHOPI_ALLOW_SELF is set
 refuse_or_warn() {
     arity 3
     local reason="$1" detail="$2" hint="$3"
@@ -37,22 +29,11 @@ refuse_or_warn() {
     fi
 }
 
-preflight() {
+preflight_initial() {
+    arity 0
+
     local workspace_dir
     workspace_dir="$(pwd -P)" || { echo "error: cannot resolve current directory" >&2; return 1; }
-
-    # Optional path to a custom sandbox config (chopi's --config). Empty means the
-    # default config/sandbox.sh, which lives under chopi's own dir and is therefore
-    # already covered by the chopi-dir overlap check below.
-    local config_file=""
-    while [ "$#" -gt 0 ]; do
-        case "$1" in
-            --config)
-                if [ "$#" -lt 2 ]; then echo "error: --config requires a file path" >&2; return 1; fi
-                config_file="$2"; shift 2 ;;
-            *) echo "error: preflight: unexpected argument: $1" >&2; return 1 ;;
-        esac
-    done
 
     # chopi's whole promise is that it lives OUTSIDE the tree it sandboxes, so a
     # confined command can't reach chopi's own policy and edit what confines
@@ -67,22 +48,6 @@ preflight() {
             "the sandboxed command would get read/write access to its own config" \
             "Run chopi from inside the repo you're working on, not from chopi's own dir, a parent of it, or a subdir of it." \
             || return 1
-    fi
-
-    # Verify a custom --config file doesn't live inside the workspace
-    if [ -n "$config_file" ]; then
-        local config_abs
-        if ! config_abs="$(realpath "$config_file" 2>/dev/null)"; then
-            echo "error: cannot resolve --config path '$config_file' (does it exist?)" >&2
-            return 1
-        fi
-        if is_path_within "$config_abs" "$workspace_dir"; then
-            refuse_or_warn \
-                "--config file '$config_abs' is inside the workspace ('$workspace_dir')" \
-                "the sandboxed command would get read/write access to the config that defines its own sandbox" \
-                "Keep the sandbox config outside the workspace you're sandboxing." \
-                || return 1
-        fi
     fi
 
     # The outgoing proxy must already be running in its own terminal. We deliberately
@@ -112,4 +77,24 @@ preflight() {
     fi
 }
 
-preflight "$@"
+preflight_config_placement() {
+    arity 2
+    local config_file="$1" run_dir="$2"
+
+    local real_run_dir
+    real_run_dir="$(realpath "$run_dir" 2>/dev/null)" \
+        || { echo "error: preflight: cannot resolve run dir '$run_dir'" >&2; return 1; }
+
+    local config_abs
+    if ! config_abs="$(realpath "$config_file" 2>/dev/null)"; then
+        echo "error: cannot resolve --config path '$config_file' (does it exist?)" >&2
+        return 1
+    fi
+    if is_path_within "$config_abs" "$real_run_dir"; then
+        refuse_or_warn \
+            "--config file '$config_abs' is inside the workspace ('$real_run_dir')" \
+            "the sandboxed command would get read/write access to the config that defines its own sandbox" \
+            "Keep the sandbox config outside the workspace you're sandboxing." \
+            || return 1
+    fi
+}

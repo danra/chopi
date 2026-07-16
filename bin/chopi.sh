@@ -12,6 +12,7 @@ SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 . "$SCRIPT_DIR/../.internal/util.sh"
 . "$SCRIPT_DIR/../.internal/git-layout.sh"
 . "$SCRIPT_DIR/../.internal/context-reads.sh"
+. "$SCRIPT_DIR/../.internal/preflight.sh"
 
 usage="usage: chopi [--config FILE] [--verbose] [--worktree NAME] <executable> [args...]
 
@@ -80,12 +81,10 @@ main() {
 
     if [ "$#" -eq 0 ]; then echo "$usage" >&2; return 1; fi
 
-    # Empty-array expansions below use the "${a[@]+"${a[@]}"}" form so they stay silent
-    # under `set -u` on bash 3.2 (macOS's system bash), where a bare "${a[@]}" on an empty
-    # array is an "unbound variable" error.
-    local preflight_args=()
-    [ -n "$config_given" ] && preflight_args=(--config "$config")
-    "$CHOPI_DIR/.internal/preflight.sh" "${preflight_args[@]+"${preflight_args[@]}"}" || return $?
+    preflight_initial || return $?
+    if [ -n "$config_given" ]; then
+        preflight_config_placement "$config" "$(pwd -P)" || return $?
+    fi
 
     local CHOPI_SAFEHOUSE_FLAGS=()
     local CHOPI_EXTRA_ENV=()
@@ -113,6 +112,10 @@ main() {
             return 1
         fi
     fi
+
+    # Empty-array expansions below use the "${a[@]+"${a[@]}"}" form so they stay silent
+    # under `set -u` on bash 3.2 (macOS's system bash), where a bare "${a[@]}" on an empty
+    # array is an "unbound variable" error.
 
     # Refuse running with git setups that chopi doesn't support.
     local protection_args=()
