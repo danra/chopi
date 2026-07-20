@@ -176,9 +176,7 @@ root, the same condition under which its git protections apply.
 `chopi` lives in its own directory, outside of the repos you sandbox, so a command you 
 run under it can't read or tamper with the sandbox's own config. `chopi` enforces
 this, refusing to run when it finds its own folder in the workspace (and also in 
-the more obscure case where the workspace is within `chopi`'s own folder). Set
-`CHOPI_ALLOW_SELF=1` in your environment to downgrade the enforcement to a warning
-and run anyway (useful mainly for dogfooding `chopi` for developing `chopi` itself).
+the more obscure case where the workspace is within `chopi`'s own folder).
 
 ## Why two layers
 
@@ -202,27 +200,15 @@ harnesses (Claude Code, Codex, Gemini CLI, Copilot CLI, opencode, Pi) do this by
 on current versions; a few (e.g. Cursor CLI) need `NODE_USE_ENV_PROXY=1`, which `chopi` also
 sets in the sandbox env.
 
+Network path of the sandboxed command:
+
 ```
-  Terminal 1 (start once, leave running)
-  ──────────────────────────────────────
-  $ chopi-proxy
-       → smokescreen listens on 127.0.0.1:4760, enforcing config/proxy-rules.yaml
-         (hot-reloaded on edit)
-
-  Terminal 2 (from inside the repo you're working on)
-  ───────────────────────────────────────────────────
-  $ chopi <cmd> [args...]
-       → safehouse builds the Seatbelt policy and runs <cmd> inside it
-         (confined to your current directory), with HTTPS_PROXY=127.0.0.1:4760
-
-  Network path of the sandboxed command:
-
-      <cmd>
-        │  Seatbelt allows outgoing connections ONLY to 127.0.0.1:4760
-        ▼
-      smokescreen ──(host allowed?)──────▶  api.anthropic.com / api.github.com / downloads.claude.ai
-        │
-        └────────(not allowed)───────────▶  refused + logged in Terminal 1
+<cmd>
+  │  Seatbelt allows outgoing connections ONLY to 127.0.0.1:4760
+  ▼
+smokescreen ──(host allowed?)──────▶  api.anthropic.com / api.github.com / downloads.claude.ai
+  │
+  └────────(not allowed)───────────▶  refused + logged
 ```
 
 
@@ -261,3 +247,8 @@ make test     # build, then run unit and integration tests
 make lint     # shellcheck the scripts, go vet the proxy
 make check    # lint, then test
 ```
+
+### Dogfooding Chopi
+
+By default, `chopi`'s refuses protecting a workspace that overlaps `chopi`s folder;
+set `CHOPI_ALLOW_SELF=1` to override when developing `chopi`.
