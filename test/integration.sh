@@ -11,6 +11,8 @@
 #   * network: an allowed host is reachable THROUGH the proxy; a host that's not allowed
 #     is refused by the proxy (and the denial is logged + notified); any direct outgoing connection
 #     that bypasses the proxy, or aims at a non-4760 port, is blocked by Seatbelt.
+#   * rules hot reload: an edit to the rules file takes effect while the proxy runs; a
+#     broken edit is refused loudly and the previous rules stay in effect.
 
 set -euo pipefail
 
@@ -22,6 +24,7 @@ header "test/integration.sh -- chopi's end-to-end integration tests"
 
 ALLOWED_HOST="www.google.com"      # allowed in the test rules       -> reachable through the proxy
 DENIED_HOST="www.microsoft.com"    # NOT allowed in the test rules   -> refused by the proxy
+OTHER_DENIED_HOST="www.wikipedia.org"  # never allowed -> stays refused across the hot-reload tests
 
 
 # ---------------------------------------------------------------------------
@@ -33,8 +36,8 @@ skip() { arity 1; echo "SKIP: $1"; exit 0; }
 for t in safehouse jq alerter nc; do
     command -v "$t" >/dev/null 2>&1 || skip "missing required tool on PATH: $t"
 done
-# smokescreen is invoked by absolute path (it isn't on PATH); mirror chopi-proxy.sh's check.
-[ -x "$SMOKESCREEN_BIN" ] || skip "missing smokescreen at $SMOKESCREEN_BIN"
+# The proxy binary is invoked by absolute path (it isn't on PATH); mirror chopi-proxy.sh's check.
+[ -x "$SMOKESCREEN_BIN" ] || skip "proxy binary not built at $SMOKESCREEN_BIN (run: make build)"
 if nc -z 127.0.0.1 "$PROXY_PORT" 2>/dev/null; then
     skip "port $PROXY_PORT is already in use -- stop your running chopi-proxy first"
 fi
@@ -71,7 +74,10 @@ CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
 EOF
 
 # Test rules: exactly one host allowed.
-cat > "$rules" <<EOF
+# A function because the hot-reload tests below restore this same baseline mid-run.
+write_test_rules() {
+    arity 0
+    cat > "$rules" <<EOF
 version: v1
 services: []
 default:
@@ -80,6 +86,8 @@ default:
   allowed_domains:
     - $ALLOWED_HOST
 EOF
+}
+write_test_rules
 
 # alerter shim: record each invocation (so we can prove the denial-notification path fired)
 # instead of popping a real macOS banner per DENY.
@@ -91,16 +99,24 @@ exit 0
 EOF
 chmod +x "$alerter_stub/alerter"
 
+# Poll FILE until PATTERN (literal) appears on at least COUNT lines -- for asserting a
+# repeat of an already-seen log line (e.g. a second rules reload).
+wait_for_count() {
+    arity 3
+    local f="$1" pat="$2" count="$3" _
+    for _ in {1..50}; do
+        [ "$(grep -Fc "$pat" "$f" 2>/dev/null)" -ge "$count" ] && return 0
+        sleep 0.1
+    done
+    return 1
+}
+
 # Poll FILE for PATTERN (literal) -- the proxy writes its log and fires the alerter
 # asynchronously, so log assertions must wait rather than read once.
 wait_for() {
     arity 2
-    local f="$1" pat="$2" _
-    for _ in {1..50}; do
-        grep -Fq "$pat" "$f" 2>/dev/null && return 0
-        sleep 0.1
-    done
-    return 1
+    local f="$1" pat="$2"
+    wait_for_count "$f" "$pat" 1
 }
 
 
@@ -353,6 +369,54 @@ assert_not_contains "$code" "200"                  "a direct outgoing connection
 # (network.sb only allows localhost:4760). Offline-safe.
 code="$(sandbox_curl --max-time 15 --proxy "http://127.0.0.1:4761" "https://$ALLOWED_HOST")"
 assert_not_contains "$code" "200"                  "an outgoing connection to a non-4760 loopback port is blocked by the sandbox"
+
+
+# ---------------------------------------------------------------------------
+echo "rules hot reload (edits take effect without restarting the proxy)"
+# ---------------------------------------------------------------------------
+# The proxy polls the rules file and swaps freshly loaded rules.
+# (1) Allowing the denied host must lift its denial with no proxy restart; the log
+# confirms the reload happened.
+printf '    - %s\n' "$DENIED_HOST" >> "$rules"
+if wait_for "$proxy_log" "rules reloaded"; then
+    ok "the proxy reloaded the rules after the file changed"
+else
+    bad "the proxy did NOT log a rules reload after the file changed"
+fi
+if curl -sS -o /dev/null --max-time 10 "https://$DENIED_HOST" 2>/dev/null; then
+    code="$(sandbox_curl --max-time 20 "https://$DENIED_HOST")"
+    assert_eq "$code" "200"                        "the previously denied host is now reachable THROUGH the proxy"
+else
+    echo "  SKIP hot-reloaded host reachability (no connectivity to $DENIED_HOST)"
+fi
+
+# (2) A broken edit is refused loudly and the previous rules stay in effect: hosts not
+# on the allowlist stay refused.
+printf 'all rules have been broken\n' > "$rules"
+if wait_for "$proxy_log" "RULES RELOAD FAILED"; then
+    ok "a broken rules edit is logged loudly as a failed reload"
+else
+    bad "a broken rules edit did NOT log a failed reload"
+fi
+code="$(sandbox_curl --max-time 20 "https://$OTHER_DENIED_HOST")"
+assert_not_contains "$code" "200"                  "after a failed reload the previous rules still refuse other hosts"
+# ...and the host the last good edit ALLOWED stays reachable.
+if curl -sS -o /dev/null --max-time 10 "https://$DENIED_HOST" 2>/dev/null; then
+    code="$(sandbox_curl --max-time 20 "https://$DENIED_HOST")"
+    assert_eq "$code" "200"                        "after a failed reload the previously allowed host is still reachable"
+else
+    echo "  SKIP still-allowed host reachability (no connectivity to $DENIED_HOST)"
+fi
+
+# (3) Fixing the file reloads again.
+write_test_rules
+if wait_for_count "$proxy_log" "rules reloaded" 2; then
+    ok "the proxy reloaded again once the rules were fixed"
+else
+    bad "the proxy did NOT reload after the rules were fixed"
+fi
+code="$(sandbox_curl --max-time 20 "https://$DENIED_HOST")"
+assert_not_contains "$code" "200"                  "the restored rules refuse the host again"
 
 
 # ---------------------------------------------------------------------------

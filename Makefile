@@ -1,4 +1,4 @@
-.PHONY: test lint check install
+.PHONY: build test lint check install
 
 # Shell sources that shellcheck should analyze.
 SHELL_SOURCES = \
@@ -30,7 +30,13 @@ SHELL_SOURCES = \
 	test/context-reads.sh \
 	test/integration.sh
 
+PROXY_DIR = .internal/proxy
+
+build:
+	@$(MAKE) -C $(PROXY_DIR) build
+
 test:
+	@$(MAKE) -C $(PROXY_DIR) test
 	@./test/git-protect-wrapper.sh
 	@./test/git-preflight.sh
 	@./test/git-protect-cleanup.sh
@@ -48,6 +54,7 @@ lint:
 	else \
 		echo "shellcheck not installed -- skipping (brew install shellcheck)"; \
 	fi
+	@$(MAKE) -C $(PROXY_DIR) lint
 
 check: lint test
 

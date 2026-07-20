@@ -29,8 +29,8 @@ Before first use, review the configuration.
 
 To add or remove allowed domains, edit `config/proxy-rules.yaml`. You can also modify the list
 of known denied domains that don't generate alerts -- important for keeping blocked telemetry,
-auto-updates etc. from spamming you with notifications. **Restart the proxy** if it's already
-running for edits to take effect.
+auto-updates etc. from spamming you with notifications. You can add and remove domains while
+the proxy is running and they'll take effect immediately.
 
 To configure the sandbox policy, edit the first two settings in `config/sandbox.sh` (other
 settings can be reviewed later):
@@ -70,11 +70,6 @@ configuration.
    terminal in System Settings -> Notifications.) Hosts matching the known denylist
    are the exception: their denials log a single quiet `deny(known)` line per
    proxy run, with no notification.
-
-   The proxy only reads the rules at startup, so after editing them **restart
-   the proxy** (Ctrl-C, then `chopi-proxy` again). The new rules will take
-   effect for any new connections in existing `chopi` sessions; you don't have
-   to restart them (unless you need to kill an already established connection).
 
 2. **Run your command** under the sandbox from another terminal, inside the repo
    you're working on:
@@ -212,6 +207,7 @@ sets in the sandbox env.
   ──────────────────────────────────────
   $ chopi-proxy
        → smokescreen listens on 127.0.0.1:4760, enforcing config/proxy-rules.yaml
+         (hot-reloaded on edit)
 
   Terminal 2 (from inside the repo you're working on)
   ───────────────────────────────────────────────────
@@ -235,9 +231,8 @@ sets in the sandbox env.
 - **A network connection was refused** -- First verify that the proxy is running.
   Refused hosts appear as red `DENY` lines in the log (or as a single plain
   `deny(known)` line if they match the known denylist); if the host should be allowed,
-  add it to `config/proxy-rules.yaml` and restart the proxy. You don't have
-  to restart any of your existing `chopi` sessions: the added domains will be
-  immediately allowed.
+  add it to `config/proxy-rules.yaml`. The proxy hot-reloads the rules, so you don't
+  need to restart it.
 - **A non-network sandbox denial** -- See Agent Safehouse's
 - [Debugging Sandbox Denials](https://agent-safehouse.dev/docs/debugging.html)
   to analyze, and amend `config/sandbox.sh` (or another `safehouse` persistent
@@ -251,10 +246,18 @@ sets in the sandbox env.
 To change the default configuration a fresh install starts from, edit the templates
 under `config/templates`.
 
+### The proxy binary
+
+The proxy is an in-repo Go wrapper, `.internal/proxy/`, that embeds smokescreen as a
+library and hot-reloads the rules file (the standalone smokescreen binary only reads
+its rules at startup). `install.sh` and `make build` compile it to
+`.internal/proxy/chopi-smokescreen`.
+
 ### Tests
 
 ```sh
-make test     # run unit and integration tests
-make lint     # shellcheck the scripts
+make build    # build the proxy binary (needs go)
+make test     # build, then run unit and integration tests
+make lint     # shellcheck the scripts, go vet the proxy
 make check    # lint, then test
 ```

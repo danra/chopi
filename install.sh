@@ -51,21 +51,13 @@ ensure_brew safehouse eugene1g/safehouse/agent-safehouse
 # already cached as "not found"; clear the cache before relying on `go` below.
 hash -r 2>/dev/null || true
 
-# smokescreen isn't a Homebrew formula, so install it with `go install`.
-if [ -x "$SMOKESCREEN_BIN" ]; then
-    echo "  ok: smokescreen already installed ($SMOKESCREEN_BIN)"
+if command -v go >/dev/null 2>&1; then
+    echo "  building chopi-smokescreen"
+    trace_on; make -C "$CHOPI_DIR" build; trace_off
 else
-    if ! command -v go >/dev/null 2>&1; then
-        echo "error: go is needed to install smokescreen but isn't on PATH yet." >&2
-        echo "Open a new terminal so PATH picks up Homebrew, then re-run this script." >&2
-        exit 1
-    fi
-    echo "  installing smokescreen"
-    trace_on; go install github.com/stripe/smokescreen@latest; trace_off
-    if [ ! -x "$SMOKESCREEN_BIN" ]; then
-        echo "warning: smokescreen installed, but not at $SMOKESCREEN_BIN (chopi expects it there)." >&2
-        echo "         Check 'go env GOBIN' / 'go env GOPATH' -- it may have gone elsewhere." >&2
-    fi
+    echo "error: go is needed to build chopi's proxy but isn't on PATH yet." >&2
+    echo "Open a new terminal so PATH picks up Homebrew, then re-run this script." >&2
+    exit 1
 fi
 
 

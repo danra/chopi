@@ -18,6 +18,8 @@ usage: $SCRIPT_NAME [--rules FILE] [--verbose]   # listens on 127.0.0.1:$PROXY_P
                      config/proxy-rules.yaml
   --verbose          show smokescreen's output verbatim, interleaved with chopi-proxy's
                      own: nothing is dropped or replaced.
+
+Edits to the rules file take effect while the proxy runs; no restart needed.
 EOF
 }
 
@@ -47,8 +49,8 @@ if nc -z 127.0.0.1 "$PROXY_PORT" 2>/dev/null; then
 fi
 
 if [ ! -x "$SMOKESCREEN_BIN" ]; then
-    echo "Can't execute smokescreen. Install it with the installer ($CHOPI_DIR/install.sh)" >&2
-    echo "or manually:  go install github.com/stripe/smokescreen@latest" >&2
+    echo "Can't run chopi's proxy. Build it with the installer ($CHOPI_DIR/install.sh)" >&2
+    echo "or manually:  make -C \"$CHOPI_DIR\" build" >&2
     exit 1
 fi
 
@@ -91,7 +93,8 @@ fi
 
 . "$CHOPI_DIR/.internal/classify-log.sh"
 for f in "$CONNECTION_FILTER" "$DENY_HOST_FILTER" "$KNOWN_DENY_FILTER" \
-         "$FORMAT_DENY_FILTER" "$FORMAT_MISC_FILTER"; do
+         "$FORMAT_DENY_FILTER" "$FORMAT_RELOAD_FILTER" "$FORMAT_MISC_FILTER" \
+         "$JQ_LIB_DIR/util.jq"; do
     if [ ! -f "$f" ]; then
         echo "error: missing log filter at $f" >&2
         exit 1
@@ -102,6 +105,8 @@ done
 # - Denied connections show as "DENY host @ time" and trigger notifications
 # - Denials of hosts matching the configured denylist show as a plain "deny(known)" line,
 #   once per host per session -- no notification, repeats dropped
+# - Rules hot-reloads show as a plain "rules reloaded" line; a failed reload (the edit
+#   did NOT take effect) shows as a loud "RULES RELOAD FAILED" line
 # - Allowed connections and the known noise are dropped
 # - Every other line passes through. notify_deny pops the macOS banner on each DENY.
 format_smokescreen_log() {

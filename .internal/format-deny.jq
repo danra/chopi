@@ -15,20 +15,14 @@
 #   $host           (string) the host already resolved by deny-host.jq (a name or the "?" placeholder)
 #   $known          (string) known-deny.jq's verdict: non-empty selects the quiet known flavor
 
-def esc: ([27] | implode);   # U+001B ANSI escape, introduces the color code below
-def bel: ([7]  | implode);   # U+0007 BEL, badges a backgrounded terminal's Dock icon
+include "util";
 
-def paint($s; $code): if $is_interactive then esc + "[" + $code + "m" + $s + esc + "[0m" else $s end;
 # A bell character (BEL) on a loud DENY. When this window is in the background, macOS
 # Terminal.app and iTerm2 turn that bell into a red badge on the Dock icon, so a refused
 # connection gets noticed even while you are looking at another window doing sandboxed work.
 def bell: if $is_interactive and $known == "" then bel else "" end;
 
 def marker: if $known == "" then paint("DENY"; "31") else "deny(known)" end;
-
-# Render a field: the value itself when it names something (a string with at least one
-# non-whitespace character), else "?".
-def field($v): if ($v | type) == "string" and ($v | test("\\S")) then $v else "?" end;
 
 (try fromjson catch null) as $entry
 | bell + "[" + $script + "] " + marker

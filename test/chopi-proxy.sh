@@ -182,7 +182,7 @@ assert_eq "$out" "[chopi-proxy.sh] deny(known)  tele.example:443  @ T
 [chopi-proxy.sh] deny(known)  other.example:443  @ T3" "known denies of two different hosts -> one line each"
 
 # The seen-set only mutes known denies: the same host denied again by another rule is loud.
-# (never expecting such a case currently; will be possible in the future if we make the proxy's lists hot-reloadable)
+# (reachable since the rules hot-reload: an edit mid-session can remove a known deny entry, so it's now unknown)
 out="$(printf '%s\n' "$known_deny" "$unknown_deny" | classify false)"
 assert_eq "$out" "[chopi-proxy.sh] deny(known)  tele.example:443  @ T
 [chopi-proxy.sh] DENY  tele.example:443  @ T2" "an unknown deny of an already-seen host is still loud"
@@ -215,6 +215,55 @@ out="$(
 assert_eq "$out" "[chopi-proxy.sh] DENY  tele.example:443  @ T
 [chopi-proxy.sh] DENY  late.example  @ T" \
     "a known-deny.jq failure -> the deny surfaces LOUD and the loop continues (under set -e)"
+
+
+# ---------------------------------------------------------------------------
+echo "rules hot-reload lines (format-reload: plain on reload, loud on failure)"
+# ---------------------------------------------------------------------------
+# The proxy wrapper (.internal/proxy/main.go) logs a reload of the rules file as JSON;
+# the classifier renders it. A successful reload is routine -> plain line; a FAILED
+# reload means the user's edit did NOT take effect (the previous rules stay in force),
+# so it is as loud as a DENY: BEL + red marker on an interactive terminal.
+reload_ok='{"level":"info","msg":"egress ACL reloaded","rules":"/x/rules.yaml","time":"T"}'
+reload_fail='{"level":"error","msg":"egress ACL reload failed; keeping the previous rules","error":"yaml: line 3: could not find expected key","rules":"/x/rules.yaml","time":"T"}'
+
+out="$(printf '%s\n' "$reload_ok" | classify false)"
+assert_eq "$out" "[chopi-proxy.sh] rules reloaded  @ T" "rules reload -> plain 'rules reloaded' line"
+
+out="$(printf '%s\n' "$reload_ok" | classify true)"
+assert_eq "$out" "[chopi-proxy.sh] rules reloaded  @ T" "interactive rules reload -> still plain (no BEL, no color)"
+
+out="$(printf '%s\n' "$reload_fail" | classify false)"
+assert_eq "$out" "[chopi-proxy.sh] RULES RELOAD FAILED (previous rules kept)  yaml: line 3: could not find expected key  @ T" \
+    "failed reload -> loud line naming the parse error"
+
+out="$(printf '%s\n' "$reload_fail" | classify true)"
+assert_prefix "$out" "$BEL" "interactive failed reload is prefixed with a BEL (dock badge)"
+assert_contains "$out" "${ESC}[31m" "interactive failed reload is ANSI-colored red"
+assert_contains "$out" "could not find expected key" "interactive failed reload still names the error"
+
+out="$(printf '%s\n' '{"level":"error","msg":"egress ACL reload failed; keeping the previous rules","time":"T"}' | classify false)"
+assert_eq "$out" "[chopi-proxy.sh] RULES RELOAD FAILED (previous rules kept)  ?  @ T" \
+    "a failed reload missing the error field still surfaces loud"
+
+out="$(printf '%s\n' "$reload_ok" | classify_verbose false)"
+assert_eq "$out" "$reload_ok
+[chopi-proxy.sh] rules reloaded  @ T" "verbose rules reload -> raw line, then the formatted line after it"
+
+# Fail-safe under the live proxy's `set -e`: if format-reload.jq itself fails, the line
+# surfaces raw (via format-misc.jq) and the loop survives to process later lines.
+poison_filter="$(mktemp)"
+printf '%s\n' 'error("simulated jq failure")' > "$poison_filter"
+out="$(
+    set -euo pipefail
+    # shellcheck disable=SC2030 # deliberately subshell-local
+    FORMAT_RELOAD_FILTER="$poison_filter"
+    printf '%s\n' "$reload_ok" '{"allow":false,"requested_host":"late.example","time":"T"}' \
+        | classify_log false "chopi-proxy.sh" "" false
+)"
+assert_eq "$out" "$reload_ok
+[chopi-proxy.sh] DENY  late.example  @ T" \
+    "a format-reload.jq failure -> the reload line surfaces raw and the loop continues (under set -e)"
 
 
 # ---------------------------------------------------------------------------

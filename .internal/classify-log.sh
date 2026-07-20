@@ -14,7 +14,9 @@
 #                               per host per session, no deny hook
 #                             anything else -> run the deny hook, print a loud DENY line
 #                           allowed -> nothing to show, drop it
-#     no  -> format-misc.jq drop the known noise, pass anything else through unchanged
+#     no  -> format-reload.jq a rules hot-reload line? render it: plain for a reload,
+#                           loud for a failed one (the previous rules stay in effect)
+#       no  -> format-misc.jq drop the known noise, pass anything else through unchanged
 #
 # That is a couple of extra jq invocations per line, which is nothing at log volumes, in
 # exchange for filters that each do exactly one thing.
@@ -30,7 +32,9 @@ CONNECTION_FILTER="$_classify_dir/connection-request.jq"
 DENY_HOST_FILTER="$_classify_dir/deny-host.jq"
 KNOWN_DENY_FILTER="$_classify_dir/known-deny.jq"
 FORMAT_DENY_FILTER="$_classify_dir/format-deny.jq"
+FORMAT_RELOAD_FILTER="$_classify_dir/format-reload.jq"
 FORMAT_MISC_FILTER="$_classify_dir/format-misc.jq"
+JQ_LIB_DIR="$_classify_dir"
 unset _classify_dir
 
 # emit the raw line, unless verbose mode already printed it
@@ -86,7 +90,7 @@ known_deny_seen() {
 # silently dropped DENY is not, so a failed classifier always errs toward surfacing the raw line.
 classify_log() {
     arity 4
-    local is_interactive="$1" script="$2" on_deny="$3" verbose="$4" line host known
+    local is_interactive="$1" script="$2" on_deny="$3" verbose="$4" line host known reload_line
     # Hosts whose denylist denial was already logged this session (read by known_deny_seen)
     local -a known_seen=()
     while IFS= read -r line || [ -n "$line" ]; do
@@ -108,11 +112,16 @@ classify_log() {
                 else
                     [ -n "$on_deny" ] && "$on_deny" "$host"
                 fi
-                printf '%s\n' "$line" | jq -R -r \
+                printf '%s\n' "$line" | jq -R -r -L "$JQ_LIB_DIR" \
                     --argjson is_interactive "$is_interactive" --arg script "$script" \
                     --arg host "$host" --arg known "$known" \
                     -f "$FORMAT_DENY_FILTER" || surface_raw "$verbose" "$line"
             fi
+        elif [[ "$line" == *'"msg":"egress ACL reload'* ]] && \
+             reload_line=$(printf '%s\n' "$line" | jq -R -r -L "$JQ_LIB_DIR" \
+                --argjson is_interactive "$is_interactive" --arg script "$script" \
+                -f "$FORMAT_RELOAD_FILTER") && [ -n "$reload_line" ]; then
+            printf '%s\n' "$reload_line"
         elif [ "$verbose" != true ]; then
             printf '%s\n' "$line" | jq -R -r -f "$FORMAT_MISC_FILTER" || surface_raw "$verbose" "$line"
         fi
