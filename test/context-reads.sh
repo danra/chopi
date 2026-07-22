@@ -58,4 +58,20 @@ assert_not_contains "$profile" 'file-write'                                     
 
 
 # ---------------------------------------------------------------------------
+echo "a symlinked ancestor CLAUDE.md also grants a read on the link's real target"
+# ---------------------------------------------------------------------------
+# Seatbelt matches the kernel-resolved real path, so granting only the symlink literal
+# leaves the actual file it points at denied; the profile must grant the target too.
+make_workspace link
+mkdir -p "$TMPDIR/link/shared"
+target="$TMPDIR/link/shared/CLAUDE.md"; printf 'x\n' > "$target"
+target_real="$(realpath "$target")"
+ln -s "$target" "$mono_real/CLAUDE.md"
+
+build_profile "a symlinked ancestor CLAUDE.md"
+assert_contains "$profile" '(allow file-read* (literal "'"$mono_real"'/CLAUDE.md"))' "the symlink path itself is still granted"
+assert_contains "$profile" '(allow file-read* (literal "'"$target_real"'"))'         "the symlink's real target file is granted"
+
+
+# ---------------------------------------------------------------------------
 summary
