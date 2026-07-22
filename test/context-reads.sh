@@ -24,6 +24,19 @@ context_reads_profile() {
     cat "$out"
 }
 
+make_workspace() {
+    arity 1
+    work="$TMPDIR/$1/mono/pkg"; mkdir -p "$work"
+    work_real="$(realpath "$work")"
+    mono_real="$(dirname "$work_real")"
+}
+
+build_profile() {
+    arity 1
+    profile="$(context_reads_profile "$work")"
+    assert_zero "$?" "writing the profile exits zero ($1)"
+}
+
 # Captured exit codes below rely on errexit being off.
 set +e
 
@@ -31,13 +44,10 @@ set +e
 # ---------------------------------------------------------------------------
 echo "a nested workspace grants CLAUDE.md reads on every ancestor, not the workspace"
 # ---------------------------------------------------------------------------
-work="$TMPDIR/real/mono/pkg"; mkdir -p "$work"
-work_real="$(realpath "$work")"
-mono_real="$(dirname "$work_real")"
+make_workspace real
 real_real="$(dirname "$mono_real")"
 
-profile="$(context_reads_profile "$work")"; st=$?
-assert_zero "$st" "writing the profile exits zero"
+build_profile "a nested workspace"
 
 assert_contains     "$profile" '(allow file-read* (literal "'"$mono_real"'/CLAUDE.md"))'  "the immediate parent's CLAUDE.md is granted"
 assert_contains     "$profile" '(allow file-read* (literal "'"$real_real"'/CLAUDE.md"))'  "a grandparent's CLAUDE.md is granted"
