@@ -689,7 +689,7 @@ if command -v git >/dev/null 2>&1; then
     config_before="$(cat "$shared_git/config")"
     chopi_main /bin/sh -c "echo pwn > '$shared_git/hooks/post-commit'" >/dev/null 2>&1
     assert_absent "$shared_git/hooks/post-commit" "planting a hook in the shared .git/hooks is denied (no file created)"
-    chopi_main /usr/bin/git config core.hooksPath /tmp/evil >/dev/null 2>&1
+    chopi_main git config core.hooksPath /tmp/evil >/dev/null 2>&1
     assert_eq "$(cat "$shared_git/config")" "$config_before" \
                                                        "the shared .git/config cannot be written from the sandbox"
 
@@ -727,7 +727,7 @@ if command -v git >/dev/null 2>&1; then
     chopi_sub() { ( cd "$submod" && "$repo/bin/chopi" --config "$cfg_git" -- "$@" ); }
     sub_main_gitdir="$(realpath "$(git -C "$submod" rev-parse --absolute-git-dir)")"
 
-    top="$(chopi_sub /usr/bin/git rev-parse --show-toplevel 2>/dev/null)"
+    top="$(chopi_sub git rev-parse --show-toplevel 2>/dev/null)"
     assert_eq "$top" "$submod"                         "git resolves the submodule root as its toplevel (module gitdir readable)"
 
     out="$(chopi_sub /bin/sh -c 'echo CHG > ./subroot.txt && git add subroot.txt && git commit -q -m subroot && echo COMMIT_OK' 2>/dev/null)"
@@ -748,7 +748,7 @@ if command -v git >/dev/null 2>&1; then
     sub_dotgit_before="$(cat "$submod_dotgit")"
     sub_cfg_before="$(cat "$sub_main_gitdir/config")"
     chopi_sub /bin/sh -c "echo 'gitdir: /tmp/evil' > '$submod_dotgit'" >/dev/null 2>&1
-    chopi_sub /usr/bin/git config core.hooksPath /tmp/evil >/dev/null 2>&1
+    chopi_sub git config core.hooksPath /tmp/evil >/dev/null 2>&1
     chopi_sub /bin/sh -c "echo pwn > '$sub_main_gitdir/hooks/post-commit'" >/dev/null 2>&1
     assert_eq "$(cat "$submod_dotgit")" "$sub_dotgit_before" \
                                                        "the submodule's .git pointer file cannot be rewritten from the sandbox"
@@ -881,7 +881,7 @@ done'
     assert_not_contains "$out" "WRITE_OK"              "the command cannot write to the protection profiles either"
 
     # git still works inside the isolated worktree
-    top="$(chopi_wt /usr/bin/git rev-parse --show-toplevel 2>/dev/null)"
+    top="$(chopi_wt git rev-parse --show-toplevel 2>/dev/null)"
     assert_eq "$top" "$nested_wt2"                     "git resolves the worktree as its toplevel"
     out="$(chopi_wt /bin/sh -c 'git tag chopi-probe && echo TAG_OK' 2>/dev/null)"
     assert_contains "$out" "TAG_OK"                    "git can write a ref into the shared .git from inside the sandbox"
@@ -903,7 +903,7 @@ done'
 
     # `git config` from the linked worktree targets the shared .git/config (no
     # extensions.worktreeConfig here), so it is denied and the file stays byte-identical.
-    chopi_wt /usr/bin/git config core.hooksPath /tmp/evil >/dev/null 2>&1
+    chopi_wt git config core.hooksPath /tmp/evil >/dev/null 2>&1
 
     # An [include]/[includeIf] path= in a pre-existing config could point at any of these;
     # leaving them writable would reopen the hole. All are under the default write-deny.
@@ -980,7 +980,7 @@ done'
     # `git submodule update` is expected to fail loudly with the config untouched
     sub_cfg="$(realpath "$(git -C "$nested_wt2_sub" rev-parse --absolute-git-dir)")/config"
     sub_cfg_before="$(cat "$sub_cfg")"
-    out="$(chopi_wt /usr/bin/git submodule update 2>&1 >/dev/null)"; rc=$?
+    out="$(chopi_wt git submodule update 2>&1 >/dev/null)"; rc=$?
     assert_nonzero "$rc" "in-sandbox git submodule update fails"
     assert_contains "$out" "core.worktree"             "  -> naming the denied core.worktree write"
     assert_eq "$(cat "$sub_cfg")" "$sub_cfg_before"    "  -> and the submodule's config is untouched"
@@ -1000,9 +1000,9 @@ EOF
         GIT_CONFIG_KEY_1=chopi.hostpassed GIT_CONFIG_VALUE_1=hostmarker \
         GIT_CONFIG_KEY_2=chopi.conflict GIT_CONFIG_VALUE_2=fromhost \
         "$repo/bin/chopi" --worktree nested_wt2 --config "$cfg_envpass" -- "$@" ); }
-    out="$(chopi_ep /usr/bin/git config chopi.hostpassed 2>/dev/null)"
+    out="$(chopi_ep git config chopi.hostpassed 2>/dev/null)"
     assert_eq "$out" "hostmarker"                      "a host GIT_CONFIG_* pair forwarded via safehouse --env-pass survives the append"
-    out="$(chopi_ep /usr/bin/git config chopi.conflict 2>/dev/null)"
+    out="$(chopi_ep git config chopi.conflict 2>/dev/null)"
     assert_eq "$out" "fromconfig"                      "  -> and on a conflicting key, the appended CHOPI_GIT_CONFIG pair wins"
 
     # CHOPI_WORKTREE_SETUP: the config customizes the pre-sandbox setup, and
