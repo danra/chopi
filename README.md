@@ -12,7 +12,7 @@ the OS's native sandboxing and additional network proxies to put guardrails
 around it.
 
 Chopi uses [**Agent Safehouse**](https://github.com/eugene1g/agent-safehouse) for building
-most of the underlying macOS Seatbelt policy, [**smokescreen**](https://github.com/stripe/smokescreen),
+most of the underlying macOS Seatbelt policy, [**smokescreen**](https://github.com/stripe/smokescreen)
 for its CONNECT proxy, and [**Caddy**](https://github.com/caddyserver/caddy) for its GitHub reverse proxy.
 
 
