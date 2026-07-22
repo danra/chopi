@@ -7,8 +7,8 @@ Run an agent or any other command under a macOS sandbox that:
 - Hardens git internals
 
 This is **not** a container- or VM-based solution. Chopi runs the command
-directly on your own machine with your real tools and environment, using
-the OS's native sandboxing and additional network proxies to put guardrails
+directly on your machine with your real tools and environment, using the
+OS's native sandboxing and additional network proxies to put guardrails
 around it.
 
 Chopi uses [**Agent Safehouse**](https://github.com/eugene1g/agent-safehouse) for building
