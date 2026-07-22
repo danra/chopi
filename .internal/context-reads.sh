@@ -32,7 +32,14 @@ write_context_reads_profile() {
             parent="$dir"
             [ "$parent" = "/" ] && parent=""
             for name in "${context_filenames[@]}"; do
-                rule 'allow file-read*' literal "$parent/$name"
+                local context_path target
+                context_path="$parent/$name"
+                rule 'allow file-read*' literal "$context_path"
+                # Allow reading through symlinks for context files
+                if [ -L "$context_path" ]; then
+                    target="$(realpath "$context_path")"
+                    [ -n "$target" ] && rule 'allow file-read*' literal "$target"
+                fi
             done
         done
     } > "$profile_path"
