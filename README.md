@@ -182,7 +182,7 @@ run under it can't read or tamper with the sandbox's own config. `chopi` enforce
 this, refusing to run when it finds its own folder in the workspace (and also in 
 the more obscure case where the workspace is within `chopi`'s own folder).
 
-## Why a sandbox isn't enough
+## Why the macOS sandbox isn't enough
 
 macOS Seatbelt (`sandbox-exec`) can confine the filesystem and pin outgoing network
 connections to an IP/port, but it **cannot** filter by hostname; its network rules only
