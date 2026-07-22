@@ -2,8 +2,8 @@
 
 Run an agent or any other command under a macOS sandbox that:
 - Confines filesystem access
-- Restricts outgoing network connections to an explicit hosts allowlist
-- Restricts git pushes to a repos allowlist (currently GitHub only)
+- Restricts outgoing network connections to allowed hosts
+- Restricts git pushes to allowed repos (currently GitHub only)
 - Hardens git internals
 
 This is **not** a container- or VM-based solution. Chopi runs the command
