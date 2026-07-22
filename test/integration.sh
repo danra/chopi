@@ -250,6 +250,12 @@ chopi_t() { ( cd "$ws" && "$repo/bin/chopi" --config "$cfg" -- "$@" ); }
 # blocked/refused before any response).
 sandbox_curl() { chopi_t /usr/bin/curl -sS -o /dev/null -w '%{http_code}' "$@" 2>/dev/null; }
 
+# The CONNECT response code is the proxy's own verdict on a tunneled host: 200 = allowed (and
+# the upstream TCP dial succeeded), 407 = denied by the rules. Unlike %{http_code} it does not
+# depend on the full TLS+HTTP exchange with the remote host, which can stall mid-connection on
+# a flaky network path (curl then reports 000, indistinguishable from a deny).
+sandbox_curl_connect() { chopi_t /usr/bin/curl -sS -o /dev/null -w '%{http_connect}' "$@" 2>/dev/null; }
+
 # Denied operations and captured exit codes below rely on errexit being off.
 set +e
 
@@ -527,8 +533,8 @@ else
     bad "the proxy did NOT log a rules reload after the file changed"
 fi
 if curl -sS -o /dev/null --max-time 10 "https://$DENIED_HOST" 2>/dev/null; then
-    code="$(sandbox_curl --max-time 20 "https://$DENIED_HOST")"
-    assert_eq "$code" "200"                        "the previously denied host is now reachable THROUGH the proxy"
+    code="$(sandbox_curl_connect --max-time 20 "https://$DENIED_HOST")"
+    assert_eq "$code" "200"                        "the previously denied host is now allowed through the proxy"
 else
     echo "  SKIP hot-reloaded host reachability (no connectivity to $DENIED_HOST)"
 fi
@@ -543,10 +549,10 @@ else
 fi
 code="$(sandbox_curl --max-time 20 "https://$OTHER_DENIED_HOST")"
 assert_not_contains "$code" "200"                  "after a failed reload the previous rules still refuse other hosts"
-# ...and the host the last good edit ALLOWED stays reachable.
+# ...and the host the last good edit ALLOWED stays allowed.
 if curl -sS -o /dev/null --max-time 10 "https://$DENIED_HOST" 2>/dev/null; then
-    code="$(sandbox_curl --max-time 20 "https://$DENIED_HOST")"
-    assert_eq "$code" "200"                        "after a failed reload the previously allowed host is still reachable"
+    code="$(sandbox_curl_connect --max-time 20 "https://$DENIED_HOST")"
+    assert_eq "$code" "200"                        "after a failed reload the previously allowed host stays allowed"
 else
     echo "  SKIP still-allowed host reachability (no connectivity to $DENIED_HOST)"
 fi
