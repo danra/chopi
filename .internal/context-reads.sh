@@ -46,10 +46,29 @@ first_visit() {
     _seen="$_seen$1$NL"
 }
 
-# Recursively grant read on every @-import reachable from context file $1 (a real path the
-# caller has already granted and recorded). Imports are canonicalized here, right before
-# granting: Seatbelt matches kernel-resolved paths, and _seen's dedup (which also terminates
-# import cycles) is only sound on canonical paths. Ones that don't resolve to a file are dropped.
+# Recursively grant read on every @-import reachable from context file $1 (a path the caller
+# has already granted and recorded), resolving each import against $1's own directory.
+#
+# When a context file is a symlink, "its own directory" is ambiguous, and the agent's answer
+# depends on per-project state (verified against Claude Code 2.1.218): imports that resolve
+# outside the workspace are "external includes", gated behind a one-time approval dialog. With
+# no decision recorded, the agent reads the file through the link and resolves its imports
+# beside the LINK; once approved, it loads the canonical file and resolves them beside the
+# TARGET; declined disables them entirely. The profile cannot know that per-project state, so
+# the caller walks both sides.
+#
+# Nested hops are not ambiguous: the agent canonicalizes every import before recursing into
+# it, so an imported file's own imports always resolve beside its REAL location, and the
+# recursion below follows suit.
+#
+# Example: pkg/CLAUDE.md -> shared/CLAUDE.md whose content imports '@a.md'. Depending on the
+# approval state the agent reads pkg/a.md or shared/a.md, so both sides are granted. If
+# pkg/a.md is itself a symlink to lib/a.md whose content imports '@b.md', that nested hop
+# resolves only to lib/b.md -- never pkg/b.md.
+#
+# Imports are canonicalized here, right before granting: Seatbelt matches kernel-resolved
+# paths, and _seen's dedup (which also terminates import cycles) is only sound on canonical
+# paths. Ones that don't resolve to a file are dropped.
 grant_context_imports() {
     arity 1
     local file="$1" imports import real
@@ -74,10 +93,13 @@ grant_context_target_and_imports() {
     real_context="$(realpath "$context_path" 2>/dev/null)" || return 0
     [ -f "$real_context" ] || return 0
     first_visit "$real_context" || return 0
+    # Which side of a symlink the agent resolves the file's own imports against depends on
+    # the external-includes approval state (see grant_context_imports), so walk both.
+    grant_context_imports "$context_path"
     if [ "$real_context" != "$context_path" ]; then
         rule 'allow file-read*' literal "$real_context"
+        grant_context_imports "$real_context"
     fi
-    grant_context_imports "$real_context"
 }
 
 write_context_reads_profile() {
