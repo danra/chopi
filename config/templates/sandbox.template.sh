@@ -54,8 +54,7 @@ CHOPI_EXTRA_ENV=(
 # GIT_CONFIG_* environment inside the sandbox, so they merge with, rather than overwrite,
 # git config forwarded from the host via --env-pass/--env in CHOPI_SAFEHOUSE_FLAGS above.
 # A later entry wins an earlier one for the same key, so a value here overrides a forwarded
-# host value for the same key. Applied only when chopi runs at a git worktree root (where its
-# git protections apply).
+# host value for the same key.
 CHOPI_GIT_CONFIG=(
     # The built-in fsmonitor daemon can't run sandboxed (FSEvents access and its IPC
     # socket under .git are both denied).

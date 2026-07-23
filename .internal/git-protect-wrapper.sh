@@ -9,8 +9,8 @@
 #
 # usage: git-protect-wrapper.sh CLEANUP_SCRIPT_PATH [key=value ...] -- <executable> [args...]
 #
-# Not run directly; Whenever the run dir is a git worktree root, chopi prepends this
-# wrapper to the sandboxed command, when its environment is available. Per git rules,
+# Not run directly; chopi prepends this wrapper to the sandboxed command, running it
+# in-sandbox where the command's environment is available. Per git rules,
 # a later GIT_CONFIG_* pair for the same key wins an earlier one, so because we *append*
 # ours to the host's, a value here overrides a forwarded host value for the same key.
 

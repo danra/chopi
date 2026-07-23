@@ -6,14 +6,11 @@
 # only learns the dir the command will actually run in partway through setup:
 #   * preflight_initial          -- runnable up front: the workspace doesn't overlap chopi's
 #                                   own dir (a confined command must not reach the policy
-#                                   that confines it), the outgoing proxy is up, and the
+#                                   that confines it), both local proxies are up, and the
 #                                   safehouse CLI is on PATH.
 #   * preflight_config_placement -- deferred until chopi has resolved the workspace (the
 #                                   --worktree target), since that is the dir a custom
 #                                   --config must stay outside of.
-#   * preflight_github_relay     -- deferred until chopi knows the run dir is a git worktree
-#                                   root, the only case that routes GitHub git through the
-#                                   relay.
 
 _preflight_dir="$(dirname "${BASH_SOURCE[0]}")"
 . "$_preflight_dir/util.sh"
@@ -80,6 +77,9 @@ preflight_initial() {
     check_listener "$PROXY_PORT" "no outgoing proxy" \
         "Start it first in a separate terminal:  chopi-proxy" || return 1
 
+    check_listener "$GITHUB_RELAY_PORT" "no GitHub relay" \
+        "It runs alongside the outgoing proxy; (re)start both in a separate terminal:  chopi-proxy" || return 1
+
     # Agent Safehouse builds the sandbox policy and execs the command inside it, so
     # it's a per-run dependency. Fail fast with a pointer rather than a bare
     # "command not found" when chopi calls it.
@@ -110,10 +110,4 @@ preflight_config_placement() {
             "Keep the sandbox config outside the workspace you're sandboxing." \
             || return 1
     fi
-}
-
-preflight_github_relay() {
-    arity 0
-    check_listener "$GITHUB_RELAY_PORT" "no GitHub relay" \
-        "It runs alongside the outgoing proxy; (re)start both in a separate terminal:  chopi-proxy"
 }

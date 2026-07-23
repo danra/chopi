@@ -116,14 +116,13 @@ setup_worktree() {
     # This one must precede the `git rev-parse` calls below to avoid being misdirected.
     refuse_git_location_env
 
-    # Accept only the root of a git worktree, like normal (non-worktree) mode, where git
-    # protections apply only at a worktree root. From a subdir, the repo to add the
-    # worktree to would be resolved by walking upward, inviting user errors of securing
-    # a different repo than intended.
+    # Accept only the root of a git worktree, like every chopi run. From a subdir, the
+    # repo to add the worktree to would be resolved by walking upward, inviting user
+    # errors of securing a different repo than intended.
     local invocation_dir
     invocation_dir="$(pwd -P)"
     if ! is_worktree_root "$invocation_dir"; then
-        echo "error: --worktree must be run from the root of a git worktree" >&2
+        refuse_not_worktree_root "$invocation_dir"
         return 1
     fi
 

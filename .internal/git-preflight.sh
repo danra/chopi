@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# git-preflight.sh -- refuse unsupported git setups
+# git-preflight.sh -- refuse running outside a git worktree root, and unsupported git setups
 #
 # Not run directly; `chopi` calls this before generating the git protection profiles.
 #
@@ -35,7 +35,7 @@ main() {
     local run_dir
     run_dir="$(pwd -P)"
     if ! is_worktree_root "$run_dir"; then
-        refuse_steered_worktree "$run_dir"; return
+        refuse_not_worktree_root "$run_dir"; return
     fi
 
     refuse_git_location_env

@@ -134,18 +134,23 @@ is_worktree_root() {
     [ "$toplevel" = "$dir" ]
 }
 
-# Called in case is_worktree_root() returns false to handle two separate cases:
-# - Keep going normally if this is just not a git worktree (no .git)
-# - Otherwise refuse running
-refuse_steered_worktree() {
+# Handles two separate cases:
+# - Unsupported git setup
+# - Just not a git worktree (no .git)
+refuse_not_worktree_root() {
     arity 1
     local dir="$1"
-    if [ ! -e "$dir/.git" ] && [ ! -L "$dir/.git" ]; then return 0; fi   # -L: a dangling .git symlink is still an entry
     {
-        echo "error: refusing to run: found .git, but worktree root not at '$dir'"
-        echo "The directory has a .git entry, but git doesn't resolve it as the root of its worktree"
-        echo "(with sanitized env). This could be due to a custom-configured repo or worktree, and"
-        echo "isn't supported."
+        if [ -e "$dir/.git" ] || [ -L "$dir/.git" ]; then   # -L: a dangling .git symlink is still an entry
+            echo "error: refusing to run: found .git, but worktree root not at '$dir'"
+            echo "The directory has a .git entry, but git doesn't resolve it as the root of its worktree"
+            echo "(with sanitized env). This could be due to a custom-configured repo or worktree, and"
+            echo "isn't supported."
+        else
+            echo "error: refusing to run: '$dir' is not the root of a git worktree"
+            echo "chopi runs only at a worktree root, where its git protections apply."
+            echo "Run it from the root of the repo (or worktree) you're working on."
+        fi
     } >&2
     return 1
 }

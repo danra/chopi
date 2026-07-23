@@ -75,8 +75,8 @@ configuration.
    are the exception: their denials log a single quiet `deny(known)` line per
    proxy run, with no notification.
 
-2. **Run your command** under the sandbox from another terminal, inside the repo
-   you're working on:
+2. **Run your command** under the sandbox from another terminal, at the root of
+   the repo you're working on:
 
    ```sh
    cd ~/path/to/your/repo
@@ -84,7 +84,10 @@ configuration.
    ```
 
    The sandbox grants read/write to your current directory (the workspace) and
-   runs the command there. This does *not* start the proxy; it fails fast if the
+   runs the command there. The workspace must be the root of a git worktree,
+   where `chopi`'s git protections apply; running anywhere else (a subdir, or a
+   non-git directory) is refused, so you can't accidentally run "naked" without
+   them. This does *not* start the proxy; it fails fast if the
    proxy isn't already up. This is intentional: this way, denials are always clearly
    visible in the separate terminal dedicated to running the proxy in the foreground.
 
@@ -108,8 +111,8 @@ configuration.
 
    ### Git Protection in Detail
 
-   When the workspace is the root of a git repo (main worktree) or a linked worktree
-   (including `--worktree` mode), `chopi` isolates access to that worktree, which keeps an
+   The workspace is always the root of a git repo (main worktree) or a linked worktree
+   (including `--worktree` mode). `chopi` isolates access to that worktree, which keeps an
    agent from wandering outside its assigned task and picking up irrelevant information
    from another worktree. This undoes safehouse's own default grants to all other worktrees.
    Read access is also granted to specific allowlisted Claude context files (currently
@@ -142,7 +145,8 @@ configuration.
    session.
 
    Rather than launch a run these protections cannot cover, `chopi` refuses to start
-   and names the cause: git location overrides in the environment (`GIT_DIR`,
+   and names the cause: a workspace that is not the root of a git worktree;
+   git location overrides in the environment (`GIT_DIR`,
    `GIT_WORK_TREE`) or in the repo's own files (`core.worktree`, `core.bare`, a corrupt
    `.git` entry) that make git resolve the workspace root away from where it physically
    is; object reads through an external store (a non-empty `.git/objects/info/alternates`,
@@ -174,8 +178,7 @@ environment to downgrade the enforcement to a warning).
 variables, appended *inside* the sandbox after the environment is fully composed, so the
 pairs merge with any git config you forward from the host via `safehouse`'s
 `--env-pass`/`--env` flags instead of overwriting it (in case of a conflict,
-`CHOPI_GIT_CONFIG` wins). Chopi only applies this extra config when run at a git worktree
-root, the same condition under which its git protections apply.
+`CHOPI_GIT_CONFIG` wins).
 
 `chopi` lives in its own directory, outside of the repos you sandbox, so a command you 
 run under it can't read or tamper with the sandbox's own config. `chopi` enforces

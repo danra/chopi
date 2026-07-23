@@ -10,7 +10,6 @@ SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"   # resolve the bin/chopi symlink
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 
 . "$SCRIPT_DIR/../.internal/util.sh"
-. "$SCRIPT_DIR/../.internal/git-layout.sh"
 . "$SCRIPT_DIR/../.internal/claude-context-reads.sh"
 . "$SCRIPT_DIR/../.internal/preflight.sh"
 
@@ -114,13 +113,15 @@ main() {
     # under `set -u` on bash 3.2 (macOS's system bash), where a bare "${a[@]}" on an empty
     # array is an "unbound variable" error.
 
-    # Refuse running with git setups that chopi doesn't support.
+    # Refuse running outside a git worktree root, and with git setups that chopi
+    # doesn't support.
     local protection_args=()
     [ -n "$worktree_dir" ] && protection_args+=("$worktree_dir")
     "$CHOPI_DIR/.internal/git-preflight.sh" "${protection_args[@]+"${protection_args[@]}"}" || return $?
 
-    # Git protections apply only at the root of a git worktree. Note that safehouse itself
-    # (verified against 0.10.1) also only gives its git grants in this case.
+    # The dir the sandboxed command runs in; git-preflight vetted it as a git worktree
+    # root, where the git protections (and safehouse's own git grants, verified against
+    # 0.10.1) apply.
     local run_dir
     run_dir="$(pwd -P)"
     [ -n "$worktree_dir" ] && run_dir="$worktree_dir"
@@ -136,80 +137,69 @@ main() {
     write_claude_context_reads_profile "$claude_context_profile" "$run_dir" \
         || { echo "chopi: could not write the claude-context-reads profile" >&2; return 1; }
 
+    # Build chopi's git protection profiles and append them in the order
+    # git-protect.sh emits them.
     local protection_flags=()
-    local wrapper_cmd=()
-    local wrapper_flags=()
-    if is_worktree_root "$run_dir"; then
-        # Build chopi's git protection profiles and append them in the order
-        # git-protect.sh emits them.
-        local protect_args=("${protection_args[@]+"${protection_args[@]}"}")
-        [ -n "$verbose" ] && protect_args+=(--verbose)
-        local protect_out_file protect_profile
-        protect_out_file="$(mktemp "$TMPDIR/chopi-git-protect-out.XXXXXX")" \
-            || { echo "chopi: could not create a temp file for the git protection profiles" >&2; return 1; }
-        "$CHOPI_DIR/.internal/git-protect.sh" "${protect_args[@]+"${protect_args[@]}"}" >"$protect_out_file" \
-            || return $?
-        while IFS= read -r -d '' protect_profile; do
-            protection_flags+=(--append-profile "$protect_profile")
-        done <"$protect_out_file"
-        if [ "${#protection_flags[@]}" -eq 0 ]; then
-            echo "chopi: the git protection helper returned no profiles" >&2
-            return 1
-        fi
-
-        # safehouse selects its sandbox profile from the invoked command's basename, e.g.,
-        # `claude` loads the claude-code profile. Alias the git-protect wrapper to the same name
-        # so safehouse's detection loads the right profile. The symlink lives under TMPDIR,
-        # which safehouse grants; exec follows it to wrapper_path, which is allowed by the
-        # profile below.
-        local command="$1"
-        local wrapper_path="$CHOPI_DIR/.internal/git-protect-wrapper.sh"
-        local cmd_alias_dir
-        cmd_alias_dir="$(mktemp -d "$TMPDIR/${CHOPI_CMD_ALIAS_PREFIX}XXXXXX")" \
-            || { echo "chopi: could not create a temp dir for the command alias" >&2; return 1; }
-        local cmd_alias
-        cmd_alias="$cmd_alias_dir/$(basename -- "$command")"
-        ln -s "$wrapper_path" "$cmd_alias" \
-            || { echo "chopi: could not create the command-alias symlink" >&2; return 1; }
-
-        # Route GitHub git traffic to the GitHub relay.
-        preflight_github_relay || return $?
-        local relay_pair
-        while IFS= read -r relay_pair; do
-            CHOPI_GIT_CONFIG+=("$relay_pair")
-        done < <(github_relay_git_config)
-
-        local cleanup_script_path="$CHOPI_DIR/.internal/git-protect-cleanup.sh"
-        wrapper_cmd=("$cmd_alias" "$cleanup_script_path")
-        wrapper_cmd+=("${CHOPI_GIT_CONFIG[@]+"${CHOPI_GIT_CONFIG[@]}"}" --)
-        local wrapper_profile
-        wrapper_profile="$(mktemp "$TMPDIR/${CHOPI_GIT_PROTECT_WRAPPER_PREFIX}XXXXXX")" \
-            || { echo "chopi: could not create a temp file for the git-protect wrapper profile" >&2; return 1; }
-        {
-            echo ";; chopi: the git-protect wrapper is read and executed in the sandbox."
-            rule 'allow file-read* process-exec*' literal "$wrapper_path"
-            echo ";; chopi: the in-sandbox teardown cleanup and the libs it and the wrapper source."
-            rule 'allow file-read* process-exec*' literal "$cleanup_script_path"
-            local lib
-            for lib in "${CHOPI_IN_SANDBOX_LIBS[@]}"; do
-                rule 'allow file-read*' literal "$CHOPI_DIR/.internal/$lib"
-            done
-            echo ";; chopi: stat-only on chopi's dir chain for in-sandbox CHOPI_DIR resolution."
-            local ancestor="$CHOPI_DIR/.internal"
-            while :; do
-                rule 'allow file-read-metadata' literal "$ancestor"
-                [ "$ancestor" = "/" ] && break
-                ancestor="$(dirname "$ancestor")"
-            done
-        } > "$wrapper_profile"
-        wrapper_flags=(--append-profile "$wrapper_profile")
-    elif [ -n "$worktree_given" ]; then
-        # Fail closed: isolating the command to the worktree is the mode's whole promise.
-        echo "chopi: worktree '$worktree_dir' is not a git worktree root" >&2
+    local protect_args=("${protection_args[@]+"${protection_args[@]}"}")
+    [ -n "$verbose" ] && protect_args+=(--verbose)
+    local protect_out_file protect_profile
+    protect_out_file="$(mktemp "$TMPDIR/chopi-git-protect-out.XXXXXX")" \
+        || { echo "chopi: could not create a temp file for the git protection profiles" >&2; return 1; }
+    "$CHOPI_DIR/.internal/git-protect.sh" "${protect_args[@]+"${protect_args[@]}"}" >"$protect_out_file" \
+        || return $?
+    while IFS= read -r -d '' protect_profile; do
+        protection_flags+=(--append-profile "$protect_profile")
+    done <"$protect_out_file"
+    if [ "${#protection_flags[@]}" -eq 0 ]; then
+        echo "chopi: the git protection helper returned no profiles" >&2
         return 1
-    elif [ -n "$verbose" ]; then
-        echo "chopi: workspace is not a git worktree root; git protections not applied" >&2
     fi
+
+    # safehouse selects its sandbox profile from the invoked command's basename, e.g.,
+    # `claude` loads the claude-code profile. Alias the git-protect wrapper to the same name
+    # so safehouse's detection loads the right profile. The symlink lives under TMPDIR,
+    # which safehouse grants; exec follows it to wrapper_path, which is allowed by the
+    # profile below.
+    local command="$1"
+    local wrapper_path="$CHOPI_DIR/.internal/git-protect-wrapper.sh"
+    local cmd_alias_dir
+    cmd_alias_dir="$(mktemp -d "$TMPDIR/${CHOPI_CMD_ALIAS_PREFIX}XXXXXX")" \
+        || { echo "chopi: could not create a temp dir for the command alias" >&2; return 1; }
+    local cmd_alias
+    cmd_alias="$cmd_alias_dir/$(basename -- "$command")"
+    ln -s "$wrapper_path" "$cmd_alias" \
+        || { echo "chopi: could not create the command-alias symlink" >&2; return 1; }
+
+    # Route GitHub git traffic to the GitHub relay.
+    local relay_pair
+    while IFS= read -r relay_pair; do
+        CHOPI_GIT_CONFIG+=("$relay_pair")
+    done < <(github_relay_git_config)
+
+    local cleanup_script_path="$CHOPI_DIR/.internal/git-protect-cleanup.sh"
+    local wrapper_cmd=("$cmd_alias" "$cleanup_script_path")
+    wrapper_cmd+=("${CHOPI_GIT_CONFIG[@]+"${CHOPI_GIT_CONFIG[@]}"}" --)
+    local wrapper_profile
+    wrapper_profile="$(mktemp "$TMPDIR/${CHOPI_GIT_PROTECT_WRAPPER_PREFIX}XXXXXX")" \
+        || { echo "chopi: could not create a temp file for the git-protect wrapper profile" >&2; return 1; }
+    {
+        echo ";; chopi: the git-protect wrapper is read and executed in the sandbox."
+        rule 'allow file-read* process-exec*' literal "$wrapper_path"
+        echo ";; chopi: the in-sandbox teardown cleanup and the libs it and the wrapper source."
+        rule 'allow file-read* process-exec*' literal "$cleanup_script_path"
+        local lib
+        for lib in "${CHOPI_IN_SANDBOX_LIBS[@]}"; do
+            rule 'allow file-read*' literal "$CHOPI_DIR/.internal/$lib"
+        done
+        echo ";; chopi: stat-only on chopi's dir chain for in-sandbox CHOPI_DIR resolution."
+        local ancestor="$CHOPI_DIR/.internal"
+        while :; do
+            rule 'allow file-read-metadata' literal "$ancestor"
+            [ "$ancestor" = "/" ] && break
+            ancestor="$(dirname "$ancestor")"
+        done
+    } > "$wrapper_profile"
+    local wrapper_flags=(--append-profile "$wrapper_profile")
 
     local proxy="http://127.0.0.1:$PROXY_PORT"
 
@@ -227,8 +217,8 @@ main() {
     safehouse \
         "${CHOPI_SAFEHOUSE_FLAGS[@]+"${CHOPI_SAFEHOUSE_FLAGS[@]}"}" \
         --append-profile "$claude_context_profile" \
-        "${protection_flags[@]+"${protection_flags[@]}"}" \
-        "${wrapper_flags[@]+"${wrapper_flags[@]}"}" \
+        "${protection_flags[@]}" \
+        "${wrapper_flags[@]}" \
         --append-profile "$CHOPI_DIR/.internal/network.sb" \
         -- \
         "${CHOPI_EXTRA_ENV[@]+"${CHOPI_EXTRA_ENV[@]}"}" \
@@ -237,7 +227,7 @@ main() {
         NODE_USE_ENV_PROXY=1 \
         NO_PROXY="127.0.0.1"  no_proxy="127.0.0.1" \
         GIT_TERMINAL_PROMPT=0 \
-        "${wrapper_cmd[@]+"${wrapper_cmd[@]}"}" \
+        "${wrapper_cmd[@]}" \
         "$@"
     { local rc=$?; set +x; } 2>/dev/null
 

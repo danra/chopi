@@ -6,9 +6,9 @@
 #
 #   * is_path_within / the workspace-overlap predicate -- if this loosens, a sandboxed
 #     command could be handed read/write to its own sandboxing policy.
-#   * preflight_initial -- the chopi-dir overlap refusal (and its CHOPI_ALLOW_SELF downgrade).
+#   * preflight_initial -- the chopi-dir overlap refusal (and its CHOPI_ALLOW_SELF
+#     downgrade), and refusing a run when the GitHub relay's port is dead.
 #   * preflight_config_placement -- refusing a custom --config that lives inside the workspace.
-#   * preflight_github_relay -- refusing a run when the GitHub relay's port is dead.
 #   * rule / the Seatbelt-rule emitter -- its empty-PATH refusal keeps an
 #     accidentally-empty variable from becoming a silently misapplied rule.
 
@@ -170,35 +170,29 @@ if [ "$st" -eq 2 ]; then ok "a wrong number of arguments is a hard error (exit 2
 
 
 # ---------------------------------------------------------------------------
-echo "preflight_github_relay (the GitHub relay must be live for every run)"
+echo "preflight_initial (the GitHub relay must be live for every run)"
 # ---------------------------------------------------------------------------
 # Stub `nc` -- inherited into the command-substitution subshell -- so the check is hermetic: it
 # must not depend on a real chopi-proxy being up, nor probe the live ports. The stub echoes its
-# args so we can assert preflight_github_relay probes GITHUB_RELAY_PORT (the relay), not PROXY_PORT (smokescreen).
-# relay_probe RC runs preflight_github_relay with nc reporting the relay up (RC 0) or down (RC != 0).
+# args so we can assert GITHUB_RELAY_PORT (the relay) is probed, not just PROXY_PORT
+# (smokescreen); it reports the proxy port up, and the relay port up (RC 0) or down (RC != 0).
+# relay_probe RC runs preflight_initial under the stub, from a non-overlapping dir.
 relay_probe() {
     arity 1
     local rc="$1"
     # shellcheck disable=SC2329  # nc stub invoked indirectly
-    ( nc() { echo "nc $*"; return "$rc"; }; preflight_github_relay 2>&1 )
+    ( cd "$tmp" && { nc() { echo "nc $*"; [ "$3" = "$PROXY_PORT" ] || return "$rc"; }; preflight_initial; } 2>&1 )
 }
 
 out="$(relay_probe 1)"; st=$?
-assert_contains "$out" "nc -z 127.0.0.1 $GITHUB_RELAY_PORT" "probes the relay port (GITHUB_RELAY_PORT), not the smokescreen port"
+assert_contains "$out" "nc -z 127.0.0.1 $GITHUB_RELAY_PORT" "probes the relay port (GITHUB_RELAY_PORT), not just the smokescreen port"
 assert_contains "$out" "no GitHub relay"         "a dead relay is refused with a clear message"
 if [ "$st" -ne 0 ]; then ok "  -> and returns non-zero"; else bad "  -> should return non-zero (got $st)"; fi
 
-out="$(relay_probe 0)"; st=$?
+# The check cleared is all this case pins: past it, preflight_initial goes on to probe
+# host state (the safehouse CLI) that a unit test doesn't control.
+out="$(relay_probe 0)"
 assert_not_contains "$out" "no GitHub relay" "a live relay clears the check"
-if [ "$st" -eq 0 ]; then ok "  -> and returns zero"; else bad "  -> should return zero (got $st)"; fi
-
-# shellcheck disable=SC2329  # nc stub invoked indirectly
-out="$( cd "$tmp" && { nc() { [ "$3" = "$PROXY_PORT" ]; }; preflight_initial; } 2>&1 )"; st=$?
-assert_contains "$out" "no GitHub relay" "preflight_initial refuses when only the GitHub relay is dead"
-if [ "$st" -ne 0 ]; then ok "  -> and returns non-zero"; else bad "  -> should return non-zero (got $st)"; fi
-
-( preflight_github_relay extra-arg ) 2>/dev/null; st=$?
-if [ "$st" -eq 2 ]; then ok "wrong arity is a hard error (exit 2)"; else bad "wrong arity should be a hard error (got $st)"; fi
 
 
 # ---------------------------------------------------------------------------

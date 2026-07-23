@@ -14,7 +14,7 @@
 #
 # Prints the NUL-terminated generated profile paths to stdout.
 #
-# Chopi runs this only when DIR is the root of a git worktree and preflight confirmed the
+# Chopi runs this after preflight confirmed DIR is the root of a git worktree and the
 # repo's layout is supported and can be safely covered by chopi.
 
 set -euo pipefail
