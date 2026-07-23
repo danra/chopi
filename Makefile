@@ -15,7 +15,9 @@ SHELL_SOURCES = \
 	.internal/git-harden.sh \
 	.internal/git-protect.sh \
 	.internal/git-protect-cleanup.sh \
+	.internal/claude-common.sh \
 	.internal/claude-context-reads.sh \
+	.internal/claude-context-check.sh \
 	.internal/worktree.sh \
 	.internal/preflight.sh \
 	config/templates/sandbox.template.sh \

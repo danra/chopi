@@ -23,7 +23,7 @@ CHOPI_GIT_PROTECT_WRAPPER_PREFIX="chopi-git-protect-wrapper."
 CHOPI_CMD_ALIAS_PREFIX="chopi-cmd-alias."
 
 # The libs (basenames under .internal/) that the in-sandbox wrapper and cleanup source
-CHOPI_IN_SANDBOX_LIBS=(git-layout.sh util.sh)
+CHOPI_IN_SANDBOX_LIBS=(git-layout.sh util.sh claude-common.sh claude-context-check.sh)
 
 if command -v shopt >/dev/null 2>&1; then shopt -s expand_aliases; fi
 
@@ -90,6 +90,13 @@ is_path_within() {
     [ "$outer" = "/" ] && return 0   # every absolute path is inside the root
     case "$inner" in "$outer"/*) return 0 ;; esac
     return 1
+}
+
+# Canonicalize path $1, keeping it as-is when realpath fails (a dangling path, or -- in the
+# sandbox -- a component whose metadata the sandbox blinds).
+realpath_or_self() {
+    arity 1
+    realpath "$1" 2>/dev/null || printf '%s\n' "$1"
 }
 
 # Resolve the GitHub token the relay authenticates with, following gh's own source precedence:

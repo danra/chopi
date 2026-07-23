@@ -121,10 +121,7 @@ setup_worktree() {
     # errors of securing a different repo than intended.
     local invocation_dir
     invocation_dir="$(pwd -P)"
-    if ! is_worktree_root "$invocation_dir"; then
-        refuse_not_worktree_root "$invocation_dir"
-        return 1
-    fi
+    require_worktree_root "$invocation_dir"
 
     local git_common_dir
     git_common_dir="$(git rev-parse --git-common-dir)"

@@ -34,9 +34,7 @@ main() {
 
     local run_dir
     run_dir="$(pwd -P)"
-    if ! is_worktree_root "$run_dir"; then
-        refuse_not_worktree_root "$run_dir"; return
-    fi
+    require_worktree_root "$run_dir"
 
     refuse_git_location_env
 

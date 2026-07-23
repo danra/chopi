@@ -116,7 +116,10 @@ configuration.
    agent from wandering outside its assigned task and picking up irrelevant information
    from another worktree. This undoes safehouse's own default grants to all other worktrees.
    Read access is also granted to specific allowlisted Claude context files (currently
-   `CLAUDE.md`) in folders above the repo.
+   `CLAUDE.md`, also under `.claude/`) in folders above the repo. Their symlink targets and
+   `@`-imports are NOT granted automatically: before launching the command, `chopi` follows
+   them inside the sandbox and refuses to run while any is unreadable, listing the denied
+   paths so you can grant the reads yourself via `CHOPI_SAFEHOUSE_FLAGS`.
 
    In addition, `chopi` hardens the repo's git internals: `.git` stays readable, but only
    git's data paths (objects, refs, index, etc.) are writable. Everything else (`config`,

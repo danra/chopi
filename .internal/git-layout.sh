@@ -134,20 +134,15 @@ scrubbed_toplevel() {
     realpath "$toplevel"
 }
 
-# True iff $1 (a physical path, as from `pwd -P`) is the root of a git worktree.
-is_worktree_root() {
-    arity 1
-    local dir="$1" toplevel
-    toplevel="$(scrubbed_toplevel "$dir")" || return 1
-    [ "$toplevel" = "$dir" ]
-}
-
-# Handles two separate cases:
+# Refuse unless $1 (a physical path, as from `pwd -P`) is the root of a git worktree.
+# The refusal covers two separate cases:
 # - Unsupported git setup
 # - Just not a git worktree (no .git)
-refuse_not_worktree_root() {
+require_worktree_root() {
     arity 1
-    local dir="$1"
+    local dir="$1" toplevel
+    toplevel="$(scrubbed_toplevel "$dir")" || toplevel=""
+    if [ "$toplevel" = "$dir" ]; then return 0; fi
     {
         if [ -e "$dir/.git" ] || [ -L "$dir/.git" ]; then   # -L: a dangling .git symlink is still an entry
             echo "error: refusing to run: found .git, but worktree root not at '$dir'"
@@ -157,8 +152,7 @@ refuse_not_worktree_root() {
         else
             echo "error: refusing to run: '$dir' is not the root of a git worktree"
             echo "chopi runs only at a worktree root, where its git protections apply."
-            local toplevel
-            if toplevel="$(scrubbed_toplevel "$dir")"; then
+            if [ -n "$toplevel" ]; then
                 echo "This directory is inside the worktree rooted at:"
                 echo "           $toplevel"
             else
@@ -263,7 +257,7 @@ collect_layout() {
     while IFS= read -r -d '' line || [ -n "$line" ]; do
         case "$line" in "worktree "*) ;; *) continue ;; esac
         wt_path="${line#worktree }"
-        wt_path="$(realpath "$wt_path" 2>/dev/null || printf '%s' "$wt_path")"
+        wt_path="$(realpath_or_self "$wt_path")"
         all_worktrees+=("$wt_path")
     done < "$wt_list"
     if [ "${#all_worktrees[@]}" -eq 0 ]; then

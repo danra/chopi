@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 #
 # git-protect-wrapper.sh -- wrap the sandboxed command to perform additional
-# in-sandbox setup supporting chopi's git protections:
+# in-sandbox setup before launching it:
 # - appends git config entries to the existing GIT_CONFIG_* environment, if any.
 # - refuses to launch the command when the resulting config does not route github git to
 #   chopi's GitHub relay (a competing user insteadOf overrides the rewrite).
+# - refuses to launch when the sandbox denies reading a Claude context symlink target or
+#   @-import, listing the denied paths so the user grants the reads in the config.
 # - on exit, aborts any in-progress git rebase/cherry-pick left behind by the command.
 #
 # usage: git-protect-wrapper.sh CLEANUP_SCRIPT_PATH [key=value ...] -- <executable> [args...]
@@ -19,6 +21,7 @@ set -euo pipefail
 _wrapper_path="$(realpath "${BASH_SOURCE[0]}")"
 _wrapper_dir="$(dirname "$_wrapper_path")"
 . "$_wrapper_dir/util.sh"
+. "$_wrapper_dir/claude-context-check.sh"
 unset _wrapper_path _wrapper_dir
 
 _cleanup_script_path=""
@@ -76,6 +79,9 @@ main() {
         echo "       then remove or narrow the rewrite." >&2
         return 1
     fi
+
+    # Refuse to launch while any Claude context symlink target or @-import is unreadable.
+    refuse_unreadable_claude_context "$(pwd -P)" || return 1
 
     # We must outlive the command to run the cleanup -- even if a signal kills the command --
     # while keeping the command itself interruptible. Trap the signals with a handler (NOT ''),
