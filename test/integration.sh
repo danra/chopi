@@ -316,8 +316,11 @@ assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
 # ---------------------------------------------------------------------------
 echo "Claude context files in parent dirs of the workspace"
 # ---------------------------------------------------------------------------
-printf 'PARENT_CLAUDE_MARKER\n' > "$base/CLAUDE.md"
+printf 'PARENT_CLAUDE_MARKER\n@linked-import.md\n' > "$base/CLAUDE.md"
 printf 'PARENT_NOTES_MARKER\n'  > "$base/NOTES.md"
+mkdir -p "$base/import-target"
+printf 'LINKED_IMPORT_MARKER\n' > "$base/import-target/actual.md"
+ln -s "$base/import-target/actual.md" "$base/linked-import.md"
 
 out="$(chopi_t /bin/sh -c "cat '$base/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_contains "$out" "PARENT_CLAUDE_MARKER"      "a CLAUDE.md in a parent dir of the workspace is readable"
@@ -326,6 +329,10 @@ assert_contains "$out" "READ_OK"                   "  -> and the read succeeds"
 out="$(chopi_t /bin/sh -c "cat '$base/NOTES.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_not_contains "$out" "PARENT_NOTES_MARKER"   "a non-CLAUDE.md file in the same parent dir stays denied (the hole is narrow)"
 assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
+
+out="$(chopi_t /bin/sh -c "cat '$base/linked-import.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+assert_contains "$out" "LINKED_IMPORT_MARKER"      "a symlinked @-import is readable at its as-written path (how the agent opens it)"
+assert_contains "$out" "READ_OK"                   "  -> and the read succeeds"
 
 
 # ---------------------------------------------------------------------------

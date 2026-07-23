@@ -99,6 +99,7 @@ ln -s "$target" "$mono_real/link.md"
 
 build_profile "a symlinked @-import"
 assert_contains "$profile" '(allow file-read* (literal "'"$target_real"'"))' "the symlinked @-import's real target is granted"
+assert_contains "$profile" '(allow file-read-metadata (literal "'"$mono_real"'/link.md"))' "resolving the import's own link node is granted"
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +199,7 @@ ln -s "$elsewhere/sub.md" "$mono_real/sub.md"
 
 build_profile "a symlinked mid-chain @-import"
 assert_contains     "$profile" '(allow file-read* (literal "'"$deep_real"'"))'           "the nested import beside the mid-chain file's real target is granted"
+assert_contains     "$profile" '(allow file-read-metadata (literal "'"$mono_real"'/sub.md"))' "resolving the mid-chain import's own link node is granted"
 assert_not_contains "$profile" '(allow file-read* (literal "'"$mono_real"'/deep.md"))'   "the same-named file beside the mid-chain link is not granted"
 
 
