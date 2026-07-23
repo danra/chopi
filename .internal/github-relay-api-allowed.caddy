@@ -1,0 +1,16 @@
+	# Allowlisted repos: full REST (read + write) under /repos/{owner}/{repo}. Wipe all inbound
+	# headers and re-add only the API-necessary set; the injected credential is re-added ONLY here.
+	# @@CHOPI_API_AUTH@@ is filled in memory by chopi-proxy, so the token never touches disk.
+	@allowed_api path_regexp ^/repos/(@@ALLOWLIST_REGEX@@)(/.*)?$
+	handle @allowed_api {
+		reverse_proxy https://api.github.com {
+			header_up -*
+			header_up Host api.github.com
+			header_up Accept {http.request.header.Accept}
+			header_up Content-Type {http.request.header.Content-Type}
+			header_up X-GitHub-Api-Version {http.request.header.X-GitHub-Api-Version}
+			header_up User-Agent {http.request.header.User-Agent}
+			header_up Authorization "@@CHOPI_API_AUTH@@"
+			flush_interval -1
+		}
+	}

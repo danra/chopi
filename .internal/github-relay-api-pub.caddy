@@ -1,0 +1,6 @@
+	# Anything else -- non-allowlisted repos, /gists, /graphql, /user, search, ... -- is refused.
+	handle {
+		respond "chopi GitHub API relay: only REST under an allowlisted /repos/{owner}/{repo} is permitted (no gists, GraphQL, or non-repo endpoints)" 403
+	}
+}
+# GitHub API relay end

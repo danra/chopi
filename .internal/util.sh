@@ -12,9 +12,10 @@ unset _util_dir
 SMOKESCREEN_BIN="$CHOPI_DIR/.internal/proxy/chopi-smokescreen"
 
 PROXY_PORT=4760
-# The GitHub relay's loopback listener. Keep this in sync with the hole hardcoded in
+# The GitHub relay's loopback listeners. Keep these in sync with the holes hardcoded in
 # .internal/network.sb (a Seatbelt profile can't read these shell vars).
 GITHUB_RELAY_PORT=4761       # git-smart-HTTP -> github.com
+GITHUB_API_RELAY_PORT=4762   # REST API -> api.github.com (allowlisted /repos only)
 
 # mktemp name prefixes of chopi's per-invocation temporaries (created under the private
 # TMPDIR); shared so the tests assert on the same names chopi creates.
@@ -121,6 +122,14 @@ gh_basic_auth_header() {
     local token="$1" encoded
     encoded="$(printf 'x-access-token:%s' "$token" | base64 | tr -d '\n')"
     printf 'Basic %s' "$encoded"
+}
+
+# Build the "Bearer ..." Authorization header the GitHub API relay injects for the REST API
+# (api.github.com wants a Bearer/token credential, not the git-smart-HTTP Basic form above).
+# Shared by chopi-proxy.sh and test/github-relay-test.sh so both exercise the same bytes.
+gh_bearer_auth_header() {
+    arity 1
+    printf 'Bearer %s' "$1"
 }
 
 # Print the github domains in a rules file's allowed_domains sections that make exfiltration

@@ -234,6 +234,7 @@ main() {
         http_proxy="$proxy"  https_proxy="$proxy" \
         NODE_USE_ENV_PROXY=1 \
         NO_PROXY="127.0.0.1"  no_proxy="127.0.0.1" \
+        GITHUB_API_URL="http://127.0.0.1:$GITHUB_API_RELAY_PORT" \
         GIT_TERMINAL_PROMPT=0 \
         "${wrapper_cmd[@]+"${wrapper_cmd[@]}"}" \
         "$@"

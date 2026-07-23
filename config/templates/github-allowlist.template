@@ -5,6 +5,11 @@
 #
 # Fetching/cloning any PUBLIC repo works regardless of this list.
 #
+# The same list scopes the REST API relay: only /repos/{owner}/{repo} paths under a matching
+# entry are reachable (all methods), with the host token injected. Gists, GraphQL, and other
+# non-repo endpoints are always refused. Clients reach it via GITHUB_API_URL, which chopi sets
+# in the sandbox to the relay's loopback address.
+#
 # One entry per line, naming a repository on github.com (the "github.com/" prefix is implicit),
 # in one of two forms:
 #   owner/*      -- any repository under that owner or org

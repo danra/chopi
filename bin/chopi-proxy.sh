@@ -54,7 +54,7 @@ done
 
 cd "$CHOPI_DIR"
 
-if busy_port="$(first_listening_port "$PROXY_PORT" "$GITHUB_RELAY_PORT")"; then
+if busy_port="$(first_listening_port "$PROXY_PORT" "$GITHUB_RELAY_PORT" "$GITHUB_API_RELAY_PORT")"; then
     echo "error: something is already listening on 127.0.0.1:$busy_port" >&2
     exit 1
 fi
@@ -220,10 +220,12 @@ if [[ "$CADDYFILE_TEXT" == *@@CHOPI_AUTH@@* ]]; then
         echo "              or run 'gh auth login' -- or empty the allowlist for anonymous public fetch only." >&2
         exit 1
     fi
-    gh_auth="$(gh_basic_auth_header "$gh_token")"
+    gh_auth="$(gh_basic_auth_header "$gh_token")"        # git-smart-HTTP (Basic)
+    gh_api_auth="$(gh_bearer_auth_header "$gh_token")"   # REST API (Bearer)
     gh_token=""
     CADDYFILE_TEXT="${CADDYFILE_TEXT//@@CHOPI_AUTH@@/$gh_auth}"
-    gh_auth=""
+    CADDYFILE_TEXT="${CADDYFILE_TEXT//@@CHOPI_API_AUTH@@/$gh_api_auth}"
+    gh_auth=""; gh_api_auth=""
 else
     # No credential slot: the GitHub allowlist is empty, so the relay proxies anonymous public fetch
     # only.
@@ -252,7 +254,7 @@ main_pid=$$
   rm -rf "$TMPDIR" ) &
 
 # Start smokescreen
-echo "[$SCRIPT_NAME] GitHub relay on 127.0.0.1:$GITHUB_RELAY_PORT" >&2
+echo "[$SCRIPT_NAME] GitHub relay on 127.0.0.1:$GITHUB_RELAY_PORT (git), 127.0.0.1:$GITHUB_API_RELAY_PORT (REST API)" >&2
 echo "[$SCRIPT_NAME]   relay log: $CADDY_LOG" >&2
 echo "[$SCRIPT_NAME] starting outgoing proxy on 127.0.0.1:$PROXY_PORT (Ctrl-C to stop)" >&2
 exec "$SMOKESCREEN_BIN" --config-file ./.internal/smokescreen-config.yaml \

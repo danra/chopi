@@ -5,10 +5,11 @@
 #   github-relay-caddyfile.sh <allowlist-file>   # prints a Caddyfile to stdout
 #
 # Compiles the GitHub repo allowlist into a path regex and assembles the Caddyfile from the
-# github-relay-{head,allowed,pub}.caddy fragments next to this script: one loopback
-# reverse-proxy listener,
+# github-relay-{head,allowed,pub}.caddy and github-relay-api-{head,allowed,pub}.caddy fragments
+# next to this script: two loopback reverse-proxy listeners,
 #
-#   :GITHUB_RELAY_PORT   git-smart-HTTP -> github.com
+#   :GITHUB_RELAY_PORT       git-smart-HTTP -> github.com
+#   :GITHUB_API_RELAY_PORT   REST API       -> api.github.com   (allowlisted /repos only)
 #
 # with the credentialed routes included only when the allowlist has entries.
 #
@@ -109,15 +110,25 @@ emit_caddyfile() {
     arity 1
     local allowlist_regex="$1"
 
-    local head allowed pub
+    local head allowed pub api_head api_allowed api_pub
     head="$(cat "$CHOPI_DIR/.internal/github-relay-head.caddy")"
     allowed="$(cat "$CHOPI_DIR/.internal/github-relay-allowed.caddy")"
     pub="$(cat "$CHOPI_DIR/.internal/github-relay-pub.caddy")"
+    api_head="$(cat "$CHOPI_DIR/.internal/github-relay-api-head.caddy")"
+    api_allowed="$(cat "$CHOPI_DIR/.internal/github-relay-api-allowed.caddy")"
+    api_pub="$(cat "$CHOPI_DIR/.internal/github-relay-api-pub.caddy")"
 
+    # git listener: head, the credentialed @allowed route (only with a non-empty allowlist), pub.
     local text
     text="$head"$'\n'
     [ -n "$allowlist_regex" ] && text="$text$allowed"$'\n'
-    text="$text$pub"
+    text="$text$pub"$'\n'
+
+    # api listener: same shape -- the credentialed @allowed_api route is present only when the
+    # allowlist has entries, so an empty allowlist yields an API listener that refuses everything.
+    text="$text$api_head"$'\n'
+    [ -n "$allowlist_regex" ] && text="$text$api_allowed"$'\n'
+    text="$text$api_pub"
 
     local deny_fetch deny_push auth_msg deny_auth_fetch deny_auth_push
     deny_fetch="$(deny_pkt git-upload-pack \
@@ -129,6 +140,7 @@ emit_caddyfile() {
     deny_auth_push="$(deny_pkt git-receive-pack "$auth_msg")"
 
     text="${text//@@GITPORT@@/$GITHUB_RELAY_PORT}"
+    text="${text//@@APIPORT@@/$GITHUB_API_RELAY_PORT}"
     text="${text//@@ALLOWLIST_REGEX@@/$allowlist_regex}"
     text="${text//@@DENY_PKT_FETCH@@/$deny_fetch}"
     text="${text//@@DENY_PKT_PUSH@@/$deny_push}"

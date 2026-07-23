@@ -11,6 +11,8 @@
 #   1c. fetch of a private/nonexistent repo fails with an informative error message
 #   2. push to a non-allowlisted repo fails with an informative error message
 #   2b. non-git requests still fail closed (403)
+#   2c. the API relay refuses anything outside an allowlisted /repos/{owner}/{repo} path (403)
+#   2d. (opt) an allowlisted /repos path is authenticated and proxied to api.github.com (200)
 #   3. (opt) push/fetch authorized for allowlisted repo
 #   3b. (opt) git-lfs push/fetch round-trips through the relay (the real blob survives)
 #   4. a credential GitHub rejects fails with an informative error message
@@ -61,12 +63,16 @@ caddy_cfg="$("$RENDER" "$WORK/allow")" || { bad "github-relay-caddyfile.sh faile
 if [[ "$caddy_cfg" == *@@CHOPI_AUTH@@* ]]; then
     caddy_cfg="${caddy_cfg//@@CHOPI_AUTH@@/$(gh_basic_auth_header "$TOKEN")}"
 fi
+if [[ "$caddy_cfg" == *@@CHOPI_API_AUTH@@* ]]; then
+    caddy_cfg="${caddy_cfg//@@CHOPI_API_AUTH@@/$(gh_bearer_auth_header "$TOKEN")}"
+fi
 
 if ! start_github_relay "$caddy_cfg" "$WORK/caddy.log"; then
     bad "caddy failed to start"; sed 's/^/      /' "$WORK/caddy.log"; summary; exit 1
 fi
 
 git_url="http://127.0.0.1:$GITHUB_RELAY_PORT"
+api_url="http://127.0.0.1:$GITHUB_API_RELAY_PORT"
 
 # 1. anonymous public fetch through the relay
 if git clone -q "$git_url/octocat/Hello-World" "$WORK/hw" 2>"$WORK/e1"; then
@@ -108,6 +114,20 @@ fi
 code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$git_url/torvalds/linux/git-receive-pack")"
 if [ "$code" = "403" ]; then ok "non-git operation refused (bare receive-pack POST -> 403)"
 else bad "non-git operation probe expected 403, got $code"; fi
+
+# 2c. API relay refuses everything outside an allowlisted /repos/{owner}/{repo} path
+for probe in /repos/chopi-e2e-test/nope /gists /graphql /user /search/code; do
+    code="$(curl -s -o /dev/null -w '%{http_code}' "$api_url$probe")"
+    if [ "$code" = "403" ]; then ok "API relay refuses $probe (-> 403)"
+    else bad "API relay probe $probe expected 403, got $code"; fi
+done
+
+# 2d. optional: an allowlisted API path is authenticated and proxied to api.github.com
+if [ -n "${ALLOW_REPO:-}" ] && [ -n "$TOKEN" ]; then
+    code="$(curl -s -o /dev/null -w '%{http_code}' "$api_url/repos/$ALLOW_REPO")"
+    if [ "$code" = "200" ]; then ok "API relay proxies allowlisted /repos/$ALLOW_REPO (-> 200)"
+    else bad "API relay on allowlisted /repos/$ALLOW_REPO -> $code"; fi
+fi
 
 # 3. optional: push/fetch authorized for allowlisted repo
 if [ -n "${ALLOW_REPO:-}" ] && [ -n "$TOKEN" ]; then

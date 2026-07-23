@@ -1,0 +1,10 @@
+# GitHub API relay head fragment: opens the api.github.com REST listener.
+#
+# Reachable at http://127.0.0.1:@@APIPORT@@ (chopi points GITHUB_API_URL here). Only
+# /repos/{owner}/{repo} paths under an allowlisted repo are proxied, with the host token
+# injected; everything else -- other repos, /gists, /user, search, and /graphql (whose target
+# repos live in the POST body, not the URL, so it can't be scoped) -- is refused below.
+#
+# Like the git relay this is a reverse proxy, not a MITM: the sandbox reaches it over plaintext
+# loopback HTTP and Caddy originates its own TLS to api.github.com, so no CA is involved.
+http://127.0.0.1:@@APIPORT@@ {

@@ -34,6 +34,7 @@ default:
 global_deny_list:
     # Claude Code telemetry destination
     - "*.datadoghq.com"
-    # github.com is reachable only for git, and only via the GitHub relay we run for it
+    # github.com (git) and api.github.com (REST API) are reachable only via the GitHub relays
+    # we run for them, which scope access to the repos in config/github-allowlist
     - github.com
     - api.github.com

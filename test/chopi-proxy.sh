@@ -406,8 +406,9 @@ echo "proxy port consistency (network.sb <-> util.sh)"
 # ---------------------------------------------------------------------------
 ports_sb="$(grep -oE 'localhost:[0-9]+' "$repo/.internal/network.sb" | grep -oE '[0-9]+')"
 want_ports="$PROXY_PORT
-$GITHUB_RELAY_PORT"
-assert_eq "$ports_sb" "$want_ports" "network.sb loopback ports match util.sh (smokescreen $PROXY_PORT, GitHub relay $GITHUB_RELAY_PORT)"
+$GITHUB_RELAY_PORT
+$GITHUB_API_RELAY_PORT"
+assert_eq "$ports_sb" "$want_ports" "network.sb loopback ports match util.sh (smokescreen $PROXY_PORT, GitHub relay $GITHUB_RELAY_PORT, API relay $GITHUB_API_RELAY_PORT)"
 
 
 # ---------------------------------------------------------------------------

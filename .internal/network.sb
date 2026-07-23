@@ -20,4 +20,5 @@
 (deny network-bind     (local ip))                    ;; beat safehouse's bind allow -> no listening sockets
 (deny network-inbound  (local ip))                    ;; beat safehouse's inbound allow -> no incoming connections
 (allow network-outbound (remote ip "localhost:4760")) ;; hole: the smokescreen forward proxy
-(allow network-outbound (remote ip "localhost:4761")) ;; hole: the GitHub relay
+(allow network-outbound (remote ip "localhost:4761")) ;; hole: the GitHub relay (git)
+(allow network-outbound (remote ip "localhost:4762")) ;; hole: the GitHub relay (REST API)
