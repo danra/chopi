@@ -314,7 +314,7 @@ assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
 
 
 # ---------------------------------------------------------------------------
-echo "context files in parent dirs of the workspace"
+echo "Claude context files in parent dirs of the workspace"
 # ---------------------------------------------------------------------------
 printf 'PARENT_CLAUDE_MARKER\n' > "$base/CLAUDE.md"
 printf 'PARENT_NOTES_MARKER\n'  > "$base/NOTES.md"
@@ -347,7 +347,7 @@ assert_contains "$out" "WRITE_OK"                  "  -> and the sandboxed comma
 # This run's artifacts show up in the in-sandbox listing of $TMPDIR -- the dir is fresh
 # and private to the invocation, so their presence pins them as subpaths of it. Guards the
 # containment assumption the one-shot cleanup below relies on.
-assert_contains "$out" "$CHOPI_CONTEXT_READS_PREFIX" "the context-reads profile lives inside the invocation temp dir"
+assert_contains "$out" "$CHOPI_CLAUDE_CONTEXT_READS_PREFIX" "the claude-context-reads profile lives inside the invocation temp dir"
 
 if [ -n "$sbx_tmpdir" ] && [ ! -e "$sbx_tmpdir" ]; then
     ok  "chopi removes the entire invocation temp dir (all temporaries with it) after the run"
@@ -852,7 +852,7 @@ EOF
     chopi_wt /bin/sh -c "echo x > '$external_wt/ext-evil.txt'" >/dev/null 2>&1
     assert_absent "$external_wt/ext-evil.txt" "a write into an external worktree is denied"
 
-    # A context file above the repo root stays readable from the worktree (e.g. a developer-dir
+    # A Claude context file above the repo root stays readable from the worktree (e.g. a developer-dir
     # CLAUDE.md meant for every repo beneath it), but the repo root's own copy are unreadable.
     printf 'ABOVE_REPO_CLAUDE_MARKER\n' > "$base/CLAUDE.md"          # $base is the repo's parent dir
     printf 'REPO_ROOT_CLAUDE_MARKER\n'  > "$gitrepo_real/CLAUDE.md"

@@ -11,7 +11,7 @@ SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 
 . "$SCRIPT_DIR/../.internal/util.sh"
 . "$SCRIPT_DIR/../.internal/git-layout.sh"
-. "$SCRIPT_DIR/../.internal/context-reads.sh"
+. "$SCRIPT_DIR/../.internal/claude-context-reads.sh"
 . "$SCRIPT_DIR/../.internal/preflight.sh"
 
 usage="usage: chopi [--config FILE] [--verbose] [--worktree NAME] <executable> [args...]
@@ -129,12 +129,12 @@ main() {
         preflight_config_placement "$config" "$run_dir" || return $?
     fi
 
-    # Let the agent read context files in the workspace's ancestor dirs.
-    local context_profile
-    context_profile="$(mktemp "$TMPDIR/${CHOPI_CONTEXT_READS_PREFIX}XXXXXX")" \
-        || { echo "chopi: could not create a temp file for the context-reads profile" >&2; return 1; }
-    write_context_reads_profile "$context_profile" "$run_dir" \
-        || { echo "chopi: could not write the context-reads profile" >&2; return 1; }
+    # Let the agent read Claude context files in the workspace's ancestor dirs.
+    local claude_context_profile
+    claude_context_profile="$(mktemp "$TMPDIR/${CHOPI_CLAUDE_CONTEXT_READS_PREFIX}XXXXXX")" \
+        || { echo "chopi: could not create a temp file for the claude-context-reads profile" >&2; return 1; }
+    write_claude_context_reads_profile "$claude_context_profile" "$run_dir" \
+        || { echo "chopi: could not write the claude-context-reads profile" >&2; return 1; }
 
     local protection_flags=()
     local wrapper_cmd=()
@@ -226,7 +226,7 @@ main() {
     [ -n "$verbose" ] && { echo; set -x; }
     safehouse \
         "${CHOPI_SAFEHOUSE_FLAGS[@]+"${CHOPI_SAFEHOUSE_FLAGS[@]}"}" \
-        --append-profile "$context_profile" \
+        --append-profile "$claude_context_profile" \
         "${protection_flags[@]+"${protection_flags[@]}"}" \
         "${wrapper_flags[@]+"${wrapper_flags[@]}"}" \
         --append-profile "$CHOPI_DIR/.internal/network.sb" \

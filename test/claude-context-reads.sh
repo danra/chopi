@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
 #
-# test/context-reads.sh -- unit tests for the ancestor context-file read profile
+# test/claude-context-reads.sh -- unit tests for the Claude context read profile
 
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 . "$repo/.internal/util.sh"
-. "$repo/.internal/context-reads.sh"
+. "$repo/.internal/claude-context-reads.sh"
 . "$repo/test/lib.sh"
 
-header "test/context-reads.sh -- unit tests for the ancestor context-file read profile"
+header "test/claude-context-reads.sh -- unit tests for the Claude context read profile"
 
 # Exported so any temporaries land here too.
 TMPDIR="$(mktemp -d)"; export TMPDIR
 trap 'rm -rf "$TMPDIR"' EXIT
 
 # Emit the profile for RUN_DIR and print its contents.
-context_reads_profile() {
+claude_context_reads_profile() {
     arity 1
     local run_dir="$1"
     local out="$TMPDIR/profile.sb"
-    write_context_reads_profile "$out" "$run_dir" || return 1
+    write_claude_context_reads_profile "$out" "$run_dir" || return 1
     cat "$out"
 }
 
@@ -33,7 +33,7 @@ make_workspace() {
 
 build_profile() {
     arity 1
-    profile="$(context_reads_profile "$work")"
+    profile="$(claude_context_reads_profile "$work")"
     assert_zero "$?" "writing the profile exits zero ($1)"
 }
 
@@ -130,8 +130,8 @@ assert_contains "$profile" '(allow file-read* (literal "'"$far_real"'"))' "an @-
 # ---------------------------------------------------------------------------
 echo "a symlinked ancestor CLAUDE.md gets its @-imports granted beside the link AND the target"
 # ---------------------------------------------------------------------------
-# Which side the agent resolves a symlinked context file's own imports against depends on
-# per-project approval state (see grant_context_imports), so the profile must grant both.
+# Which side the agent resolves a symlinked CLAUDE.md's own imports against depends on
+# per-project approval state (see grant_claude_md_imports), so the profile must grant both.
 make_workspace ancsym
 target_dir="$TMPDIR/ancsym/shared/common"; mkdir -p "$target_dir"
 printf '@Guidelines.md\n'  > "$target_dir/CLAUDE.md"
@@ -184,7 +184,7 @@ assert_contains "$profile" '(allow file-read* (literal "'"$target_sub_real"'"))'
 # ---------------------------------------------------------------------------
 echo "an imported file that is a symlink resolves ITS imports beside its real target"
 # ---------------------------------------------------------------------------
-# Unlike a context file's own imports, nested hops resolve beside the importing file's REAL
+# Unlike a CLAUDE.md's own imports, nested hops resolve beside the importing file's REAL
 # location: the agent canonicalizes each import before recursing into it (verified against
 # Claude Code 2.1.218).
 make_workspace nestsym

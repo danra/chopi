@@ -15,7 +15,7 @@ SHELL_SOURCES = \
 	.internal/git-harden.sh \
 	.internal/git-protect.sh \
 	.internal/git-protect-cleanup.sh \
-	.internal/context-reads.sh \
+	.internal/claude-context-reads.sh \
 	.internal/worktree.sh \
 	.internal/preflight.sh \
 	config/templates/sandbox.template.sh \
@@ -32,7 +32,7 @@ SHELL_SOURCES = \
 	test/chopi-proxy.sh \
 	test/worktree.sh \
 	test/preflight.sh \
-	test/context-reads.sh \
+	test/claude-context-reads.sh \
 	test/integration.sh
 
 PROXY_DIR = .internal/proxy
@@ -52,7 +52,7 @@ test:
 	@./test/chopi-proxy.sh
 	@./test/worktree.sh
 	@./test/preflight.sh
-	@./test/context-reads.sh
+	@./test/claude-context-reads.sh
 	@./test/integration.sh
 
 lint:
