@@ -42,7 +42,7 @@ repo_with_subdir="$TMPDIR/repo_with_subdir"; make_repo "$repo_with_subdir"
 mkdir -p "$repo_with_subdir/sub/deep"
 out="$(run_preflight_in_dir "$repo_with_subdir/sub/deep")"; st=$?
 assert_nonzero "$st" "a subdir of a worktree is refused"
-assert_contains "$out" "not the root of a git worktree" "  -> naming the cause"
+assert_contains "$out" "$(realpath "$repo_with_subdir")" "  -> pointing at the enclosing worktree root"
 
 standard_repo="$TMPDIR/standard_repo"; make_repo "$standard_repo"
 gitdir="$(realpath "$standard_repo/.git")"

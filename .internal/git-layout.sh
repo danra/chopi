@@ -118,8 +118,9 @@ refuse_inflight_sequencing() {
     return 1
 }
 
-# True iff $1 (a physical path, as from `pwd -P`) is the root of a git worktree.
-is_worktree_root() {
+# Print the physical root of the git worktree enclosing dir $1, or fail if
+# the dir is not inside a git worktree.
+scrubbed_toplevel() {
     arity 1
 
     # Unset env location-overrides to avoid being misled.
@@ -130,7 +131,14 @@ is_worktree_root() {
     local dir="$1" toplevel
     toplevel="$("${scrubbed_env[@]}" git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || return 1
     [ -n "$toplevel" ] || return 1
-    toplevel="$(realpath "$toplevel")" || return 1
+    realpath "$toplevel"
+}
+
+# True iff $1 (a physical path, as from `pwd -P`) is the root of a git worktree.
+is_worktree_root() {
+    arity 1
+    local dir="$1" toplevel
+    toplevel="$(scrubbed_toplevel "$dir")" || return 1
     [ "$toplevel" = "$dir" ]
 }
 
@@ -149,7 +157,13 @@ refuse_not_worktree_root() {
         else
             echo "error: refusing to run: '$dir' is not the root of a git worktree"
             echo "chopi runs only at a worktree root, where its git protections apply."
-            echo "Run it from the root of the repo (or worktree) you're working on."
+            local toplevel
+            if toplevel="$(scrubbed_toplevel "$dir")"; then
+                echo "This directory is inside the worktree rooted at:"
+                echo "           $toplevel"
+            else
+                echo "Run it from the root of the repo (or worktree) you're working on."
+            fi
         fi
     } >&2
     return 1

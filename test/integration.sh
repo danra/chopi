@@ -393,7 +393,7 @@ ws_subdir="$ws/subdir"
 mkdir -p "$ws_subdir"
 both="$( ( cd "$ws_subdir" && "$repo/bin/chopi" --config "$cfg" -- /bin/sh -c 'echo RAN' ) 2>&1 )"; rc=$?
 assert_nonzero      "$rc"                                      "chopi refuses to run in a subdir of a worktree"
-assert_contains     "$both" "not the root of a git worktree"   "  -> naming the cause"
+assert_contains     "$both" "$(realpath "$ws")"                "  -> pointing at the enclosing worktree root"
 assert_not_contains "$both" "RAN"                              "  -> and does not run the command"
 
 
