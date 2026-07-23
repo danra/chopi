@@ -109,10 +109,6 @@ main() {
         fi
     fi
 
-    # Empty-array expansions below use the "${a[@]+"${a[@]}"}" form so they stay silent
-    # under `set -u` on bash 3.2 (macOS's system bash), where a bare "${a[@]}" on an empty
-    # array is an "unbound variable" error.
-
     # Refuse running outside a git worktree root, and with git setups that chopi
     # doesn't support.
     local protection_args=()
