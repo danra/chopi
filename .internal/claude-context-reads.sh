@@ -46,6 +46,32 @@ first_visit() {
     _seen="$_seen$1$NL"
 }
 
+# Grant resolving path $1: Seatbelt checks every symlink node the kernel traverses, so each
+# link node gets a file-read-metadata grant (readlink is a metadata read) at its
+# canonical-prefix position, and the walk continues from the link's resolution.
+grant_resolving_links() {
+    arity 1
+    local rest="${1#/}" node="" comp
+    while [ -n "$rest" ]; do
+        comp="${rest%%/*}"
+        case "$rest" in
+            */*) rest="${rest#*/}" ;;
+            *)   rest="" ;;
+        esac
+        case "$comp" in
+            ''|'.') continue ;;
+            '..')   node="$(dirname "/${node#/}")"; if [ "$node" = "/" ]; then node=""; fi; continue ;;
+        esac
+        node="$node/$comp"
+        [ -L "$node" ] || continue
+        if first_visit "$node"; then
+            rule 'allow file-read-metadata' literal "$node"
+        fi
+        node="$(realpath "$node" 2>/dev/null)" || return 0
+        if [ "$node" = "/" ]; then node=""; fi
+    done
+}
+
 # Recursively grant read on every @-import reachable from file $1 (a path the caller
 # has already granted and recorded), resolving each import against $1's own directory.
 #
@@ -77,6 +103,7 @@ grant_claude_md_imports() {
         [ -z "$import" ] && continue
         real="$(realpath "$import" 2>/dev/null)" || continue
         [ -f "$real" ] || continue
+        grant_resolving_links "$import"
         first_visit "$real" || continue
         rule 'allow file-read*' literal "$real"
         grant_claude_md_imports "$real"
@@ -114,9 +141,9 @@ write_claude_context_reads_profile() {
     real_run_dir="$(realpath "$run_dir")" \
         || { echo "error: claude-context-reads: cannot resolve '$run_dir'" >&2; return 1; }
 
-    # Newline-delimited set (mutated via first_visit) of the real paths already granted, so a
-    # file reachable several ways -- from several ancestors, or via an import cycle -- is
-    # granted (and walked for its own imports) only once.
+    # Newline-delimited set (mutated via first_visit) of the paths already granted -- real
+    # files and symlink nodes -- so one reachable several ways (from several ancestors, or
+    # via an import cycle) is granted (and walked for its own imports) only once.
     local NL=$'\n' _seen=$'\n'
 
     local dir parent name
