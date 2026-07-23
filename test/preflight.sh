@@ -8,7 +8,7 @@
 #     command could be handed read/write to its own sandboxing policy.
 #   * preflight_initial -- the chopi-dir overlap refusal (and its CHOPI_ALLOW_SELF downgrade).
 #   * preflight_config_placement -- refusing a custom --config that lives inside the workspace.
-#   * preflight_github_relay -- refusing a worktree-root run when the GitHub relay's port is dead.
+#   * preflight_github_relay -- refusing a run when the GitHub relay's port is dead.
 #   * rule / the Seatbelt-rule emitter -- its empty-PATH refusal keeps an
 #     accidentally-empty variable from becoming a silently misapplied rule.
 
@@ -170,7 +170,7 @@ if [ "$st" -eq 2 ]; then ok "a wrong number of arguments is a hard error (exit 2
 
 
 # ---------------------------------------------------------------------------
-echo "preflight_github_relay (the GitHub relay must be live for a worktree-root run)"
+echo "preflight_github_relay (the GitHub relay must be live for every run)"
 # ---------------------------------------------------------------------------
 # Stub `nc` -- inherited into the command-substitution subshell -- so the check is hermetic: it
 # must not depend on a real chopi-proxy being up, nor probe the live ports. The stub echoes its
@@ -179,6 +179,7 @@ echo "preflight_github_relay (the GitHub relay must be live for a worktree-root 
 relay_probe() {
     arity 1
     local rc="$1"
+    # shellcheck disable=SC2329  # nc stub invoked indirectly
     ( nc() { echo "nc $*"; return "$rc"; }; preflight_github_relay 2>&1 )
 }
 
@@ -190,6 +191,11 @@ if [ "$st" -ne 0 ]; then ok "  -> and returns non-zero"; else bad "  -> should r
 out="$(relay_probe 0)"; st=$?
 assert_not_contains "$out" "no GitHub relay" "a live relay clears the check"
 if [ "$st" -eq 0 ]; then ok "  -> and returns zero"; else bad "  -> should return zero (got $st)"; fi
+
+# shellcheck disable=SC2329  # nc stub invoked indirectly
+out="$( cd "$tmp" && { nc() { [ "$3" = "$PROXY_PORT" ]; }; preflight_initial; } 2>&1 )"; st=$?
+assert_contains "$out" "no GitHub relay" "preflight_initial refuses when only the GitHub relay is dead"
+if [ "$st" -ne 0 ]; then ok "  -> and returns non-zero"; else bad "  -> should return non-zero (got $st)"; fi
 
 ( preflight_github_relay extra-arg ) 2>/dev/null; st=$?
 if [ "$st" -eq 2 ]; then ok "wrong arity is a hard error (exit 2)"; else bad "wrong arity should be a hard error (got $st)"; fi

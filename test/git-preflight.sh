@@ -31,18 +31,18 @@ set +e
 
 
 # ---------------------------------------------------------------------------
-echo "outside a git worktree root there is nothing to check; a supported repo passes"
+echo "only a git worktree root is accepted; a supported repo at its root passes"
 # ---------------------------------------------------------------------------
 plain="$TMPDIR/plain"; mkdir -p "$plain"
 out="$(run_preflight_in_dir "$plain")"; st=$?
-assert_zero "$st" "a non-git dir exits zero"
-assert_eq "$out" "" "  -> silently (nothing to check)"
+assert_nonzero "$st" "a non-git dir is refused"
+assert_contains "$out" "not the root of a git worktree" "  -> naming the cause"
 
 repo_with_subdir="$TMPDIR/repo_with_subdir"; make_repo "$repo_with_subdir"
 mkdir -p "$repo_with_subdir/sub/deep"
 out="$(run_preflight_in_dir "$repo_with_subdir/sub/deep")"; st=$?
-assert_zero "$st" "a subdir of a worktree exits zero"
-assert_eq "$out" "" "  -> silently (chopi applies no git protections there either)"
+assert_nonzero "$st" "a subdir of a worktree is refused"
+assert_contains "$out" "not the root of a git worktree" "  -> naming the cause"
 
 standard_repo="$TMPDIR/standard_repo"; make_repo "$standard_repo"
 gitdir="$(realpath "$standard_repo/.git")"
@@ -52,7 +52,7 @@ assert_eq "$out" "" "  -> silently (nothing is printed on success)"
 
 
 # ---------------------------------------------------------------------------
-echo "an inherited git-location env is refused inside a repo, ignored outside"
+echo "an inherited git-location env is refused inside a repo, never followed outside"
 # ---------------------------------------------------------------------------
 out="$(cd "$standard_repo" && \
     GIT_DIR="$gitdir" \
@@ -68,10 +68,11 @@ assert_contains "$out" "GIT_REFERENCE_BACKEND" "  -> GIT_REFERENCE_BACKEND is na
 out="$(cd "$standard_repo" && env GIT_DIR= "$git_preflight_sh" 2>&1)"; st=$?
 assert_nonzero "$st" "a set-but-empty GIT_DIR is refused too"
 
-# Outside of a repo the location vars are ignored
+# Outside of a repo the location vars are never followed: the worktree-root check scrubs
+# them, so the dir is refused as non-root rather than resolved through GIT_DIR.
 out="$(cd "$plain" && env GIT_DIR="$gitdir" "$git_preflight_sh" 2>&1)"; st=$?
-assert_zero "$st" "GIT_DIR pointing at a repo from a non-git dir still exits zero"
-assert_eq "$out" "" "  -> with no refusal (nothing to check)"
+assert_nonzero "$st" "GIT_DIR pointing at a repo from a non-git dir is still refused"
+assert_contains "$out" "not the root of a git worktree" "  -> as non-root (GIT_DIR is not followed)"
 
 
 # ---------------------------------------------------------------------------
