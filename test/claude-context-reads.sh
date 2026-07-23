@@ -24,13 +24,6 @@ claude_context_reads_profile() {
     cat "$out"
 }
 
-make_workspace() {
-    arity 1
-    work="$TMPDIR/$1/mono/pkg"; mkdir -p "$work"
-    work_real="$(realpath "$work")"
-    mono_real="$(dirname "$work_real")"
-}
-
 build_profile() {
     arity 1
     profile="$(claude_context_reads_profile "$work")"

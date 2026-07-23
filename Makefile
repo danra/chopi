@@ -35,6 +35,7 @@ SHELL_SOURCES = \
 	test/worktree.sh \
 	test/preflight.sh \
 	test/claude-context-reads.sh \
+	test/claude-context-check.sh \
 	test/integration.sh
 
 PROXY_DIR = .internal/proxy
@@ -55,6 +56,7 @@ test:
 	@./test/worktree.sh
 	@./test/preflight.sh
 	@./test/claude-context-reads.sh
+	@./test/claude-context-check.sh
 	@./test/integration.sh
 
 lint:

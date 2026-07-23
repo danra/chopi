@@ -130,6 +130,18 @@ make_repo() {
     git -C "$dir" commit -q --allow-empty -m init
 }
 
+# make_workspace NAME -- a nested workspace fixture under $TMPDIR/NAME, setting globals:
+# work ($TMPDIR/NAME/mono/pkg), work_real (its physical path), mono_real (its parent).
+# Shared by the Claude-context suites so both halves of the mechanism (the granting profile
+# and the in-sandbox check) test the same topology.
+# shellcheck disable=SC2034  # the fixture globals are consumed by the sourcing suites
+make_workspace() {
+    arity 1
+    work="$TMPDIR/$1/mono/pkg"; mkdir -p "$work"
+    work_real="$(realpath "$work")"
+    mono_real="$(dirname "$work_real")"
+}
+
 # in_progress DIR -- print the exec-capable op git sees in worktree DIR ('rebase'|'sequencer'),
 # else nothing. Kept independent of the production inflight_exec_sequencing it mirrors, so tests
 # don't lean on the code they exercise.
