@@ -334,6 +334,20 @@ out="$(chopi_t /bin/sh -c "cat '$base/linked-import.md' && echo READ_OK || echo 
 assert_contains "$out" "LINKED_IMPORT_MARKER"      "a symlinked @-import is readable at its as-written path (how the agent opens it)"
 assert_contains "$out" "READ_OK"                   "  -> and the read succeeds"
 
+mkdir -p "$base/.claude"
+printf 'PARENT_DOTCLAUDE_MARKER\n' > "$base/.claude/CLAUDE.md"
+out="$(chopi_t /bin/sh -c "cat '$base/.claude/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+assert_contains "$out" "PARENT_DOTCLAUDE_MARKER"   "a .claude/CLAUDE.md in a parent dir of the workspace is readable"
+assert_contains "$out" "READ_OK"                   "  -> and the read succeeds"
+
+# A second workspace whose ancestor's .claude is a symlink to a shared dir.
+mkdir -p "$base/shared-claude" "$base/dev/ws2"
+printf 'SHARED_DOTCLAUDE_MARKER\n' > "$base/shared-claude/CLAUDE.md"
+ln -s "$base/shared-claude" "$base/dev/.claude"
+out="$( (cd "$base/dev/ws2" && "$repo/bin/chopi" --config "$cfg" -- /bin/sh -c "cat '$base/dev/.claude/CLAUDE.md' && echo READ_OK || echo READ_FAIL") 2>/dev/null )"
+assert_contains "$out" "SHARED_DOTCLAUDE_MARKER"   "a CLAUDE.md behind a symlinked ancestor .claude is readable through the link"
+assert_contains "$out" "READ_OK"                   "  -> and the read succeeds"
+
 
 # ---------------------------------------------------------------------------
 echo "private per-invocation temp dir"
