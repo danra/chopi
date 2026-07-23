@@ -191,9 +191,9 @@ therefore split across cooperating layers:
 
 | Layer | Tool | Enforces |
 |-------|------|----------|
-| Sandbox | [`safehouse`](https://github.com/eugene1g/agent-safehouse) (wraps `sandbox-exec`) | Filesystem and preset features; the only outgoing network permitted is to the local proxies at `127.0.0.1:4760` (smokescreen) and `:4761` (the GitHub relay). |
+| Sandbox | [`safehouse`](https://github.com/eugene1g/agent-safehouse) (wraps `sandbox-exec`) | Filesystem and preset features; the only outgoing network permitted is to the local proxies at `127.0.0.1:4760` (smokescreen) and `:4761`/`:4762` (the GitHub git/API relays). |
 | Domain-level proxy | [`smokescreen`](https://github.com/stripe/smokescreen) (CONNECT proxy) | Of the traffic that reaches it, only connections to allowed hosts are forwarded; everything else is refused and logged. |
-| GitHub repo-level proxy | [`caddy`](https://caddyserver.com) (reverse proxy) | `github.com` git is reached *only* through this relay, which scopes it to a repo allowlist: fetching a **public** repo is unrestricted, but reading a **private** repo and **any push** are limited to allowlisted repos. |
+| GitHub repo-level proxy | [`caddy`](https://caddyserver.com) (reverse proxy) | `github.com` git is reached *only* through this relay, which scopes it to a repo allowlist: fetching a **public** repo is unrestricted, but reading a **private** repo and **any push** are limited to allowlisted repos. The REST API (`api.github.com`) is fronted by the same relay, scoped to the same allowlist: only `/repos/{owner}/{repo}` under an allowlisted repo is proxied (read + write); gists, GraphQL, and other endpoints are refused. |
 
 **The sandbox** makes the proxies the *only* way to communicate over the network.
 
@@ -205,8 +205,15 @@ pastebin.com)
 **The repo-level proxy** exists to prevent a misbehaving agent pushing stolen code to
 *any* repo on GitHub (possibly using an attacker-provided token). Currently, this
 protection layer only supports GitHub; other repo-hosting domains can be allowlisted by
-domain, but be aware of the exfiltration risk. `gh` and GitHub's API are still
-unsupported.
+domain, but be aware of the exfiltration risk.
+
+The relay also fronts the GitHub REST API (`api.github.com`), scoped to the same
+allowlist: reads and writes under `/repos/{owner}/{repo}` of an allowlisted repo are
+proxied with the host token injected; gists, GraphQL, and other non-repo endpoints are
+refused (GraphQL's target repos live in the request body, not the URL, so it can't be
+scoped by path). chopi sets `GITHUB_API_URL` in the sandbox so clients and SDKs that
+honor it reach the API over the relay's plaintext loopback, keeping the scoping MITM-free
+(no CA). `gh` and clients that hardcode `https://api.github.com` won't pick it up.
 
 The sandboxed agent must route its traffic through the proxy, i.e., respect
 `HTTP_PROXY`/`HTTPS_PROXY`). The sandbox blocks all other outgoing traffic, so an agent that
@@ -219,10 +226,12 @@ Network path of the sandboxed command:
 
 ```
 <cmd>
-  │  Seatbelt allows outgoing connections ONLY to 127.0.0.1:{4760,4761}
-  ├─ github.com (git) ─── 4761 ────▶ caddy relay ─(repo allowlisted?)─▶ GitHub
+  │  Seatbelt allows outgoing connections ONLY to 127.0.0.1:{4760,4761,4762}
+  ├─ github.com (git) ───── 4761 ──▶ caddy relay ─(repo allowlisted?)─▶ github.com
   │                                   └─ public fetch: any repo · private fetch or push: allowlisted only
-  └─ everything else ──── 4760 ────▶ smokescreen ─(host allowed?)─▶ api.anthropic.com / ...
+  ├─ GitHub REST API ────── 4762 ──▶ caddy relay ─(repo allowlisted?)─▶ api.github.com
+  │   (via GITHUB_API_URL)            └─ /repos/{allowlisted}: read+write · gists/GraphQL/other refused
+  └─ everything else ────── 4760 ──▶ smokescreen ─(host allowed?)─▶ api.anthropic.com / ...
                                           └────(not allowed)────▶ refused + logged
 ```
 
