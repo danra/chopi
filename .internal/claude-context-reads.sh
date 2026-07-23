@@ -1,8 +1,9 @@
 # shellcheck shell=bash
 #
 # claude-context-reads.sh -- Sourced by chopi to build the Seatbelt profile that lets the
-# sandboxed agent read Claude context files (currently CLAUDE.md) from the workspace's
-# ANCESTOR directories, plus everything the CLAUDE.md files @-import, wherever that resolves.
+# sandboxed agent read Claude context files (currently CLAUDE.md, optionally under .claude/)
+# from the workspace's ANCESTOR directories, plus everything the CLAUDE.md files @-import,
+# wherever that resolves.
 #
 # Chopi appends this profile before the git-protection profiles, so worktree isolation still
 # wins inside a repo and only ancestors above it become readable; linked worktrees likely have
@@ -110,15 +111,16 @@ grant_claude_md_imports() {
     done <<< "$imports"
 }
 
-# Grant the reads CLAUDE.md $1 needs beyond its own literal path: the kernel-resolved target
-# when the literal resolves elsewhere (a symlink, which the caller's literal rule doesn't cover),
-# and its @-imports. The literal path itself is the caller's concern: ancestors get an explicit
-# rule, while the workspace's own CLAUDE.md is already covered by the workspace grant.
+# Grant the reads CLAUDE.md $1 needs beyond its own literal path: traversal of any symlinks it
+# resolves through, the kernel-resolved target when that differs from the literal, and its
+# @-imports. The literal path itself is the caller's concern: ancestors get an explicit rule,
+# while the workspace's own CLAUDE.md is already covered by the workspace grant.
 grant_claude_md_target_and_imports() {
     arity 1
     local context_path="$1" real_context
     real_context="$(realpath "$context_path" 2>/dev/null)" || return 0
     [ -f "$real_context" ] || return 0
+    grant_resolving_links "$context_path"
     first_visit "$real_context" || return 0
     # Which side of a symlink the agent resolves the file's own imports against depends on
     # the external-includes approval state (see grant_claude_md_imports), so walk both.
@@ -135,7 +137,7 @@ write_claude_context_reads_profile() {
 
     # The context files Claude Code looks for while walking up from the workspace. Extend
     # this list to add more.
-    local context_filenames=(CLAUDE.md)
+    local context_filenames=(CLAUDE.md .claude/CLAUDE.md)
 
     local real_run_dir
     real_run_dir="$(realpath "$run_dir")" \
