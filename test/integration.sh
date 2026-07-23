@@ -317,11 +317,8 @@ assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
 # ---------------------------------------------------------------------------
 echo "Claude context files in parent dirs of the workspace"
 # ---------------------------------------------------------------------------
-printf 'PARENT_CLAUDE_MARKER\n@linked-import.md\n' > "$base/CLAUDE.md"
+printf 'PARENT_CLAUDE_MARKER\n' > "$base/CLAUDE.md"
 printf 'PARENT_NOTES_MARKER\n'  > "$base/NOTES.md"
-mkdir -p "$base/import-target"
-printf 'LINKED_IMPORT_MARKER\n' > "$base/import-target/actual.md"
-ln -s "$base/import-target/actual.md" "$base/linked-import.md"
 
 out="$(chopi_t /bin/sh -c "cat '$base/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_contains "$out" "PARENT_CLAUDE_MARKER"      "a CLAUDE.md in a parent dir of the workspace is readable"
@@ -331,24 +328,82 @@ out="$(chopi_t /bin/sh -c "cat '$base/NOTES.md' && echo READ_OK || echo READ_FAI
 assert_not_contains "$out" "PARENT_NOTES_MARKER"   "a non-CLAUDE.md file in the same parent dir stays denied (the hole is narrow)"
 assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
 
-out="$(chopi_t /bin/sh -c "cat '$base/linked-import.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
-assert_contains "$out" "LINKED_IMPORT_MARKER"      "a symlinked @-import is readable at its as-written path (how the agent opens it)"
-assert_contains "$out" "READ_OK"                   "  -> and the read succeeds"
-
 mkdir -p "$base/.claude"
 printf 'PARENT_DOTCLAUDE_MARKER\n' > "$base/.claude/CLAUDE.md"
 out="$(chopi_t /bin/sh -c "cat '$base/.claude/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_contains "$out" "PARENT_DOTCLAUDE_MARKER"   "a .claude/CLAUDE.md in a parent dir of the workspace is readable"
 assert_contains "$out" "READ_OK"                   "  -> and the read succeeds"
 
-# A second workspace whose ancestor's .claude is a symlink to a shared dir.
+# A second workspace whose ancestor's .claude is a symlink to a shared dir: the target is
+# NOT auto-granted, so the run refuses until the user grants it -- then reads work through
+# the link.
 mkdir -p "$base/shared-claude" "$base/dev/ws2"
 make_repo "$base/dev/ws2"
 printf 'SHARED_DOTCLAUDE_MARKER\n' > "$base/shared-claude/CLAUDE.md"
 ln -s "$base/shared-claude" "$base/dev/.claude"
-out="$( (cd "$base/dev/ws2" && "$repo/bin/chopi" --config "$cfg" -- /bin/sh -c "cat '$base/dev/.claude/CLAUDE.md' && echo READ_OK || echo READ_FAIL") 2>/dev/null )"
-assert_contains "$out" "SHARED_DOTCLAUDE_MARKER"   "a CLAUDE.md behind a symlinked ancestor .claude is readable through the link"
+both="$( (cd "$base/dev/ws2" && "$repo/bin/chopi" --config "$cfg" -- /bin/sh -c 'echo RAN') 2>&1 )"; rc=$?
+assert_nonzero      "$rc"                                    "chopi refuses while a symlinked ancestor .claude target is unreadable"
+assert_contains     "$both" "$base/shared-claude/CLAUDE.md  (via the symlink at $base/dev/.claude)" "  -> naming the resolved target and the link it came from"
+assert_not_contains "$both" "RAN"                            "  -> and does not run the command"
+
+cfg_shared="$base/config/sandbox-shared-claude.sh"
+cat > "$cfg_shared" <<EOF
+CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$base/shared-claude" )
+CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
+EOF
+out="$( (cd "$base/dev/ws2" && "$repo/bin/chopi" --config "$cfg_shared" -- /bin/sh -c "cat '$base/dev/.claude/CLAUDE.md' && echo READ_OK || echo READ_FAIL") 2>/dev/null )"
+assert_contains "$out" "SHARED_DOTCLAUDE_MARKER"   "with the target granted, the CLAUDE.md behind the link is readable"
 assert_contains "$out" "READ_OK"                   "  -> and the read succeeds"
+
+
+# ---------------------------------------------------------------------------
+echo "an unreadable CLAUDE.md @-import refuses the run until the user grants the read"
+# ---------------------------------------------------------------------------
+# The chain here is nested -- CLAUDE.md imports a symlinked file whose target imports
+# another -- and an unreadable file cannot be followed, so the denials surface one grant
+# at a time.
+mkdir -p "$base/imports" "$base/import-target" "$base/import-nested"
+printf 'NESTED_IMPORT_MARKER\n' > "$base/import-nested/deep.md"
+printf 'LINKED_IMPORT_MARKER\n@%s/import-nested/deep.md\n' "$base" > "$base/import-target/actual.md"
+ln -s "$base/import-target/actual.md" "$base/imports/linked-import.md"
+printf 'PARENT_CLAUDE_MARKER\n@imports/linked-import.md\n' > "$base/CLAUDE.md"
+
+both="$(chopi_t /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_nonzero      "$rc"                                    "chopi refuses to run while an ancestor CLAUDE.md @-import is unreadable"
+assert_contains     "$both" "$base/imports/linked-import.md" "  -> listing the unreadable import"
+assert_contains     "$both" "(imported by $base/CLAUDE.md)"  "  -> and its importer"
+assert_contains     "$both" "CHOPI_SAFEHOUSE_FLAGS"          "  -> directing to CHOPI_SAFEHOUSE_FLAGS"
+assert_contains     "$both" "--add-dirs-ro"                  "  -> with an example --add-dirs-ro grant"
+assert_not_contains "$both" "deep.md"                        "  -> the nested import is NOT listed (unreachable until the outer grant)"
+assert_not_contains "$both" "RAN"                            "  -> and does not run the command"
+
+# Granting the outer import -- the link's dir AND the target's, since Seatbelt checks both
+# the traversed link node and the kernel-resolved file -- lets the check follow it, which
+# surfaces its own nested import.
+cfg_imports="$base/config/sandbox-imports.sh"
+cat > "$cfg_imports" <<EOF
+CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$base/imports:$base/import-target" )
+CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
+EOF
+both="$( ( cd "$ws" && "$repo/bin/chopi" --config "$cfg_imports" -- /bin/sh -c 'echo RAN' ) 2>&1 )"; rc=$?
+assert_nonzero      "$rc"                                     "chopi still refuses: the now-followable import reveals its nested import"
+assert_contains     "$both" "$base/import-nested/deep.md"     "  -> listing the nested import"
+assert_not_contains "$both" "(imported by $base/CLAUDE.md)"   "  -> the outer, now-readable import is no longer listed"
+assert_not_contains "$both" "RAN"                             "  -> and does not run the command"
+
+# With the whole chain granted, the run proceeds.
+cfg_imports_all="$base/config/sandbox-imports-all.sh"
+cat > "$cfg_imports_all" <<EOF
+CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$base/imports:$base/import-target:$base/import-nested" )
+CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
+EOF
+out="$( ( cd "$ws" && "$repo/bin/chopi" --config "$cfg_imports_all" -- /bin/sh -c "cat '$base/imports/linked-import.md' '$base/import-nested/deep.md' && echo READ_OK || echo READ_FAIL" ) 2>/dev/null )"
+assert_contains "$out" "LINKED_IMPORT_MARKER"      "with the full chain granted the run proceeds"
+assert_contains "$out" "NESTED_IMPORT_MARKER"      "  -> the nested import is readable too"
+assert_contains "$out" "READ_OK"                   "  -> reads succeed at the as-written paths (how the agent opens them)"
+
+# Undo changes to CLAUDE.md for the following tests
+printf 'PARENT_CLAUDE_MARKER\n' > "$base/CLAUDE.md"
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +448,7 @@ ws_subdir="$ws/subdir"
 mkdir -p "$ws_subdir"
 both="$( ( cd "$ws_subdir" && "$repo/bin/chopi" --config "$cfg" -- /bin/sh -c 'echo RAN' ) 2>&1 )"; rc=$?
 assert_nonzero      "$rc"                                      "chopi refuses to run in a subdir of a worktree"
-assert_contains     "$both" "$(realpath "$ws")"                "  -> pointing at the enclosing worktree root"
+assert_has_line     "$both" "$(realpath "$ws")"                "  -> pointing at the enclosing worktree root"
 assert_not_contains "$both" "RAN"                              "  -> and does not run the command"
 
 
@@ -865,6 +920,32 @@ assert_contains "$out" "ABOVE_REPO_CLAUDE_MARKER"  "a CLAUDE.md ABOVE the repo r
 out="$(chopi_wt /bin/sh -c "cat '$gitrepo_real/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_not_contains "$out" "REPO_ROOT_CLAUDE_MARKER" "the repo root's OWN CLAUDE.md is NOT readable from the worktree (isolation wins)"
 assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
+
+# Isolation covers the whole enclosing working tree, not just the root: an ancestor
+# context file BETWEEN the repo root and the worktree is unreadable too.
+printf 'MID_REPO_CLAUDE_MARKER\n' > "$gitrepo_real/.worktrees/CLAUDE.md"
+out="$(chopi_wt /bin/sh -c "cat '$gitrepo_real/.worktrees/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+assert_not_contains "$out" "MID_REPO_CLAUDE_MARKER" "a CLAUDE.md in a repo subdir ABOVE the worktree is NOT readable from the worktree"
+assert_contains     "$out" "READ_FAIL"              "  -> and that read fails"
+
+# All those denied in-repo context files (root and mid-repo) exist right now, yet none
+# gate the run: a blind denial with no visible link is chopi's own isolation at work.
+out="$(chopi_wt /bin/sh -c 'echo RAN' 2>/dev/null)"; rc=$?
+assert_eq       "$rc" "0"    "denied in-repo ancestor context files do NOT refuse the worktree run"
+assert_contains "$out" "RAN" "  -> the command runs"
+
+# An unreadable symlinked context file ABOVE the repo root, by contrast, refuses the
+# run: resolving the link and granting its target's read is the user's to do.
+printf 'x\n' > "$base/wt-link-target.md"
+rm "$base/CLAUDE.md"
+ln -s "$base/wt-link-target.md" "$base/CLAUDE.md"
+both="$(chopi_wt /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_nonzero      "$rc"   "an unreadable symlinked CLAUDE.md above the repo root refuses the worktree run"
+assert_contains     "$both" "$base/wt-link-target.md  (symlink target of $base/CLAUDE.md)" "  -> naming the resolved target and the link it came from"
+assert_not_contains "$both" "RAN"                                          "  -> and does not run the command"
+# Undo for the following tests.
+rm "$base/CLAUDE.md"
+printf 'ABOVE_REPO_CLAUDE_MARKER\n' > "$base/CLAUDE.md"
 
 # The two appended protection profiles (isolation + hardening) are unreadable.
 # shellcheck disable=SC2016

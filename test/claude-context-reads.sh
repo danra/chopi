@@ -46,22 +46,23 @@ echo "a nested workspace grants CLAUDE.md reads on every ancestor, not the works
 # ---------------------------------------------------------------------------
 make_workspace real
 real_real="$(dirname "$mono_real")"
+tmp_real="$(dirname "$real_real")"
+printf 'x\n' > "$work_real/CLAUDE.md"
+printf 'x\n' > "$mono_real/CLAUDE.md"
+printf 'x\n' > "$real_real/CLAUDE.md"
 
 build_profile "a nested workspace"
 
-assert_contains     "$profile" '(allow file-read* (literal "'"$mono_real"'/CLAUDE.md"))'  "the immediate parent's CLAUDE.md is granted"
-assert_contains     "$profile" '(allow file-read* (literal "'"$real_real"'/CLAUDE.md"))'  "a grandparent's CLAUDE.md is granted"
-assert_contains     "$profile" '(allow file-read* (literal "/CLAUDE.md"))'                "the filesystem root's CLAUDE.md is granted"
-assert_not_contains "$profile" '(allow file-read* (literal "'"$work_real"'/CLAUDE.md"))'  "the workspace's OWN CLAUDE.md is not (re)granted -- the workspace subpath already covers it"
-assert_contains     "$profile" 'allow file-read*'                                         "the grants are read-only"
-assert_not_contains "$profile" 'file-write'                                               "  -> and never open a write hole"
+assert_contains     "$profile" '(allow file-read* (literal "'"$mono_real"'/CLAUDE.md"))' "the immediate parent's CLAUDE.md is granted"
+assert_contains     "$profile" '(allow file-read* (literal "'"$real_real"'/CLAUDE.md"))' "a grandparent's CLAUDE.md is granted"
+assert_not_contains "$profile" '(allow file-read* (literal "'"$tmp_real"'/CLAUDE.md"))'  "an ancestor with no CLAUDE.md gets no rule -- only files actually there are granted"
+assert_not_contains "$profile" '(allow file-read* (literal "'"$work_real"'/CLAUDE.md"))' "the workspace's OWN CLAUDE.md is not (re)granted -- the workspace subpath already covers it"
+assert_not_contains "$profile" 'file-write'                                              "the grants never open a write hole"
 
 
 # ---------------------------------------------------------------------------
-echo "a symlinked ancestor CLAUDE.md also grants a read on the link's real target"
+echo "a symlinked ancestor CLAUDE.md grants only the link path, NOT its real target"
 # ---------------------------------------------------------------------------
-# Seatbelt matches the kernel-resolved real path, so granting only the symlink literal
-# leaves the actual file it points at denied; the profile must grant the target too.
 make_workspace link
 mkdir -p "$TMPDIR/link/shared"
 target="$TMPDIR/link/shared/CLAUDE.md"; printf 'x\n' > "$target"
@@ -69,245 +70,56 @@ target_real="$(realpath "$target")"
 ln -s "$target" "$mono_real/CLAUDE.md"
 
 build_profile "a symlinked ancestor CLAUDE.md"
-assert_contains "$profile" '(allow file-read* (literal "'"$mono_real"'/CLAUDE.md"))' "the symlink path itself is still granted"
-assert_contains "$profile" '(allow file-read* (literal "'"$target_real"'"))'         "the symlink's real target file is granted"
+assert_contains     "$profile" '(allow file-read* (literal "'"$mono_real"'/CLAUDE.md"))' "the symlink path itself is still granted"
+assert_not_contains "$profile" '(allow file-read* (literal "'"$target_real"'"))'         "the symlink's real target is NOT granted"
 
 
 # ---------------------------------------------------------------------------
-echo "an ancestor CLAUDE.md's @-import is granted (plain file, path relative to it)"
+echo "a symlinked workspace CLAUDE.md does NOT get its real target granted"
 # ---------------------------------------------------------------------------
-# A CLAUDE.md may pull in sibling files with @-import syntax; the agent must be able to read
-# those too, resolved relative to the importing file's own directory.
-make_workspace imp
-printf '@shared/guide.md\n' > "$mono_real/CLAUDE.md"
-mkdir -p "$mono_real/shared"; printf 'g\n' > "$mono_real/shared/guide.md"
-
-build_profile "an @-importing ancestor CLAUDE.md"
-assert_contains "$profile" '(allow file-read* (literal "'"$mono_real"'/CLAUDE.md"))'       "the ancestor CLAUDE.md itself is still granted"
-assert_contains "$profile" '(allow file-read* (literal "'"$mono_real"'/shared/guide.md"))' "its @-import is granted, resolved relative to the CLAUDE.md's directory"
-
-
-# ---------------------------------------------------------------------------
-echo "an @-import that is itself a symlink grants a read on the link's real target"
-# ---------------------------------------------------------------------------
-make_workspace impsym
-printf '@link.md\n' > "$mono_real/CLAUDE.md"
-mkdir -p "$TMPDIR/impsym/elsewhere"
-target="$TMPDIR/impsym/elsewhere/actual.md"; printf 'a\n' > "$target"
-target_real="$(realpath "$target")"
-ln -s "$target" "$mono_real/link.md"
-
-build_profile "a symlinked @-import"
-assert_contains "$profile" '(allow file-read* (literal "'"$target_real"'"))' "the symlinked @-import's real target is granted"
-assert_contains "$profile" '(allow file-read-metadata (literal "'"$mono_real"'/link.md"))' "resolving the import's own link node is granted"
-
-
-# ---------------------------------------------------------------------------
-echo "@-imports are followed recursively (an import that imports another)"
-# ---------------------------------------------------------------------------
-make_workspace imprec
-printf '@a.md\n'   > "$mono_real/CLAUDE.md"
-printf '@b.md\n'   > "$mono_real/a.md"
-printf 'deepest\n' > "$mono_real/b.md"
-
-build_profile "a recursive @-import chain"
-assert_contains "$profile" '(allow file-read* (literal "'"$mono_real"'/a.md"))' "the first-level @-import is granted"
-assert_contains "$profile" '(allow file-read* (literal "'"$mono_real"'/b.md"))' "the transitive @-import (import-of-an-import) is granted"
-
-
-# ---------------------------------------------------------------------------
-echo "@-imports are granted regardless of location (absolute path outside the ancestor tree)"
-# ---------------------------------------------------------------------------
-make_workspace impabs
-mkdir -p "$TMPDIR/impabs-elsewhere"
-far="$TMPDIR/impabs-elsewhere/notes.md"; printf 'n\n' > "$far"
-far_real="$(realpath "$far")"
-printf '@%s\n' "$far_real" > "$mono_real/CLAUDE.md"
-
-build_profile "an absolute-path @-import"
-assert_contains "$profile" '(allow file-read* (literal "'"$far_real"'"))' "an @-import pointing outside the ancestor tree is granted"
-
-
-# ---------------------------------------------------------------------------
-echo "a symlinked ancestor CLAUDE.md gets its @-imports granted beside the link AND the target"
-# ---------------------------------------------------------------------------
-# Which side the agent resolves a symlinked CLAUDE.md's own imports against depends on
-# per-project approval state (see grant_claude_md_imports), so the profile must grant both.
-make_workspace ancsym
-target_dir="$TMPDIR/ancsym/shared/common"; mkdir -p "$target_dir"
-printf '@Guidelines.md\n'  > "$target_dir/CLAUDE.md"
-printf 'target side\n'     > "$target_dir/Guidelines.md"
-target_guide_real="$(realpath "$target_dir/Guidelines.md")"
-printf 'link side\n'       > "$mono_real/Guidelines.md"
-ln -s "$target_dir/CLAUDE.md" "$mono_real/CLAUDE.md"
-
-build_profile "a symlinked ancestor CLAUDE.md with imports on both sides"
-assert_contains "$profile" '(allow file-read* (literal "'"$mono_real"'/Guidelines.md"))' "the import beside the link is granted"
-assert_contains "$profile" '(allow file-read* (literal "'"$target_guide_real"'"))'       "the import beside the real target is granted"
-
-
-# ---------------------------------------------------------------------------
-echo "the workspace's own CLAUDE.md gets its @-imports granted too"
-# ---------------------------------------------------------------------------
-# safehouse covers the file itself, but its imports may resolve outside.
-make_workspace own
-printf '@../shared.md\n' > "$work_real/CLAUDE.md"
-printf 's\n' > "$mono_real/shared.md"
-
-build_profile "an @-importing workspace CLAUDE.md"
-assert_contains     "$profile" '(allow file-read* (literal "'"$mono_real"'/shared.md"))'  "the workspace CLAUDE.md's outside-the-workspace import is granted"
-assert_not_contains "$profile" '(allow file-read* (literal "'"$work_real"'/CLAUDE.md"))'  "the workspace's OWN CLAUDE.md is still not (re)granted"
-
-
-# ---------------------------------------------------------------------------
-echo "a symlinked workspace CLAUDE.md walks its @-imports beside the link and the target"
-# ---------------------------------------------------------------------------
-# The link-side walk matters even though link-side paths sit under the workspace grant: an
-# import that is itself a symlink pointing outside the workspace needs its real target granted.
+# The workspace CLAUDE.md is agent-plantable: auto-granting a symlink's target would let
+# one run mint read access anywhere for the next.
 make_workspace ownsym
 target_dir="$TMPDIR/ownsym/shared"; mkdir -p "$target_dir"
-printf '@sub.md\n'     > "$target_dir/CLAUDE.md"
-printf 'target side\n' > "$target_dir/sub.md"
+printf 'x\n' > "$target_dir/CLAUDE.md"
 target_real="$(realpath "$target_dir/CLAUDE.md")"
-target_sub_real="$(realpath "$target_dir/sub.md")"
-mkdir -p "$TMPDIR/ownsym/elsewhere"
-sub_target="$TMPDIR/ownsym/elsewhere/actual.md"; printf 'a\n' > "$sub_target"
-sub_target_real="$(realpath "$sub_target")"
 ln -s "$target_dir/CLAUDE.md" "$work_real/CLAUDE.md"
-ln -s "$sub_target" "$work_real/sub.md"
 
 build_profile "a symlinked workspace CLAUDE.md"
-assert_contains "$profile" '(allow file-read* (literal "'"$target_real"'"))'     "the symlinked workspace CLAUDE.md's real target is granted"
-assert_contains "$profile" '(allow file-read* (literal "'"$sub_target_real"'"))' "the real target of the import beside the link is granted"
-assert_contains "$profile" '(allow file-read* (literal "'"$target_sub_real"'"))' "the import beside the CLAUDE.md's real target is granted"
+assert_not_contains "$profile" "$target_real"         "the symlinked workspace CLAUDE.md's real target is NOT granted"
+assert_not_contains "$profile" "$work_real/CLAUDE.md" "the workspace's own CLAUDE.md gets no rule at all -- the workspace grant already covers it"
 
 
 # ---------------------------------------------------------------------------
-echo "an imported file that is a symlink resolves ITS imports beside its real target"
+echo ".claude/CLAUDE.md is discovered at every ancestor"
 # ---------------------------------------------------------------------------
-# Unlike a CLAUDE.md's own imports, nested hops resolve beside the importing file's REAL
-# location: the agent canonicalizes each import before recursing into it (verified against
-# Claude Code 2.1.218).
-make_workspace nestsym
-elsewhere="$TMPDIR/nestsym/elsewhere"; mkdir -p "$elsewhere"
-printf '@sub.md\n'  > "$mono_real/CLAUDE.md"
-printf '@deep.md\n' > "$elsewhere/sub.md"
-printf 'd\n'        > "$elsewhere/deep.md"
-printf 'decoy\n'    > "$mono_real/deep.md"
-deep_real="$(realpath "$elsewhere/deep.md")"
-ln -s "$elsewhere/sub.md" "$mono_real/sub.md"
-
-build_profile "a symlinked mid-chain @-import"
-assert_contains     "$profile" '(allow file-read* (literal "'"$deep_real"'"))'           "the nested import beside the mid-chain file's real target is granted"
-assert_contains     "$profile" '(allow file-read-metadata (literal "'"$mono_real"'/sub.md"))' "resolving the mid-chain import's own link node is granted"
-assert_not_contains "$profile" '(allow file-read* (literal "'"$mono_real"'/deep.md"))'   "the same-named file beside the mid-chain link is not granted"
-
-
-# ---------------------------------------------------------------------------
-echo ".claude/CLAUDE.md is discovered at every ancestor and the workspace root"
-# ---------------------------------------------------------------------------
-# Claude Code also loads .claude/CLAUDE.md at each level, so it gets the same treatment as
-# CLAUDE.md: ancestors' copies granted literally, @-imports walked (resolved beside the file,
-# i.e. against the .claude directory), the workspace's own copy left to the workspace grant.
 make_workspace dot
-mkdir -p "$mono_real/.claude" "$work_real/.claude"
-printf '@guide.md\n'         > "$mono_real/.claude/CLAUDE.md"
-printf 'g\n'                 > "$mono_real/.claude/guide.md"
-printf '@../../outside.md\n' > "$work_real/.claude/CLAUDE.md"
-printf 'o\n'                 > "$mono_real/outside.md"
+mkdir -p "$mono_real/.claude"
+printf 'x\n' > "$mono_real/.claude/CLAUDE.md"
 
-build_profile "a .claude/CLAUDE.md at ancestors and the workspace root"
+build_profile "a .claude/CLAUDE.md ancestor"
 assert_contains     "$profile" '(allow file-read* (literal "'"$mono_real"'/.claude/CLAUDE.md"))' "an ancestor's .claude/CLAUDE.md is granted"
-assert_contains     "$profile" '(allow file-read* (literal "/.claude/CLAUDE.md"))'               "the filesystem root's .claude/CLAUDE.md is granted"
-assert_contains     "$profile" '(allow file-read* (literal "'"$mono_real"'/.claude/guide.md"))'  "an ancestor .claude/CLAUDE.md's @-import is granted, resolved beside the file"
-assert_not_contains "$profile" '(allow file-read* (literal "'"$work_real"'/.claude/CLAUDE.md"))' "the workspace's OWN .claude/CLAUDE.md is not (re)granted -- the workspace subpath already covers it"
-assert_contains     "$profile" '(allow file-read* (literal "'"$mono_real"'/outside.md"))'        "the workspace .claude/CLAUDE.md's outside-the-workspace @-import is granted"
+assert_not_contains "$profile" '(allow file-read* (literal "/.claude/CLAUDE.md"))'               "a nonexistent .claude/CLAUDE.md gets no rule"
 
 
 # ---------------------------------------------------------------------------
-echo "a symlinked ancestor .claude/CLAUDE.md also grants a read on the link's real target"
+echo "when BOTH .claude AND its CLAUDE.md are symlinks, only the IN-PATH link node is granted"
 # ---------------------------------------------------------------------------
-make_workspace dotsym
-mkdir -p "$mono_real/.claude" "$TMPDIR/dotsym/shared"
-target="$TMPDIR/dotsym/shared/CLAUDE.md"; printf 'x\n' > "$target"
-target_real="$(realpath "$target")"
-ln -s "$target" "$mono_real/.claude/CLAUDE.md"
-
-build_profile "a symlinked ancestor .claude/CLAUDE.md"
-assert_contains "$profile" '(allow file-read* (literal "'"$mono_real"'/.claude/CLAUDE.md"))' "the symlink path itself is still granted"
-assert_contains "$profile" '(allow file-read* (literal "'"$target_real"'"))'                 "the symlink's real target file is granted"
-
-
-# ---------------------------------------------------------------------------
-echo "a symlinked .claude/CLAUDE.md gets its @-imports granted beside the link AND the target"
-# ---------------------------------------------------------------------------
-# Verified to behave like a symlinked CLAUDE.md (Claude Code 2.1.218): which side its own
-# imports resolve against depends on the external-includes approval state, so grant both.
-make_workspace dotancsym
-target_dir="$TMPDIR/dotancsym/shared/common"; mkdir -p "$target_dir" "$mono_real/.claude"
-printf '@Guidelines.md\n'  > "$target_dir/CLAUDE.md"
-printf 'target side\n'     > "$target_dir/Guidelines.md"
-target_guide_real="$(realpath "$target_dir/Guidelines.md")"
-printf 'link side\n'       > "$mono_real/.claude/Guidelines.md"
-ln -s "$target_dir/CLAUDE.md" "$mono_real/.claude/CLAUDE.md"
-
-build_profile "a symlinked .claude/CLAUDE.md with imports on both sides"
-assert_contains "$profile" '(allow file-read* (literal "'"$mono_real"'/.claude/Guidelines.md"))' "the import beside the link is granted"
-assert_contains "$profile" '(allow file-read* (literal "'"$target_guide_real"'"))'               "the import beside the real target is granted"
-
-
-# ---------------------------------------------------------------------------
-echo "a symlinked .claude directory grants resolving the link, the canonical CLAUDE.md, and its imports"
-# ---------------------------------------------------------------------------
-make_workspace dirlink
-shared="$TMPDIR/dirlink/shared-claude"; mkdir -p "$shared"
-printf '@Guidelines.md\n' > "$shared/CLAUDE.md"
-printf 'g\n'              > "$shared/Guidelines.md"
-shared_real="$(realpath "$shared")"
-ln -s "$shared" "$mono_real/.claude"
-
-build_profile "a symlinked ancestor .claude directory"
-assert_contains "$profile" '(allow file-read-metadata (literal "'"$mono_real"'/.claude"))'    "resolving the .claude link node is granted"
-assert_contains "$profile" '(allow file-read* (literal "'"$shared_real"'/CLAUDE.md"))'        "the canonical CLAUDE.md is granted"
-assert_contains "$profile" '(allow file-read* (literal "'"$shared_real"'/Guidelines.md"))'    "its @-import is granted beside the canonical file"
-
-
-# ---------------------------------------------------------------------------
-echo "a symlinked .claude directory at the WORKSPACE root grants the canonical CLAUDE.md and its imports"
-# ---------------------------------------------------------------------------
-# The link node sits inside the workspace (already readable), but the canonical files are outside.
-make_workspace dirlinkown
-shared="$TMPDIR/dirlinkown/shared-claude"; mkdir -p "$shared"
-printf '@Guidelines.md\n' > "$shared/CLAUDE.md"
-printf 'g\n'              > "$shared/Guidelines.md"
-shared_real="$(realpath "$shared")"
-ln -s "$shared" "$work_real/.claude"
-
-build_profile "a symlinked workspace .claude directory"
-assert_contains "$profile" '(allow file-read* (literal "'"$shared_real"'/CLAUDE.md"))'     "the canonical CLAUDE.md is granted"
-assert_contains "$profile" '(allow file-read* (literal "'"$shared_real"'/Guidelines.md"))' "its @-import is granted beside the canonical file"
-
-
-# ---------------------------------------------------------------------------
-echo "when BOTH .claude AND its CLAUDE.md are symlinks, every link node and both import sides are granted"
-# ---------------------------------------------------------------------------
+# Only nodes sitting on the ancestry path get grants; anything past the first resolution is
+# the in-sandbox check's business, where denials surface one user grant at a time.
 make_workspace bothsym
 shared="$TMPDIR/bothsym/shared-claude"; elsewhere="$TMPDIR/bothsym/elsewhere"
 mkdir -p "$shared" "$elsewhere"
-printf '@Guidelines.md\n' > "$elsewhere/CLAUDE.md"
-printf 'target side\n'    > "$elsewhere/Guidelines.md"
-printf 'link side\n'      > "$shared/Guidelines.md"
+printf 'x\n' > "$elsewhere/CLAUDE.md"
 shared_real="$(realpath "$shared")"
 elsewhere_real="$(realpath "$elsewhere")"
 ln -s "$elsewhere/CLAUDE.md" "$shared/CLAUDE.md"
 ln -s "$shared" "$mono_real/.claude"
 
 build_profile "a symlinked .claude directory holding a symlinked CLAUDE.md"
-assert_contains "$profile" '(allow file-read-metadata (literal "'"$mono_real"'/.claude"))'     "resolving the .claude link node is granted"
-assert_contains "$profile" '(allow file-read-metadata (literal "'"$shared_real"'/CLAUDE.md"))' "resolving the inner CLAUDE.md link node is granted"
-assert_contains "$profile" '(allow file-read* (literal "'"$elsewhere_real"'/CLAUDE.md"))'      "the canonical CLAUDE.md is granted"
-assert_contains "$profile" '(allow file-read* (literal "'"$shared_real"'/Guidelines.md"))'     "the import beside the link is granted"
-assert_contains "$profile" '(allow file-read* (literal "'"$elsewhere_real"'/Guidelines.md"))'  "the import beside the real target is granted"
+assert_contains     "$profile" '(allow file-read-metadata (literal "'"$mono_real"'/.claude"))' "resolving the .claude link node is granted"
+assert_not_contains "$profile" "$shared_real/CLAUDE.md"                                        "the chain is NOT followed: the inner link node (past the ancestry path) gets no grant"
+assert_not_contains "$profile" '(allow file-read* (literal "'"$elsewhere_real"'/CLAUDE.md"))'  "the canonical CLAUDE.md is NOT granted"
 
 
 # ---------------------------------------------------------------------------

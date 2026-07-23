@@ -57,6 +57,17 @@ assert_prefix() {
     esac
 }
 
+# assert_has_line HAYSTACK LINE DESC -- HAYSTACK has a line reading LINE, ignoring that line's
+# surrounding whitespace.
+assert_has_line() {
+    arity 3
+    local haystack="$1" want="$2" desc="$3" trimmed
+    trimmed="$(printf '%s\n' "$haystack" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    if printf '%s\n' "$trimmed" | grep -qxF -- "$want"; then ok "$desc"; else
+        bad "$desc"; printf '         %q\n         has no line reading %q\n' "$haystack" "$want"
+    fi
+}
+
 # assert_zero ST DESC / assert_nonzero ST DESC -- assert on a captured exit status
 assert_zero() {
     arity 2
