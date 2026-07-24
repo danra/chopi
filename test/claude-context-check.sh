@@ -245,13 +245,18 @@ echo "a context file the sandbox itself denies is skipped, not refused"
 # Such a denial is chopi's own design at work -- worktree isolation denies context files
 # inside the enclosing repo (e.g. the repo root's CLAUDE.md from a linked worktree). The
 # agent runs without the file, so it must not refuse the run, and its imports are moot.
+# Every context filename gets the same treatment, so .claude/CLAUDE.md is covered too.
 make_workspace ctx
-printf '@notes.md\n' > "$mono_real/CLAUDE.md"
-printf 'n\n'         > "$mono_real/notes.md"
-deny "$mono_real/CLAUDE.md" "$mono_real/notes.md"
+mkdir -p "$mono_real/.claude"
+printf '@notes.md\n'     > "$mono_real/CLAUDE.md"
+printf 'n\n'             > "$mono_real/notes.md"
+printf '@dot-notes.md\n' > "$mono_real/.claude/CLAUDE.md"
+printf 'n\n'             > "$mono_real/.claude/dot-notes.md"
+deny "$mono_real/CLAUDE.md" "$mono_real/notes.md" \
+     "$mono_real/.claude/CLAUDE.md" "$mono_real/.claude/dot-notes.md"
 
 out="$(unreadable_claude_context_paths "$work_real")"
-assert_eq "$out" "" "neither the denied context file nor its imports are reported"
+assert_eq "$out" "" "neither the denied context files nor their imports are reported"
 
 
 # ---------------------------------------------------------------------------

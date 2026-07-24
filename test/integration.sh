@@ -928,6 +928,16 @@ out="$(chopi_wt /bin/sh -c "cat '$gitrepo_real/.worktrees/CLAUDE.md' && echo REA
 assert_not_contains "$out" "MID_REPO_CLAUDE_MARKER" "a CLAUDE.md in a repo subdir ABOVE the worktree is NOT readable from the worktree"
 assert_contains     "$out" "READ_FAIL"              "  -> and that read fails"
 
+# Every context filename gets the same treatment, so .claude/CLAUDE.md is covered too.
+mkdir -p "$base/.claude" "$gitrepo_real/.claude"
+printf 'ABOVE_REPO_DOTCLAUDE_MARKER\n' > "$base/.claude/CLAUDE.md"
+printf 'REPO_ROOT_DOTCLAUDE_MARKER\n'  > "$gitrepo_real/.claude/CLAUDE.md"
+out="$(chopi_wt /bin/sh -c "cat '$base/.claude/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+assert_contains "$out" "ABOVE_REPO_DOTCLAUDE_MARKER"  "a .claude/CLAUDE.md ABOVE the repo root is readable from the worktree"
+out="$(chopi_wt /bin/sh -c "cat '$gitrepo_real/.claude/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+assert_not_contains "$out" "REPO_ROOT_DOTCLAUDE_MARKER" "the repo root's OWN .claude/CLAUDE.md is NOT readable from the worktree (isolation wins)"
+assert_contains     "$out" "READ_FAIL"                "  -> and that read fails"
+
 # All those denied in-repo context files (root and mid-repo) exist right now, yet none
 # gate the run: a blind denial with no visible link is chopi's own isolation at work.
 out="$(chopi_wt /bin/sh -c 'echo RAN' 2>/dev/null)"; rc=$?
