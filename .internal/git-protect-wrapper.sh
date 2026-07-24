@@ -26,6 +26,7 @@ unset _wrapper_path _wrapper_dir
 
 _cleanup_script_path=""
 
+# shellcheck disable=SC2329  # invoked via the EXIT trap main sets
 _cleanup() {
     local rc=$?
     "$_cleanup_script_path" || true
@@ -94,4 +95,10 @@ main() {
     "$@"
 }
 
-main "$@"
+{
+    main "$@"
+    # The braces make bash parse this whole block, exit included, before running it, so a
+    # mid-session edit to this file cannot affect it: without the exit, bash would read the
+    # file again after main returns, at a stale byte offset that executes garbage.
+    exit
+}
