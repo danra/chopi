@@ -129,6 +129,24 @@ assert_eq "$(cat "$cleanup_marker")" "CLEANUP" "the wrapper survives its own SIG
 
 
 # ---------------------------------------------------------------------------
+echo "editing the wrapper's own file mid-run does not affect the running wrapper"
+# ---------------------------------------------------------------------------
+# The wrapper blocks on the wrapped command for the whole session while bash keeps the script
+# file open; when the file is edited meanwhile (routine when developing chopi from inside a
+# chopi session), bash must not read the edited content -- resuming at a stale byte offset
+# executes garbage and drops the command's exit code. The command edits a COPY of the wrapper
+# (with the in-sandbox libs beside it), leaving the repo's own file alone.
+edited_dir="$TMPDIR/edited-wrapper"; mkdir -p "$edited_dir"
+for lib in "${CHOPI_IN_SANDBOX_LIBS[@]}"; do cp "$repo/.internal/$lib" "$edited_dir/"; done
+cp "$WRAP" "$edited_dir/wrapper.sh"
+leak_marker="$TMPDIR/leak-marker"; rm -f "$leak_marker"
+rc=0; scrubbed "$edited_dir/wrapper.sh" "$cleanup_script" -- /bin/sh -c \
+    "echo touch $leak_marker >> $edited_dir/wrapper.sh; exit 7" || rc=$?
+assert_eq "$rc" "7" "the command's exit code propagates despite the mid-run edit"
+assert_absent "$leak_marker" "  -> the line appended mid-run is never executed"
+
+
+# ---------------------------------------------------------------------------
 echo "the run is gated on the GitHub->relay reroute being effective"
 # ---------------------------------------------------------------------------
 relay_pairs=()
