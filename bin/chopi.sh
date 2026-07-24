@@ -35,6 +35,7 @@ chopi_torn_down=""
 # cleanup runs earlier and INSIDE the sandbox -- git-protect-wrapper.sh runs it as its
 # CLEANUP_SCRIPT_PATH so anything it triggers stays confined -- so by the time we get here the
 # sandboxed run, cleanup and all, is already done.
+# shellcheck disable=SC2329  # invoked via the EXIT trap below
 chopi_teardown() {
     [ -n "$chopi_torn_down" ] && return 0
     chopi_torn_down=1
@@ -43,6 +44,7 @@ chopi_teardown() {
 
 # On a signal, tear down then re-raise it under the default handler so chopi exits with the
 # conventional signal status. The EXIT trap fires too, but chopi_teardown runs only once.
+# shellcheck disable=SC2329  # invoked via the signal traps below
 chopi_on_signal() {
     chopi_teardown
     trap - "$1"
@@ -238,4 +240,10 @@ main() {
     return "$rc"
 }
 
-main "$@"
+{
+    main "$@"
+    # The braces make bash parse this whole block, exit included, before running it, so a
+    # mid-session edit to this file cannot affect it: without the exit, bash would read the
+    # file again after main returns, at a stale byte offset that executes garbage.
+    exit
+}
