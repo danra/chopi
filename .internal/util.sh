@@ -19,7 +19,7 @@ GITHUB_RELAY_PORT=4761       # git-smart-HTTP -> github.com
 # mktemp name prefixes of chopi's per-invocation temporaries (created under the private
 # TMPDIR); shared so the tests assert on the same names chopi creates.
 CHOPI_CLAUDE_CONTEXT_READS_PREFIX="chopi-claude-context-reads."
-CHOPI_GIT_PROTECT_WRAPPER_PREFIX="chopi-git-protect-wrapper."
+CHOPI_IN_SANDBOX_WRAPPER_PREFIX="chopi-in-sandbox-wrapper."
 CHOPI_CMD_ALIAS_PREFIX="chopi-cmd-alias."
 
 # The libs (basenames under .internal/) that the in-sandbox wrapper and cleanup source
@@ -180,7 +180,7 @@ github_relay_git_config() {
 }
 
 # Do github remote URLs resolve to the relay under the ambient git config (all scopes, read from
-# the current directory)? The git-protect wrapper runs this in-sandbox after exporting chopi's
+# the current directory)? The in-sandbox wrapper runs this after exporting chopi's
 # rewrites into the command scope, so it checks exactly the config the sandboxed command will see:
 # a competing insteadOf in an earlier-read scope wins the longest-prefix tie and would divert
 # github git off the relay onto a transport the sandbox blocks.

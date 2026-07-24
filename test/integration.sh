@@ -410,7 +410,7 @@ printf 'PARENT_CLAUDE_MARKER\n' > "$base/CLAUDE.md"
 echo "private per-invocation temp dir"
 # ---------------------------------------------------------------------------
 # chopi exports a freshly-made TMPDIR for each run (safehouse forwards it into the
-# sandbox). ALL of chopi's own temporaries (git-protect wrapper profiles, isolation and
+# sandbox). ALL of chopi's own temporaries (in-sandbox wrapper profiles, isolation and
 # hardening profiles, the command's tempfiles) live inside it, so the dir being gone after
 # the run IS the cleanup check for every one of them -- the later sections don't re-assert it.
 # shellcheck disable=SC2016  # $TMPDIR expands in the sandboxed shell, not here
@@ -453,7 +453,7 @@ assert_not_contains "$both" "RAN"                              "  -> and does no
 
 
 # ---------------------------------------------------------------------------
-echo "git-protect wrapper at a git worktree root (injection + command-name detection)"
+echo "in-sandbox wrapper at a git worktree root (injection + command-name detection)"
 # ---------------------------------------------------------------------------
 wrap_repo="$base/wrap_repo"
 make_repo "$wrap_repo"
@@ -482,14 +482,14 @@ chopi_wrap() { ( cd "$wrap_repo" && "$repo/bin/chopi" --config "$cfg_agent" -- "
 out="$(chopi_wrap /bin/sh -c 'echo "$GIT_CONFIG_KEY_0=$GIT_CONFIG_VALUE_0"; git ls-remote --get-url https://github.com/o/r; ls "$TMPDIR"' 2>/dev/null)"
 assert_contains "$out" "chopi.wrapped=wrappedmarker"   "a CHOPI_GIT_CONFIG pair reaches the sandboxed command at a worktree root"
 assert_contains "$out" "http://127.0.0.1:$GITHUB_RELAY_PORT/o/r"   "  -> and github.com git reroutes to the relay in the sandbox"
-assert_contains "$out" "$CHOPI_GIT_PROTECT_WRAPPER_PREFIX"  "  -> the git-protect wrapper profile is created for the run"
+assert_contains "$out" "$CHOPI_IN_SANDBOX_WRAPPER_PREFIX"  "  -> the in-sandbox wrapper profile is created for the run"
 assert_contains "$out" "$CHOPI_CMD_ALIAS_PREFIX"            "  -> as is the command-alias dir"
 
 # The wrapper profile opens the wrapper, the cleanup script, and the libs they source
 # (CHOPI_IN_SANDBOX_LIBS) for reading only, and nothing else in chopi's dir.
-for f in git-protect-wrapper.sh git-protect-cleanup.sh "${CHOPI_IN_SANDBOX_LIBS[@]}"; do
+for f in in-sandbox-wrapper.sh git-protect-cleanup.sh "${CHOPI_IN_SANDBOX_LIBS[@]}"; do
     out="$(chopi_wrap /bin/sh -c "cat '$repo/.internal/$f' >/dev/null 2>&1 && echo READ_OK || echo READ_FAIL; echo x >> '$repo/.internal/$f' 2>/dev/null && echo WRITE_OK || echo WRITE_FAIL" 2>/dev/null)"
-    assert_contains     "$out" "READ_OK"   "  -> the git-protect wrapper opens $f"
+    assert_contains     "$out" "READ_OK"   "  -> the in-sandbox wrapper opens $f"
     assert_not_contains "$out" "WRITE_OK"  "  -> and only for reading: $f is not writable"
 done
 out="$(chopi_wrap /bin/sh -c "cat '$repo/.internal/preflight.sh' >/dev/null 2>&1 && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
@@ -499,7 +499,7 @@ err="$(chopi_wrap /bin/sh -c 'true' 2>&1 >/dev/null)"
 assert_eq "$err" ""                                     "a no-op run leaves stderr empty"
 
 # safehouse appends profiles based on the invoked command's BASENAME. chopi runs the
-# sandboxed command through the git-protect wrapper (which is argv[0]), so it must present the
+# sandboxed command through the in-sandbox wrapper (which is argv[0]), so it must present the
 # wrapper under the real command's basename to get the needed grants. Test via safehouse's
 # `claude` profile, the only one which grants read on ~/.claude.json.*.
 marker_file="$HOME/.claude.json.chopi-itest.$$"      # created here, removed by the EXIT trap

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# git-protect-wrapper.sh -- wrap the sandboxed command to perform additional
+# in-sandbox-wrapper.sh -- wrap the sandboxed command to perform additional
 # in-sandbox setup before launching it:
 # - appends git config entries to the existing GIT_CONFIG_* environment, if any.
 # - refuses to launch the command when the resulting config does not route github git to
@@ -9,7 +9,7 @@
 #   @-import, listing the denied paths so the user grants the reads in the config.
 # - on exit, aborts any in-progress git rebase/cherry-pick left behind by the command.
 #
-# usage: git-protect-wrapper.sh CLEANUP_SCRIPT_PATH [key=value ...] -- <executable> [args...]
+# usage: in-sandbox-wrapper.sh CLEANUP_SCRIPT_PATH [key=value ...] -- <executable> [args...]
 #
 # Not run directly; chopi prepends this wrapper to the sandboxed command, running it
 # in-sandbox where the command's environment is available. Per git rules,
@@ -34,7 +34,7 @@ _cleanup() {
 }
 
 main() {
-    local prog="git-protect-wrapper"
+    local prog="in-sandbox-wrapper"
     if [ "$#" -eq 0 ] || [ "$1" = "--" ]; then
         echo "$prog: error: invalid args" >&2
         return 2

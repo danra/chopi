@@ -7,7 +7,7 @@ SHELL_SOURCES = \
 	install.sh \
 	.internal/util.sh \
 	.internal/classify-log.sh \
-	.internal/git-protect-wrapper.sh \
+	.internal/in-sandbox-wrapper.sh \
 	.internal/github-relay-caddyfile.sh \
 	.internal/git-layout.sh \
 	.internal/git-preflight.sh \
@@ -23,7 +23,7 @@ SHELL_SOURCES = \
 	config/templates/sandbox.template.sh \
 	test/lib.sh \
 	test/caddyfile-lint.sh \
-	test/git-protect-wrapper.sh \
+	test/in-sandbox-wrapper.sh \
 	test/github-relay-caddyfile.sh \
 	test/github-relay-reroute.sh \
 	test/github-relay-test.sh \
@@ -45,7 +45,7 @@ build:
 
 test:
 	@$(MAKE) -C $(PROXY_DIR) test
-	@./test/git-protect-wrapper.sh
+	@./test/in-sandbox-wrapper.sh
 	@./test/github-relay-caddyfile.sh
 	@./test/github-relay-reroute.sh
 	@./test/git-preflight.sh

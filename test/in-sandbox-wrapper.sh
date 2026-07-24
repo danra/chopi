@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# test/git-protect-wrapper.sh -- unit tests for the in-sandbox git-protect wrapper: its
+# test/in-sandbox-wrapper.sh -- unit tests for the in-sandbox wrapper: its
 # git-config appending, its GitHub->relay reroute gate, and its run-the-command-then-cleanup
 # teardown.
 
@@ -12,15 +12,15 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 . "$repo/.internal/util.sh"
 . "$repo/test/lib.sh"
 
-header "test/git-protect-wrapper.sh -- unit tests for the git-protect wrapper"
+header "test/in-sandbox-wrapper.sh -- unit tests for the in-sandbox wrapper"
 
 if ! command -v git >/dev/null 2>&1; then
-    bad "git-protect-wrapper tests need git on PATH"
+    bad "in-sandbox-wrapper tests need git on PATH"
     summary
     exit
 fi
 
-WRAP="$repo/.internal/git-protect-wrapper.sh"
+WRAP="$repo/.internal/in-sandbox-wrapper.sh"
 
 # Exported so the scripts under test leave their temporaries here too.
 TMPDIR="$(mktemp -d)"; export TMPDIR

@@ -30,7 +30,7 @@ assert_contains "$cfg" "lfs.$relay/.locksverify=true"                "silences g
 
 # Resolve against a controlled git config: neutralize system scope; GIT_CONFIG_GLOBAL is (re)set
 # per case below. chopi's rewrites enter through the command-scope environment, exported exactly
-# as the git-protect wrapper does in-sandbox -- the check reads only this ambient config.
+# as the in-sandbox wrapper does -- the check reads only this ambient config.
 export GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0
 i=0
 while IFS= read -r pair; do
