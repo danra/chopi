@@ -226,6 +226,13 @@ refuse_unreadable_claude_context() {
         echo
         echo "Add read grants for them to CHOPI_SAFEHOUSE_FLAGS in chopi's config (default at config/sandbox.sh), e.g.:"
         echo "   --add-dirs-ro '/dir/to/allow'"
+        case "$denied" in
+            *'(imported by '*)
+                echo "Note: a grant cannot cover an @-import inside a repo chopi isolates"
+                echo "(e.g. the enclosing repo during a --worktree run); such imports only"
+                echo "work from outside the isolation zone."
+                ;;
+        esac
     } >&2
     return 1
 }
