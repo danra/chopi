@@ -407,6 +407,27 @@ printf 'PARENT_CLAUDE_MARKER\n' > "$base/CLAUDE.md"
 
 
 # ---------------------------------------------------------------------------
+echo "Claude-context handling applies only to claude"
+# ---------------------------------------------------------------------------
+# The ancestor read grants and the in-sandbox refusal gate exist for Claude Code alone:
+# no other command reads context files, so none gets the ancestor read hole opened for
+# it, and none may be refused over context it will never load.
+out="$(chopi_t /bin/sh -c "cat '$base/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+assert_contains     "$out" "READ_FAIL"            "an ancestor CLAUDE.md is NOT readable by a non-claude command"
+assert_not_contains "$out" "PARENT_CLAUDE_MARKER" "  -> and no content leaks"
+
+# shellcheck disable=SC2016  # $TMPDIR expands in the sandboxed shell, not here
+out="$(chopi_t /bin/sh -c 'ls "$TMPDIR"' 2>/dev/null)"
+assert_not_contains "$out" "$CHOPI_CLAUDE_CONTEXT_READS_PREFIX" "no context-reads profile is even built for a non-claude run"
+
+printf 'PARENT_CLAUDE_MARKER\n@imports/linked-import.md\n' > "$base/CLAUDE.md"
+out="$(chopi_t /bin/sh -c 'echo RAN' 2>/dev/null)"; rc=$?
+assert_zero     "$rc"        "a non-claude command runs despite an unreadable ancestor @-import"
+assert_contains "$out" "RAN" "  -> the command itself runs"
+printf 'PARENT_CLAUDE_MARKER\n' > "$base/CLAUDE.md"
+
+
+# ---------------------------------------------------------------------------
 echo "private per-invocation temp dir"
 # ---------------------------------------------------------------------------
 # chopi exports a freshly-made TMPDIR for each run (safehouse forwards it into the

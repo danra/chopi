@@ -175,6 +175,40 @@ assert_eq "$(cat "$cleanup_marker")" "" "  -> the cleanup is not run (no command
 
 
 # ---------------------------------------------------------------------------
+echo "the Claude-context refusal gate runs only for claude"
+# ---------------------------------------------------------------------------
+gate_dir="$TMPDIR/ctx-gate"; mkdir -p "$gate_dir/lib" "$gate_dir/ws"
+for lib in "${CHOPI_IN_SANDBOX_LIBS[@]}"; do cp "$repo/.internal/$lib" "$gate_dir/lib/"; done
+cp "$WRAP" "$gate_dir/lib/wrapper.sh"
+cat >> "$gate_dir/lib/claude-context-check.sh" <<'EOF'
+probe_read() {
+    arity 1
+    [ "$1" = "${CHOPI_TEST_DENY-}" ] && return "$PROBE_READ_DENIED"
+    [ -f "$1" ] && return "$PROBE_READ_OK"
+    return "$PROBE_READ_SKIP"
+}
+EOF
+gate_real="$(cd "$gate_dir" && pwd -P)"
+printf '@notes.md\n' > "$gate_dir/CLAUDE.md"
+printf 'n\n'         > "$gate_dir/notes.md"
+printf '#!/bin/sh\necho RAN\n' > "$gate_dir/claude"
+chmod +x "$gate_dir/claude"
+
+both=""; rc=0
+both="$( (cd "$gate_dir/ws" && scrubbed CHOPI_TEST_DENY="$gate_real/notes.md" \
+    "$gate_dir/lib/wrapper.sh" "$cleanup_script" -- "$gate_dir/claude") 2>&1 )" || rc=$?
+assert_nonzero      "$rc"                         "claude is refused while a context @-import is unreadable"
+assert_contains     "$both" "$gate_real/notes.md" "  -> listing the denied import"
+assert_not_contains "$both" "RAN"                 "  -> and does not run"
+
+out=""; rc=0
+out="$( (cd "$gate_dir/ws" && scrubbed CHOPI_TEST_DENY="$gate_real/notes.md" \
+    "$gate_dir/lib/wrapper.sh" "$cleanup_script" -- /bin/sh -c 'echo RAN') 2>&1 )" || rc=$?
+assert_zero     "$rc"        "any other command runs despite the unreadable @-import"
+assert_contains "$out" "RAN" "  -> the command itself runs"
+
+
+# ---------------------------------------------------------------------------
 echo "malformed input is refused before anything runs"
 # ---------------------------------------------------------------------------
 out="$(scrubbed "$WRAP" -- /bin/sh -c 'echo RAN' 2>&1)"; st=$?
