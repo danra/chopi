@@ -22,6 +22,9 @@ CHOPI_CONTEXT_READS_PREFIX="chopi-context-reads."
 CHOPI_GIT_PROTECT_WRAPPER_PREFIX="chopi-git-protect-wrapper."
 CHOPI_CMD_ALIAS_PREFIX="chopi-cmd-alias."
 
+# The libs (basenames under .internal/) that the in-sandbox wrapper and cleanup source
+CHOPI_IN_SANDBOX_LIBS=(git-layout.sh util.sh)
+
 if command -v shopt >/dev/null 2>&1; then shopt -s expand_aliases; fi
 
 # arity -- verify expected number of positional args.

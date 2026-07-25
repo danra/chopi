@@ -190,8 +190,10 @@ main() {
             rule 'allow file-read* process-exec*' literal "$wrapper_path"
             echo ";; chopi: the in-sandbox teardown cleanup and the libs it and the wrapper source."
             rule 'allow file-read* process-exec*' literal "$cleanup_script_path"
-            rule 'allow file-read*'               literal "$CHOPI_DIR/.internal/git-layout.sh"
-            rule 'allow file-read*'               literal "$CHOPI_DIR/.internal/util.sh"
+            local lib
+            for lib in "${CHOPI_IN_SANDBOX_LIBS[@]}"; do
+                rule 'allow file-read*' literal "$CHOPI_DIR/.internal/$lib"
+            done
             echo ";; chopi: stat-only on chopi's dir chain for in-sandbox CHOPI_DIR resolution."
             local ancestor="$CHOPI_DIR/.internal"
             while :; do

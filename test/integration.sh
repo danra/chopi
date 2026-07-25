@@ -410,9 +410,9 @@ EOF
     assert_contains "$out" "$CHOPI_GIT_PROTECT_WRAPPER_PREFIX"  "  -> the git-protect wrapper profile is created for the run"
     assert_contains "$out" "$CHOPI_CMD_ALIAS_PREFIX"            "  -> as is the command-alias dir"
 
-    # The wrapper profile opens the wrapper, the cleanup script, and the libs it sources
-    # (git-layout.sh -> util.sh) for reading only, and nothing else in chopi's dir.
-    for f in git-protect-wrapper.sh git-protect-cleanup.sh git-layout.sh util.sh; do
+    # The wrapper profile opens the wrapper, the cleanup script, and the libs they source
+    # (CHOPI_IN_SANDBOX_LIBS) for reading only, and nothing else in chopi's dir.
+    for f in git-protect-wrapper.sh git-protect-cleanup.sh "${CHOPI_IN_SANDBOX_LIBS[@]}"; do
         out="$(chopi_wrap /bin/sh -c "cat '$repo/.internal/$f' >/dev/null 2>&1 && echo READ_OK || echo READ_FAIL; echo x >> '$repo/.internal/$f' 2>/dev/null && echo WRITE_OK || echo WRITE_FAIL" 2>/dev/null)"
         assert_contains     "$out" "READ_OK"   "  -> the git-protect wrapper opens $f"
         assert_not_contains "$out" "WRITE_OK"  "  -> and only for reading: $f is not writable"
