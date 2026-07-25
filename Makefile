@@ -36,6 +36,7 @@ SHELL_SOURCES = \
 	test/worktree.sh \
 	test/preflight.sh \
 	test/shell-rc.sh \
+	test/install.sh \
 	test/claude-context-reads.sh \
 	test/claude-context-check.sh \
 	test/integration.sh
@@ -58,6 +59,7 @@ test:
 	@./test/worktree.sh
 	@./test/preflight.sh
 	@./test/shell-rc.sh
+	@./test/install.sh
 	@./test/claude-context-reads.sh
 	@./test/claude-context-check.sh
 	@./test/integration.sh

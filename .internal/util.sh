@@ -54,15 +54,26 @@ strip_comment_and_trim() {
     trim "${1%%#*}"
 }
 
+# Print the 1-based number of FILE's first line that matches LINE, modulo trimming whitespace
+# around it. Prints nothing and fails when FILE has no such line (or can't be read).
+file_line_number() {
+    arity 2
+    local file="$1" line="$2" current n=0
+    [ -r "$file" ] || return 1
+    while IFS= read -r current || [ -n "$current" ]; do
+        n=$((n + 1))
+        if [ "$(trim "$current")" = "$line" ]; then
+            printf '%s' "$n"
+            return 0
+        fi
+    done <"$file"
+    return 1
+}
+
 # Does FILE have the exact LINE, modulo trimming whitespace around it
 file_has_line() {
     arity 2
-    local file="$1" line="$2" current
-    [ -r "$file" ] || return 1
-    while IFS= read -r current || [ -n "$current" ]; do
-        [ "$(trim "$current")" = "$line" ] && return 0
-    done <"$file"
-    return 1
+    file_line_number "$1" "$2" >/dev/null
 }
 
 # Escape a filesystem path for embedding inside a Seatbelt string literal (the "..." of a

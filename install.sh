@@ -5,6 +5,9 @@
 #   * installs dependencies
 #   * copies templates to local config (if missing):
 #   * offers to add chopi's bin/ to your PATH (in your shell rc)
+#
+# --uninstall makes a best-effort to undo the installer's effects
+#             outside of chopi's own folder.
 
 set -euo pipefail
 
@@ -18,6 +21,70 @@ SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
 
 . "$SCRIPT_DIR/.internal/util.sh"
 . "$SCRIPT_DIR/.internal/shell-rc.sh"
+
+usage="usage: ./install.sh [--uninstall]"
+
+usage_error() {
+    arity 1
+    local message="$1"
+    echo "install.sh: $message" >&2
+    echo "$usage" >&2
+    exit 1
+}
+
+# The whole argv is checked before any of it is acted on, so a help flag doesn't mask a
+# bad option behind it. Each option is a mode of its own, so anything past the first
+# (a repeat of it included) is a mistake, not a refinement.
+help=""
+uninstall=""
+for arg in "$@"; do
+    case "$arg" in
+        -h|--help)   help=1 ;;
+        --uninstall) uninstall=1 ;;
+        *)           usage_error "unknown option: $arg" ;;
+    esac
+done
+[ "$#" -le 1 ] || usage_error "expected at most one option, got: $*"
+
+if [ -n "$help" ]; then
+    echo "$usage"
+    exit 0
+fi
+
+
+# ----------------------------------------------------------------------------
+# Uninstall (only what the installer added outside of chopi's own folder)
+# ----------------------------------------------------------------------------
+
+uninstall_chopi() {
+    arity 0
+    local rc_file
+    rc_file="$(shell_rc_file)"
+
+    echo "==> Removing chopi from your PATH"
+    if [ -z "$rc_file" ]; then
+        echo "  couldn't detect your shell's rc file (SHELL=${SHELL:-unset})."
+        echo "  If chopi is on your PATH, remove this line from your shell startup file:"
+        echo ""
+        echo "      $CHOPI_PATH_LINE"
+    elif rc_remove_line "$rc_file" "$CHOPI_PATH_LINE"; then
+        echo "  removed chopi's PATH line from $rc_file"
+    else
+        echo "  could not find chopi's PATH line in $rc_file, left as-is"
+    fi
+
+    echo ""
+    echo "==> Done."
+    echo ""
+    echo "Left in place:"
+    echo "  * chopi's dir (with its local config)"
+    echo "  * Homebrew dependencies (go, jq, alerter, safehouse, caddy)"
+}
+
+if [ -n "$uninstall" ]; then
+    uninstall_chopi
+    exit 0
+fi
 
 if busy_port="$(first_listening_port "$PROXY_PORT" "$GITHUB_RELAY_PORT")"; then
     echo "error: chopi-proxy (or something else) is currently running and listening on port $busy_port." >&2
