@@ -82,7 +82,10 @@ main() {
     fi
 
     # Refuse to launch while any Claude context symlink target or @-import is unreadable.
-    refuse_unreadable_claude_context "$(pwd -P)" || return 1
+    local run_dir
+    run_dir="$(pwd -P)" \
+        || { echo "chopi: error: cannot resolve the sandboxed working directory" >&2; return 1; }
+    refuse_unreadable_claude_context "$run_dir" || return 1
 
     # We must outlive the command to run the cleanup -- even if a signal kills the command --
     # while keeping the command itself interruptible. Trap the signals with a handler (NOT ''),
