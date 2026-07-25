@@ -5,8 +5,8 @@
 # - appends git config entries to the existing GIT_CONFIG_* environment, if any.
 # - refuses to launch the command when the resulting config does not route github git to
 #   chopi's GitHub relay (a competing user insteadOf overrides the rewrite).
-# - refuses to launch when the sandbox denies reading a Claude context symlink target or
-#   @-import, listing the denied paths so the user grants the reads in the config.
+# - refuses to launch `claude` when the sandbox denies reading a Claude context symlink target
+#   or @-import, listing the denied paths so the user grants the reads in the config.
 # - on exit, aborts any in-progress git rebase/cherry-pick left behind by the command.
 #
 # usage: in-sandbox-wrapper.sh CLEANUP_SCRIPT_PATH [key=value ...] -- <executable> [args...]
@@ -81,11 +81,13 @@ main() {
         return 1
     fi
 
-    # Refuse to launch while any Claude context symlink target or @-import is unreadable.
-    local run_dir
-    run_dir="$(pwd -P)" \
-        || { echo "chopi: error: cannot resolve the sandboxed working directory" >&2; return 1; }
-    refuse_unreadable_claude_context "$run_dir" || return 1
+    # Refuse to launch claude while any Claude context symlink target or @-import is unreadable.
+    if is_claude_command "$1"; then
+        local run_dir
+        run_dir="$(pwd -P)" \
+            || { echo "chopi: error: cannot resolve the sandboxed working directory" >&2; return 1; }
+        refuse_unreadable_claude_context "$run_dir" || return 1
+    fi
 
     # We must outlive the command to run the cleanup -- even if a signal kills the command --
     # while keeping the command itself interruptible. Trap the signals with a handler (NOT ''),

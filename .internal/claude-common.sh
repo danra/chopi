@@ -9,6 +9,13 @@
 # this list to add more.
 CLAUDE_CONTEXT_FILENAMES=(CLAUDE.md .claude/CLAUDE.md)
 
+is_claude_command() {
+    arity 1
+    local base
+    base="$(basename -- "$1")"
+    [ "$base" = "claude" ]
+}
+
 # Invoke callback $2 as `callback PARENT NAME` for every context-file candidate in the
 # ancestor dirs of dir $1 (PARENT is "" for the filesystem root, so "$PARENT/$NAME" always
 # composes). The single walk shape shared by the granting profile and the in-sandbox check,

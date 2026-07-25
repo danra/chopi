@@ -56,11 +56,12 @@ trap 'if [ -n "${proxy_pid:-}" ]; then kill "$proxy_pid" 2>/dev/null || true; wa
 ws="$base/workspace"            # the sandbox workspace (read/write granted, as the workdir)
 outside="$base/outside"         # sibling under $HOME -> reliably denied
 alerter_stub="$base/bin"        # a recording `alerter` shim on the proxy's PATH
+claudebin="$base/claudebin"     # a stand-in `claude` for the Claude-context cases
 cfg="$base/config/sandbox.sh"   # minimal sandbox config, OUTSIDE the workspace
 rules="$base/config/itest-rules.yaml"
 proxy_log="$base/proxy.log"
 alerter_log="$base/alerter-calls.log"
-mkdir -p "$ws" "$outside" "$alerter_stub" "$base/config"
+mkdir -p "$ws" "$outside" "$alerter_stub" "$claudebin" "$base/config"
 make_repo "$ws"     # chopi only runs at a git worktree root
 
 # A workspace file to read back, and an out-of-bounds secret that must stay unreadable.
@@ -68,9 +69,14 @@ secret="CHOPI_SECRET_$$"
 printf 'INSIDE_MARKER\n' > "$ws/readable.txt"
 printf '%s\n' "$secret"  > "$outside/secret.txt"
 
-# Minimal config: no extra dir grants (so denials are clean), PATH of system binaries only
-cat > "$cfg" <<'EOF'
-CHOPI_SAFEHOUSE_FLAGS=()
+claude_shim="$claudebin/claude"
+printf '#!/bin/sh\nexec /bin/sh "$@"\n' > "$claude_shim"
+chmod +x "$claude_shim"
+
+# Minimal config: no dir grants beyond the stub agent's (so denials are clean), PATH of
+# system binaries only
+cat > "$cfg" <<EOF
+CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$claudebin" )
 CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
 EOF
 
@@ -244,8 +250,15 @@ if ! wait_for_listener "$PROXY_PORT" "$proxy_pid"; then
 fi
 ok "test proxy is listening on 127.0.0.1:$PROXY_PORT"
 
-# Every sandboxed call: run from the workspace with the minimal config.
+# Every sandboxed call: run from the workspace with the minimal config. The Claude-context
+# cases go through the stand-in agent, in another workspace or under another config when the
+# case calls for it.
 chopi_t() { ( cd "$ws" && "$repo/bin/chopi" --config "$cfg" -- "$@" ); }
+chopi_claude_in() {
+    local dir="$1" conf="$2"; shift 2
+    ( cd "$dir" && "$repo/bin/chopi" --config "$conf" -- "$claude_shim" "$@" )
+}
+chopi_claude() { chopi_claude_in "$ws" "$cfg" "$@"; }
 
 # Run curl INSIDE the sandbox and echo its HTTP status code ("000" when the connection is
 # blocked/refused before any response).
@@ -320,17 +333,17 @@ echo "Claude context files in parent dirs of the workspace"
 printf 'PARENT_CLAUDE_MARKER\n' > "$base/CLAUDE.md"
 printf 'PARENT_NOTES_MARKER\n'  > "$base/NOTES.md"
 
-out="$(chopi_t /bin/sh -c "cat '$base/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+out="$(chopi_claude -c "cat '$base/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_contains "$out" "PARENT_CLAUDE_MARKER"      "a CLAUDE.md in a parent dir of the workspace is readable"
 assert_contains "$out" "READ_OK"                   "  -> and the read succeeds"
 
-out="$(chopi_t /bin/sh -c "cat '$base/NOTES.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+out="$(chopi_claude -c "cat '$base/NOTES.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_not_contains "$out" "PARENT_NOTES_MARKER"   "a non-CLAUDE.md file in the same parent dir stays denied (the hole is narrow)"
 assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
 
 mkdir -p "$base/.claude"
 printf 'PARENT_DOTCLAUDE_MARKER\n' > "$base/.claude/CLAUDE.md"
-out="$(chopi_t /bin/sh -c "cat '$base/.claude/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+out="$(chopi_claude -c "cat '$base/.claude/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_contains "$out" "PARENT_DOTCLAUDE_MARKER"   "a .claude/CLAUDE.md in a parent dir of the workspace is readable"
 assert_contains "$out" "READ_OK"                   "  -> and the read succeeds"
 
@@ -341,17 +354,17 @@ mkdir -p "$base/shared-claude" "$base/dev/ws2"
 make_repo "$base/dev/ws2"
 printf 'SHARED_DOTCLAUDE_MARKER\n' > "$base/shared-claude/CLAUDE.md"
 ln -s "$base/shared-claude" "$base/dev/.claude"
-both="$( (cd "$base/dev/ws2" && "$repo/bin/chopi" --config "$cfg" -- /bin/sh -c 'echo RAN') 2>&1 )"; rc=$?
+both="$(chopi_claude_in "$base/dev/ws2" "$cfg" -c 'echo RAN' 2>&1)"; rc=$?
 assert_nonzero      "$rc"                                    "chopi refuses while a symlinked ancestor .claude target is unreadable"
 assert_contains     "$both" "$base/shared-claude/CLAUDE.md  (via the symlink at $base/dev/.claude)" "  -> naming the resolved target and the link it came from"
 assert_not_contains "$both" "RAN"                            "  -> and does not run the command"
 
 cfg_shared="$base/config/sandbox-shared-claude.sh"
 cat > "$cfg_shared" <<EOF
-CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$base/shared-claude" )
+CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$base/shared-claude:$claudebin" )
 CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
 EOF
-out="$( (cd "$base/dev/ws2" && "$repo/bin/chopi" --config "$cfg_shared" -- /bin/sh -c "cat '$base/dev/.claude/CLAUDE.md' && echo READ_OK || echo READ_FAIL") 2>/dev/null )"
+out="$(chopi_claude_in "$base/dev/ws2" "$cfg_shared" -c "cat '$base/dev/.claude/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_contains "$out" "SHARED_DOTCLAUDE_MARKER"   "with the target granted, the CLAUDE.md behind the link is readable"
 assert_contains "$out" "READ_OK"                   "  -> and the read succeeds"
 
@@ -368,7 +381,7 @@ printf 'LINKED_IMPORT_MARKER\n@%s/import-nested/deep.md\n' "$base" > "$base/impo
 ln -s "$base/import-target/actual.md" "$base/imports/linked-import.md"
 printf 'PARENT_CLAUDE_MARKER\n@imports/linked-import.md\n' > "$base/CLAUDE.md"
 
-both="$(chopi_t /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+both="$(chopi_claude -c 'echo RAN' 2>&1)"; rc=$?
 assert_nonzero      "$rc"                                    "chopi refuses to run while an ancestor CLAUDE.md @-import is unreadable"
 assert_contains     "$both" "$base/imports/linked-import.md" "  -> listing the unreadable import"
 assert_contains     "$both" "(imported by $base/CLAUDE.md)"  "  -> and its importer"
@@ -382,10 +395,10 @@ assert_not_contains "$both" "RAN"                            "  -> and does not 
 # surfaces its own nested import.
 cfg_imports="$base/config/sandbox-imports.sh"
 cat > "$cfg_imports" <<EOF
-CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$base/imports:$base/import-target" )
+CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$base/imports:$base/import-target:$claudebin" )
 CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
 EOF
-both="$( ( cd "$ws" && "$repo/bin/chopi" --config "$cfg_imports" -- /bin/sh -c 'echo RAN' ) 2>&1 )"; rc=$?
+both="$(chopi_claude_in "$ws" "$cfg_imports" -c 'echo RAN' 2>&1)"; rc=$?
 assert_nonzero      "$rc"                                     "chopi still refuses: the now-followable import reveals its nested import"
 assert_contains     "$both" "$base/import-nested/deep.md"     "  -> listing the nested import"
 assert_not_contains "$both" "(imported by $base/CLAUDE.md)"   "  -> the outer, now-readable import is no longer listed"
@@ -394,10 +407,10 @@ assert_not_contains "$both" "RAN"                             "  -> and does not
 # With the whole chain granted, the run proceeds.
 cfg_imports_all="$base/config/sandbox-imports-all.sh"
 cat > "$cfg_imports_all" <<EOF
-CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$base/imports:$base/import-target:$base/import-nested" )
+CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$base/imports:$base/import-target:$base/import-nested:$claudebin" )
 CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
 EOF
-out="$( ( cd "$ws" && "$repo/bin/chopi" --config "$cfg_imports_all" -- /bin/sh -c "cat '$base/imports/linked-import.md' '$base/import-nested/deep.md' && echo READ_OK || echo READ_FAIL" ) 2>/dev/null )"
+out="$(chopi_claude_in "$ws" "$cfg_imports_all" -c "cat '$base/imports/linked-import.md' '$base/import-nested/deep.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_contains "$out" "LINKED_IMPORT_MARKER"      "with the full chain granted the run proceeds"
 assert_contains "$out" "NESTED_IMPORT_MARKER"      "  -> the nested import is readable too"
 assert_contains "$out" "READ_OK"                   "  -> reads succeed at the as-written paths (how the agent opens them)"
@@ -419,6 +432,9 @@ assert_not_contains "$out" "PARENT_CLAUDE_MARKER" "  -> and no content leaks"
 # shellcheck disable=SC2016  # $TMPDIR expands in the sandboxed shell, not here
 out="$(chopi_t /bin/sh -c 'ls "$TMPDIR"' 2>/dev/null)"
 assert_not_contains "$out" "$CHOPI_CLAUDE_CONTEXT_READS_PREFIX" "no context-reads profile is even built for a non-claude run"
+# shellcheck disable=SC2016  # $TMPDIR expands in the sandboxed shell, not here
+out="$(chopi_claude -c 'ls "$TMPDIR"' 2>/dev/null)"
+assert_contains     "$out" "$CHOPI_CLAUDE_CONTEXT_READS_PREFIX" "  -> while a claude run gets one"
 
 printf 'PARENT_CLAUDE_MARKER\n@imports/linked-import.md\n' > "$base/CLAUDE.md"
 out="$(chopi_t /bin/sh -c 'echo RAN' 2>/dev/null)"; rc=$?
@@ -446,7 +462,7 @@ assert_contains "$out" "WRITE_OK"                  "  -> and the sandboxed comma
 # This run's artifacts show up in the in-sandbox listing of $TMPDIR -- the dir is fresh
 # and private to the invocation, so their presence pins them as subpaths of it. Guards the
 # containment assumption the one-shot cleanup below relies on.
-assert_contains "$out" "$CHOPI_CLAUDE_CONTEXT_READS_PREFIX" "the claude-context-reads profile lives inside the invocation temp dir"
+assert_contains "$out" "$CHOPI_IN_SANDBOX_WRAPPER_PREFIX" "the in-sandbox wrapper profile lives inside the invocation temp dir"
 
 if [ -n "$sbx_tmpdir" ] && [ ! -e "$sbx_tmpdir" ]; then
     ok  "chopi removes the entire invocation temp dir (all temporaries with it) after the run"
@@ -893,11 +909,14 @@ git -C "$gitrepo" checkout -q "$mainbr"
 
 cat > "$cfg_wt" <<EOF
 . '$repo/config/templates/sandbox.template.sh'
-CHOPI_SAFEHOUSE_FLAGS=()
+CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$claudebin" )
 CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
 EOF
 
 chopi_wt() { ( cd "$gitrepo" && "$repo/bin/chopi" --worktree nested_wt2 --config "$cfg_wt" -- "$@" ); }
+
+# The worktree run as the stand-in agent, for the Claude-context cases (see chopi_claude).
+chopi_wt_claude() { chopi_wt "$claude_shim" "$@"; }
 
 workdir_wt="$(chopi_wt /bin/sh -c 'pwd' 2>/dev/null)"
 assert_eq "$workdir_wt" "$nested_wt2"                             "the command runs with the worktree as its workdir"
@@ -936,16 +955,16 @@ assert_absent "$external_wt/ext-evil.txt" "a write into an external worktree is 
 # CLAUDE.md meant for every repo beneath it), but the repo root's own copy are unreadable.
 printf 'ABOVE_REPO_CLAUDE_MARKER\n' > "$base/CLAUDE.md"          # $base is the repo's parent dir
 printf 'REPO_ROOT_CLAUDE_MARKER\n'  > "$gitrepo_real/CLAUDE.md"
-out="$(chopi_wt /bin/sh -c "cat '$base/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+out="$(chopi_wt_claude -c "cat '$base/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_contains "$out" "ABOVE_REPO_CLAUDE_MARKER"  "a CLAUDE.md ABOVE the repo root is readable from the worktree"
-out="$(chopi_wt /bin/sh -c "cat '$gitrepo_real/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+out="$(chopi_wt_claude -c "cat '$gitrepo_real/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_not_contains "$out" "REPO_ROOT_CLAUDE_MARKER" "the repo root's OWN CLAUDE.md is NOT readable from the worktree (isolation wins)"
 assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
 
 # Isolation covers the whole enclosing working tree, not just the root: an ancestor
 # context file BETWEEN the repo root and the worktree is unreadable too.
 printf 'MID_REPO_CLAUDE_MARKER\n' > "$gitrepo_real/.worktrees/CLAUDE.md"
-out="$(chopi_wt /bin/sh -c "cat '$gitrepo_real/.worktrees/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+out="$(chopi_wt_claude -c "cat '$gitrepo_real/.worktrees/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_not_contains "$out" "MID_REPO_CLAUDE_MARKER" "a CLAUDE.md in a repo subdir ABOVE the worktree is NOT readable from the worktree"
 assert_contains     "$out" "READ_FAIL"              "  -> and that read fails"
 
@@ -953,15 +972,15 @@ assert_contains     "$out" "READ_FAIL"              "  -> and that read fails"
 mkdir -p "$base/.claude" "$gitrepo_real/.claude"
 printf 'ABOVE_REPO_DOTCLAUDE_MARKER\n' > "$base/.claude/CLAUDE.md"
 printf 'REPO_ROOT_DOTCLAUDE_MARKER\n'  > "$gitrepo_real/.claude/CLAUDE.md"
-out="$(chopi_wt /bin/sh -c "cat '$base/.claude/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+out="$(chopi_wt_claude -c "cat '$base/.claude/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_contains "$out" "ABOVE_REPO_DOTCLAUDE_MARKER"  "a .claude/CLAUDE.md ABOVE the repo root is readable from the worktree"
-out="$(chopi_wt /bin/sh -c "cat '$gitrepo_real/.claude/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+out="$(chopi_wt_claude -c "cat '$gitrepo_real/.claude/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_not_contains "$out" "REPO_ROOT_DOTCLAUDE_MARKER" "the repo root's OWN .claude/CLAUDE.md is NOT readable from the worktree (isolation wins)"
 assert_contains     "$out" "READ_FAIL"                "  -> and that read fails"
 
 # All those denied in-repo context files (root and mid-repo) exist right now, yet none
 # gate the run: a blind denial with no visible link is chopi's own isolation at work.
-out="$(chopi_wt /bin/sh -c 'echo RAN' 2>/dev/null)"; rc=$?
+out="$(chopi_wt_claude -c 'echo RAN' 2>/dev/null)"; rc=$?
 assert_eq       "$rc" "0"    "denied in-repo ancestor context files do NOT refuse the worktree run"
 assert_contains "$out" "RAN" "  -> the command runs"
 
@@ -970,7 +989,7 @@ assert_contains "$out" "RAN" "  -> the command runs"
 printf 'x\n' > "$base/wt-link-target.md"
 rm "$base/CLAUDE.md"
 ln -s "$base/wt-link-target.md" "$base/CLAUDE.md"
-both="$(chopi_wt /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+both="$(chopi_wt_claude -c 'echo RAN' 2>&1)"; rc=$?
 assert_nonzero      "$rc"   "an unreadable symlinked CLAUDE.md above the repo root refuses the worktree run"
 assert_contains     "$both" "$base/wt-link-target.md  (symlink target of $base/CLAUDE.md)" "  -> naming the resolved target and the link it came from"
 assert_not_contains "$both" "RAN"                                          "  -> and does not run the command"
@@ -983,7 +1002,7 @@ printf 'ABOVE_REPO_CLAUDE_MARKER\n' > "$base/CLAUDE.md"
 # is unrealistic; but at least mention the possibility in the refusal message.
 printf 'IN_REPO_IMPORT_MARKER\n' > "$gitrepo_real/team-conventions.md"
 printf 'ABOVE_REPO_CLAUDE_MARKER\n@%s/team-conventions.md\n' "$gitrepo_real" > "$base/CLAUDE.md"
-both="$(chopi_wt /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+both="$(chopi_wt_claude -c 'echo RAN' 2>&1)"; rc=$?
 assert_nonzero      "$rc"                                                                      "an isolation-denied in-repo @-import refuses the worktree run"
 assert_contains     "$both" "$gitrepo_real/team-conventions.md  (imported by $base/CLAUDE.md)" "  -> listing it with its importer"
 assert_contains     "$both" "a grant cannot cover an @-import"                                 "  -> and noting that a grant can't fix an isolation-zone import"
@@ -994,7 +1013,7 @@ assert_not_contains "$both" "RAN"                                               
 mkdir -p "$base/wt-notes"
 printf 'x\n' > "$base/wt-notes/style.md"
 printf 'ABOVE_REPO_CLAUDE_MARKER\n@%s/wt-notes/style.md\n' "$base" > "$base/CLAUDE.md"
-both="$(chopi_wt /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+both="$(chopi_wt_claude -c 'echo RAN' 2>&1)"; rc=$?
 assert_nonzero      "$rc"                                                            "an ungranted above-the-repo @-import still refuses the worktree run"
 assert_contains     "$both" "$base/wt-notes/style.md  (imported by $base/CLAUDE.md)" "  -> listing it with its importer"
 assert_not_contains "$both" "RAN"                                                    "  -> and does not run the command"

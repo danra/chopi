@@ -128,12 +128,15 @@ main() {
         preflight_config_placement "$config" "$run_dir" || return $?
     fi
 
-    # Let the agent read Claude context files in the workspace's ancestor dirs.
-    local claude_context_profile
-    claude_context_profile="$(mktemp "$TMPDIR/${CHOPI_CLAUDE_CONTEXT_READS_PREFIX}XXXXXX")" \
-        || { echo "chopi: could not create a temp file for the claude-context-reads profile" >&2; return 1; }
-    write_claude_context_reads_profile "$claude_context_profile" "$run_dir" \
-        || { echo "chopi: could not write the claude-context-reads profile" >&2; return 1; }
+    local context_flags=()
+    if is_claude_command "$1"; then
+        local claude_context_profile
+        claude_context_profile="$(mktemp "$TMPDIR/${CHOPI_CLAUDE_CONTEXT_READS_PREFIX}XXXXXX")" \
+            || { echo "chopi: could not create a temp file for the claude-context-reads profile" >&2; return 1; }
+        write_claude_context_reads_profile "$claude_context_profile" "$run_dir" \
+            || { echo "chopi: could not write the claude-context-reads profile" >&2; return 1; }
+        context_flags=(--append-profile "$claude_context_profile")
+    fi
 
     # Build chopi's git protection profiles and append them in the order
     # git-protect.sh emits them.
@@ -214,7 +217,7 @@ main() {
     [ -n "$verbose" ] && { echo; set -x; }
     safehouse \
         "${CHOPI_SAFEHOUSE_FLAGS[@]+"${CHOPI_SAFEHOUSE_FLAGS[@]}"}" \
-        --append-profile "$claude_context_profile" \
+        "${context_flags[@]+"${context_flags[@]}"}" \
         "${protection_flags[@]}" \
         "${wrapper_flags[@]}" \
         --append-profile "$CHOPI_DIR/.internal/network.sb" \
