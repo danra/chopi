@@ -61,9 +61,8 @@ assert_prefix() {
 # surrounding whitespace.
 assert_has_line() {
     arity 3
-    local haystack="$1" want="$2" desc="$3" trimmed
-    trimmed="$(printf '%s\n' "$haystack" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
-    if printf '%s\n' "$trimmed" | grep -qxF -- "$want"; then ok "$desc"; else
+    local haystack="$1" want="$2" desc="$3"
+    if file_has_line <(printf '%s\n' "$haystack") "$want"; then ok "$desc"; else
         bad "$desc"; printf '         %q\n         has no line reading %q\n' "$haystack" "$want"
     fi
 }

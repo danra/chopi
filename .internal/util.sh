@@ -54,6 +54,17 @@ strip_comment_and_trim() {
     trim "${1%%#*}"
 }
 
+# Does FILE have the exact LINE, modulo trimming whitespace around it
+file_has_line() {
+    arity 2
+    local file="$1" line="$2" current
+    [ -r "$file" ] || return 1
+    while IFS= read -r current || [ -n "$current" ]; do
+        [ "$(trim "$current")" = "$line" ] && return 0
+    done <"$file"
+    return 1
+}
+
 # Escape a filesystem path for embedding inside a Seatbelt string literal (the "..." of a
 # subpath/literal/prefix matcher).
 _sb_string_escape() {

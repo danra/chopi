@@ -15,6 +15,7 @@ SHELL_SOURCES = \
 	.internal/git-harden.sh \
 	.internal/git-protect.sh \
 	.internal/git-protect-cleanup.sh \
+	.internal/shell-rc.sh \
 	.internal/claude-common.sh \
 	.internal/claude-context-reads.sh \
 	.internal/claude-context-check.sh \
@@ -34,6 +35,7 @@ SHELL_SOURCES = \
 	test/chopi-proxy.sh \
 	test/worktree.sh \
 	test/preflight.sh \
+	test/shell-rc.sh \
 	test/claude-context-reads.sh \
 	test/claude-context-check.sh \
 	test/integration.sh
@@ -55,6 +57,7 @@ test:
 	@./test/chopi-proxy.sh
 	@./test/worktree.sh
 	@./test/preflight.sh
+	@./test/shell-rc.sh
 	@./test/claude-context-reads.sh
 	@./test/claude-context-check.sh
 	@./test/integration.sh

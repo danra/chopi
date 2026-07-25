@@ -17,6 +17,7 @@ fi
 SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
 
 . "$SCRIPT_DIR/.internal/util.sh"
+. "$SCRIPT_DIR/.internal/shell-rc.sh"
 
 if busy_port="$(first_listening_port "$PROXY_PORT" "$GITHUB_RELAY_PORT")"; then
     echo "error: chopi-proxy (or something else) is currently running and listening on port $busy_port." >&2
@@ -97,20 +98,12 @@ ensure_copy config/templates/sandbox.template.sh           config/sandbox.sh
 
 echo "==> Shell setup"
 
-SHELL_NAME="$(basename "${SHELL:-}")"
-case "$SHELL_NAME" in
-    zsh)  RC_FILE="$HOME/.zshrc" ;;
-    bash) RC_FILE="$HOME/.bashrc" ;;
-    *)    RC_FILE="" ;;
-esac
-
-# Prepend (not append) to PATH so a later reinstall in a different path takes precedence.
-PATH_LINE="export PATH=\"$CHOPI_DIR/bin:\$PATH\""
+RC_FILE="$(shell_rc_file)"
 
 print_manual() {
     echo "  You can add chopi to your PATH by adding this line to ${RC_FILE:-your shell startup file}:"
     echo ""
-    echo "      $PATH_LINE"
+    echo "      $CHOPI_PATH_LINE"
     echo ""
     echo "  Then open a new terminal (or source that file) to pick it up."
 }
@@ -118,7 +111,7 @@ print_manual() {
 if [ -z "$RC_FILE" ]; then
     echo "  couldn't detect your shell's rc file (SHELL=${SHELL:-unset})."
     print_manual
-elif grep -qFx "$PATH_LINE" "$RC_FILE" 2>/dev/null; then
+elif file_has_line "$RC_FILE" "$CHOPI_PATH_LINE"; then
     echo "  chopi is already on your PATH."
 elif [ -t 0 ]; then
     # Offer to add chopi to PATH
@@ -126,7 +119,7 @@ elif [ -t 0 ]; then
     read -r reply || reply=""
     case "$reply" in
         ""|[Yy]*)
-            printf '\n%s\n' "$PATH_LINE" >> "$RC_FILE"
+            printf '\n%s\n' "$CHOPI_PATH_LINE" >> "$RC_FILE"
             echo "  added chopi's PATH line to $RC_FILE"
             ;;
         *)
