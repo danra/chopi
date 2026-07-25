@@ -74,6 +74,7 @@ assert_contains "$err" "$notes/style.md"                  "  -> the message list
 assert_contains "$err" "(imported by $mono_real/CLAUDE.md)" "  -> and its importer"
 assert_contains "$err" "CHOPI_SAFEHOUSE_FLAGS"            "  -> and names CHOPI_SAFEHOUSE_FLAGS"
 assert_contains "$err" "--add-dirs-ro"                    "  -> with an example --add-dirs-ro grant"
+assert_contains "$err" "a grant cannot cover an @-import" "  -> and the note that isolation-zone imports can't be granted"
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +212,7 @@ assert_contains "$out" "$shared_ctx/CLAUDE.md  (symlink target of $mono_real/CLA
 err="$(refuse_unreadable_claude_context "$work_real" 2>&1)"; rc=$?
 assert_nonzero  "$rc" "the refusal gate fails"
 assert_contains "$err" "$shared_ctx/CLAUDE.md  (symlink target of $mono_real/CLAUDE.md)" "  -> the message names the target, and the link it came from"
+assert_not_contains "$err" "a grant cannot cover an @-import" "  -> without the import-only isolation-zone note"
 
 
 # ---------------------------------------------------------------------------

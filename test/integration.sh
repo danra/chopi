@@ -957,6 +957,31 @@ assert_not_contains "$both" "RAN"                                          "  ->
 rm "$base/CLAUDE.md"
 printf 'ABOVE_REPO_CLAUDE_MARKER\n' > "$base/CLAUDE.md"
 
+# An @-import pointing INSIDE the enclosing repo is denied by the worktree isolation,
+# which no user grant can win. The run is unconditionally refused, because this case
+# is unrealistic; but at least mention the possibility in the refusal message.
+printf 'IN_REPO_IMPORT_MARKER\n' > "$gitrepo_real/team-conventions.md"
+printf 'ABOVE_REPO_CLAUDE_MARKER\n@%s/team-conventions.md\n' "$gitrepo_real" > "$base/CLAUDE.md"
+both="$(chopi_wt /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_nonzero      "$rc"                                                                      "an isolation-denied in-repo @-import refuses the worktree run"
+assert_contains     "$both" "$gitrepo_real/team-conventions.md  (imported by $base/CLAUDE.md)" "  -> listing it with its importer"
+assert_contains     "$both" "a grant cannot cover an @-import"                                 "  -> and noting that a grant can't fix an isolation-zone import"
+assert_not_contains "$both" "RAN"                                                              "  -> and does not run the command"
+
+# An ungranted @-import OUTSIDE the repo also refuses the worktree run; there, the user
+# can grant the missing dir.
+mkdir -p "$base/wt-notes"
+printf 'x\n' > "$base/wt-notes/style.md"
+printf 'ABOVE_REPO_CLAUDE_MARKER\n@%s/wt-notes/style.md\n' "$base" > "$base/CLAUDE.md"
+both="$(chopi_wt /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_nonzero      "$rc"                                                            "an ungranted above-the-repo @-import still refuses the worktree run"
+assert_contains     "$both" "$base/wt-notes/style.md  (imported by $base/CLAUDE.md)" "  -> listing it with its importer"
+assert_not_contains "$both" "RAN"                                                    "  -> and does not run the command"
+
+# Undo for the following tests.
+rm "$gitrepo_real/team-conventions.md"
+printf 'ABOVE_REPO_CLAUDE_MARKER\n' > "$base/CLAUDE.md"
+
 # The two appended protection profiles (isolation + hardening) are unreadable.
 # shellcheck disable=SC2016
 probe='n=$(ls "$TMPDIR" 2>/dev/null | grep -cE "^chopi-git-(isolate|harden)\.")
