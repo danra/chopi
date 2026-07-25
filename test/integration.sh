@@ -45,16 +45,21 @@ fi
 
 # ---------------------------------------------------------------------------
 # Fixtures -- a private TMPDIR (exported so the scripts under test leave their
-# temporaries here too), and everything else under one base dir UNDER \$HOME
-# (not /tmp or /var/folders, which safehouse grants read+write by default).
+# temporaries here too), and everything else under one CANONICAL base dir in /var/tmp
+# (Seatbelt filters, and so the assertions below, see /private/var/tmp, not the /var symlink).
+# Why /var/tmp: safehouse grants nothing there, unlike /tmp and /var/folders; and unlike
+# $HOME, its ancestors hold no Claude context files of the developer's, whose symlink
+# targets and @-imports the minimal configs here do not grant, so every claude run below
+# would be refused.
 # ---------------------------------------------------------------------------
 TMPDIR="$(mktemp -d)"; export TMPDIR
-base="$(mktemp -d "$HOME/.chopi-itest.XXXXXX")" || { echo "error: mktemp failed" >&2; exit 1; }
+vartmp="$(cd /var/tmp && pwd -P)" || { echo "error: cannot resolve /var/tmp" >&2; exit 1; }
+base="$(mktemp -d "$vartmp/chopi-itest.XXXXXX")" || { echo "error: mktemp failed" >&2; exit 1; }
 marker_file=""
 trap 'if [ -n "${proxy_pid:-}" ]; then kill "$proxy_pid" 2>/dev/null || true; wait "$proxy_pid" 2>/dev/null || true; fi; rm -rf "$base" "$TMPDIR" ${marker_file:+"$marker_file"}' EXIT
 
 ws="$base/workspace"            # the sandbox workspace (read/write granted, as the workdir)
-outside="$base/outside"         # sibling under $HOME -> reliably denied
+outside="$base/outside"         # sibling of the workspace -> reliably denied
 alerter_stub="$base/bin"        # a recording `alerter` shim on the proxy's PATH
 claudebin="$base/claudebin"     # a stand-in `claude` for the Claude-context cases
 cfg="$base/config/sandbox.sh"   # minimal sandbox config, OUTSIDE the workspace
