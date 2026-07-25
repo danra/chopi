@@ -17,6 +17,11 @@ CLAUDE_CONTEXT_FILENAMES=(CLAUDE.md .claude/CLAUDE.md)
 for_each_ancestor_context_file() {
     arity 2
     local dir="$1" callback="$2"
+    case "$dir" in
+        /*) ;;
+        *)  printf 'BUG: for_each_ancestor_context_file called with a non-absolute dir\n' >&2
+            exit 2 ;;
+    esac
     local parent name
     while [ "$dir" != "/" ]; do
         dir="$(dirname "$dir")"
