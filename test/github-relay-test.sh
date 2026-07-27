@@ -82,8 +82,7 @@ code="$(curl -s -o /dev/null -w '%{http_code}' \
     -H 'Content-Type: application/x-git-upload-pack-request' -H 'Accept: application/x-git-upload-pack-result' \
     -H 'Git-Protocol: version=2' -H 'Content-Encoding: gzip' \
     --data-binary "@$WORK/upload-pack.gz" "$git_url/octocat/Hello-World/git-upload-pack")"
-if [ "$code" = "200" ]; then ok "gzipped upload-pack decoded (relay forwards Content-Encoding: gzip)"
-else bad "gzipped upload-pack -> $code (relay dropped Content-Encoding: gzip)"; fi
+assert_eq "$code" "200" "gzipped upload-pack decoded (relay forwards Content-Encoding: gzip)"
 
 # 1c. denied fetch (GitHub 401s anonymous ref discovery of nonexistent repos like private ones)
 if git clone -q "$git_url/chopi-e2e-test/no-such-repo" "$WORK/denied" 2>"$WORK/e1c"; then
@@ -106,14 +105,12 @@ fi
 
 # 2b. non-git requests still fail closed
 code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$git_url/torvalds/linux/git-receive-pack")"
-if [ "$code" = "403" ]; then ok "non-git operation refused (bare receive-pack POST -> 403)"
-else bad "non-git operation probe expected 403, got $code"; fi
+assert_eq "$code" "403" "non-git operation refused (bare receive-pack POST)"
 
 # 3. optional: push/fetch authorized for allowlisted repo
 if [ -n "${ALLOW_REPO:-}" ] && [ -n "$TOKEN" ]; then
     code="$(curl -s -o /dev/null -w '%{http_code}' "$git_url/$ALLOW_REPO/info/refs?service=git-receive-pack")"
-    if [ "$code" = "200" ]; then ok "allowlisted push authorized ($ALLOW_REPO receive-pack -> 200)"
-    else bad "allowlisted push on $ALLOW_REPO -> $code"; fi
+    assert_eq "$code" "200" "allowlisted push authorized ($ALLOW_REPO receive-pack)"
 
     if git clone -q --depth 1 "$git_url/$ALLOW_REPO" "$WORK/allowed" 2>"$WORK/e4"; then
         ok "allowlisted fetch succeeded ($ALLOW_REPO)"

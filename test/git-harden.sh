@@ -47,7 +47,7 @@ git -C "$main_repo" worktree add -q -b sib "$sib"
 
 profile_path="$(harden_in "$main_repo")"; st=$?
 assert_zero "$st" "hardening the main worktree exits zero"
-if [ -f "$profile_path" ]; then ok "the emitted path is a profile file that exists"; else bad "the emitted path is not a readable profile file"; fi
+assert_present "$profile_path" "the emitted path is a profile file that exists"
 profile="$(cat "$profile_path" 2>/dev/null)"
 
 # Hardening is purely a lockdown layer: it removes NO worktrees (that's git-isolate's job).
@@ -206,11 +206,8 @@ printf '%s\n' "$nested/.git"      > "$nadm/gitdir"
 forged_common="$(realpath "$(git -C "$nested" rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null || echo NONE)"
 forged_gitdir="$(realpath "$(git -C "$nested" rev-parse --absolute-git-dir 2>/dev/null)" 2>/dev/null || echo NONE)"
 assert_eq "$forged_common" "$gitdir"                          "forge sanity: its common dir resolves to the real shared .git"
-if is_path_within "$forged_gitdir" "$gitdir/worktrees"; then
-    bad "forge sanity: admin dir should escape .git/worktrees but didn't ($forged_gitdir)"
-else
-    ok  "forge sanity: its admin dir escapes .git/worktrees ($forged_gitdir)"
-fi
+is_path_within "$forged_gitdir" "$gitdir/worktrees"
+assert_nonzero "$?" "forge sanity: its admin dir escapes .git/worktrees ($forged_gitdir)"
 out="$(harden_in_err "$main_repo" "$nested")"; st=$?
 assert_contains "$out" "must be a linked worktree's admin dir under" "the escaping admin dir is refused"
 assert_nonzero "$st" "  -> and exits non-zero"
@@ -289,7 +286,8 @@ sgd_worktree="$TMPDIR/sgd_worktree"
 git -C "$sgd_root" worktree add -q -b sgd_feat "$sgd_worktree" >/dev/null 2>&1
 sgd_admin="$sgd_git_real/worktrees/sgd_worktree"
 profile_path="$(harden_in "$sgd_worktree")"; st=$?
-if [ "$st" -eq 0 ] && [ -f "$profile_path" ]; then ok "hardening a linked worktree of a separate-git-dir repo exits zero"; else bad "a linked worktree of a separate-git-dir repo should still harden (got $st)"; fi
+assert_zero    "$st" "hardening a linked worktree of a separate-git-dir repo exits zero"
+assert_present "$profile_path" "  -> and a profile is built"
 profile="$(cat "$profile_path" 2>/dev/null)"
 assert_contains "$profile" '(deny file-write* (subpath "'"$sgd_git_real"'"))'               "  -> the detached gitdir is write-denied by default"
 assert_contains "$profile" '(allow file-write* (subpath "'"$sgd_admin/refs"'"))'            "  -> with the admin dir's refs re-allowed"

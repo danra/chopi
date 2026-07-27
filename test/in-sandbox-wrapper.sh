@@ -99,7 +99,7 @@ echo "run the command, then the cleanup, in the same (confined) process"
 : > "$cleanup_marker"
 out="$(scrubbed "$WRAP" "$cleanup_script" gc.auto=0 -- \
     /bin/sh -c 'echo "cfg=$GIT_CONFIG_COUNT:$GIT_CONFIG_KEY_0=$GIT_CONFIG_VALUE_0"')"; rc=$?
-assert_eq "$rc" "0"                            "the command's exit code propagates"
+assert_zero "$rc"                              "the command's exit code propagates"
 assert_eq "$out" "cfg=1:gc.auto=0"             "  -> git config is still forwarded"
 assert_eq "$(cat "$cleanup_marker")" "CLEANUP" "  -> the cleanup runs afterward"
 
@@ -111,7 +111,7 @@ assert_eq "$(cat "$cleanup_marker")" "CLEANUP" "  -> and the cleanup still runs"
 # A missing command is still named and non-zero, now via the child-run path (not exec).
 out=""; rc=0; out="$(scrubbed "$WRAP" "$cleanup_script" -- /no/such/cmd 2>&1)" || rc=$?
 assert_contains "$out" "/no/such/cmd" "a missing command is named in the error"
-if [ "$rc" -ne 0 ]; then ok "  -> and exits non-zero"; else bad "  -> should exit non-zero (got $rc)"; fi
+assert_nonzero "$rc" "  -> and exits non-zero"
 
 # The command must stay interruptible -- SIGINT reaches it with its default disposition -- and the
 # cleanup must still run when it is interrupted. The command SIGINTs itself; were it NOT interruptible
@@ -156,7 +156,7 @@ empty_global="$TMPDIR/empty.gitconfig"; : > "$empty_global"
 out=""; rc=0
 out="$(env -u GIT_CONFIG_COUNT GIT_CONFIG_GLOBAL="$empty_global" \
     "$WRAP" "$cleanup_script" "${relay_pairs[@]}" -- git ls-remote --get-url https://github.com/o/r)" || rc=$?
-assert_eq "$rc" "0"           "chopi's rewrites, passed as pairs, satisfy the gate"
+assert_zero "$rc"             "chopi's rewrites, passed as pairs, satisfy the gate"
 assert_eq "$out" "$relay/o/r" "  -> and the command itself sees github rerouted to the relay"
 
 # A competing insteadOf of the same prefix in an earlier-read scope (here: global) wins the
@@ -170,7 +170,7 @@ out="$(env -u GIT_CONFIG_COUNT GIT_CONFIG_GLOBAL="$competing_global" \
     "$WRAP" "$cleanup_script" "${relay_pairs[@]}" -- /bin/sh -c 'echo RAN' 2>&1)" || rc=$?
 assert_contains     "$out" "overrides chopi's GitHub relay routing" "a competing insteadOf that overrides the reroute is refused"
 assert_not_contains "$out" "RAN"                                    "  -> and the command does not run"
-if [ "$rc" -ne 0 ]; then ok "  -> and exits non-zero"; else bad "  -> should exit non-zero (got $rc)"; fi
+assert_nonzero "$rc" "  -> and exits non-zero"
 assert_eq "$(cat "$cleanup_marker")" "" "  -> the cleanup is not run (no command ran)"
 
 
@@ -214,26 +214,26 @@ echo "malformed input is refused before anything runs"
 out="$(scrubbed "$WRAP" -- /bin/sh -c 'echo RAN' 2>&1)"; st=$?
 assert_contains     "$out" "invalid" "a run without CLEANUP_SCRIPT_PATH is refused"
 assert_not_contains "$out" "RAN"   "  -> and the command does not run"
-if [ "$st" -ne 0 ]; then ok "  -> and exits non-zero"; else bad "  -> should exit non-zero (got $st)"; fi
+assert_nonzero "$st" "  -> and exits non-zero"
 
 out="$(env GIT_CONFIG_COUNT=nope "$WRAP" "$cleanup_script" a.b=c -- /bin/sh -c 'echo RAN' 2>&1)"; st=$?
 assert_contains     "$out" "integer" "a non-integer pre-existing GIT_CONFIG_COUNT is refused"
 assert_not_contains "$out" "RAN"     "  -> and the command does not run"
-if [ "$st" -ne 0 ]; then ok "  -> and exits non-zero"; else bad "  -> should exit non-zero (got $st)"; fi
+assert_nonzero "$st" "  -> and exits non-zero"
 
 out="$(scrubbed "$WRAP" "$cleanup_script" a.b=c 2>&1)"; st=$?
 assert_contains "$out" "no command given" "pairs without '-- <command>' are refused"
-if [ "$st" -ne 0 ]; then ok "  -> and exits non-zero"; else bad "  -> should exit non-zero (got $st)"; fi
+assert_nonzero "$st" "  -> and exits non-zero"
 
 out="$(scrubbed "$WRAP" "$cleanup_script" notapair -- /bin/sh -c 'echo RAN' 2>&1)"; st=$?
 assert_contains     "$out" "expected key=value" "an argument without '=' before '--' is refused"
 assert_not_contains "$out" "RAN"                "  -> and the command does not run"
-if [ "$st" -ne 0 ]; then ok "  -> and exits non-zero"; else bad "  -> should exit non-zero (got $st)"; fi
+assert_nonzero "$st" "  -> and exits non-zero"
 
 out="$(scrubbed "$WRAP" "$cleanup_script" =value -- /bin/sh -c 'echo RAN' 2>&1)"; st=$?
 assert_contains     "$out" "non-empty" "an empty key is refused"
 assert_not_contains "$out" "RAN"       "  -> and the command does not run"
-if [ "$st" -ne 0 ]; then ok "  -> and exits non-zero"; else bad "  -> should exit non-zero (got $st)"; fi
+assert_nonzero "$st" "  -> and exits non-zero"
 
 
 # ---------------------------------------------------------------------------

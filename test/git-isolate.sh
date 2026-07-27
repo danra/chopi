@@ -48,7 +48,7 @@ ext_worktree_real="$(realpath "$ext_worktree")"
 
 profile_path="$(isolate_in "$main_repo")"; st=$?
 assert_zero "$st" "isolating the main worktree exits zero"
-if [ -f "$profile_path" ]; then ok "the emitted path is a profile file that exists"; else bad "the emitted path is not a readable profile file"; fi
+assert_present "$profile_path" "the emitted path is a profile file that exists"
 profile="$(cat "$profile_path" 2>/dev/null)"
 
 assert_contains "$profile" '(deny file-read* file-write* (subpath "'"$sibling_worktree"'"))'                 "the nested sibling worktree is denied"
@@ -194,7 +194,8 @@ sgdwt="$TMPDIR/sgdwt"
 git -C "$sgd_root" worktree add -q -b sgdfeat "$sgdwt" >/dev/null 2>&1
 sgdwt_real="$(realpath "$sgdwt")"
 profile_path="$(isolate_in "$sgdwt")"; st=$?
-if [ "$st" -eq 0 ] && [ -f "$profile_path" ]; then ok "a linked worktree of a separate-git-dir repo still builds a profile"; else bad "a linked worktree of a separate-git-dir repo should still build a profile (got $st)"; fi
+assert_zero    "$st" "isolating a linked worktree of a separate-git-dir repo exits zero"
+assert_present "$profile_path" "  -> and a profile is built"
 profile="$(cat "$profile_path" 2>/dev/null)"
 assert_contains "$profile" '(allow file-read* file-write* (subpath "'"$sgdwt_real"'"))'       "  -> the target worktree is re-allowed"
 assert_contains "$profile" '(allow file-read* file-write* (subpath "'"$sgd_git_real"'"))'     "  -> and the shared gitdir stays usable, read-write"
@@ -215,7 +216,8 @@ barewt1_real="$(realpath "$barewt1")"
 barewt2_real="$(realpath "$barewt2")"
 
 profile_path="$(isolate_in "$barewt1")"; st=$?
-if [ "$st" -eq 0 ] && [ -f "$profile_path" ]; then ok "isolating a bare repo's linked worktree exits zero"; else bad "a bare repo's linked worktree should build a profile (got $st)"; fi
+assert_zero    "$st" "isolating a bare repo's linked worktree exits zero"
+assert_present "$profile_path" "  -> and a profile is built"
 profile="$(cat "$profile_path" 2>/dev/null)"
 assert_contains     "$profile" '(allow file-read* file-write* (subpath "'"$barewt1_real"'"))' "the target worktree is re-allowed"
 assert_contains     "$profile" '(deny file-read* file-write* (subpath "'"$barewt2_real"'"))'  "the sibling worktree is still denied"

@@ -77,12 +77,9 @@ feat_wt="$root/.worktrees/feat"
 out="$(run_worktree_in_dir "$repoB" feat)"; st=$?
 assert_zero "$st" "create exits zero"
 assert_eq "$out" "$feat_wt"                       "stdout is the worktree path (NUL-terminated)"
-if [ -d "$feat_wt" ]; then ok "the worktree dir is created"; else bad "the worktree dir is missing"; fi
-if [ "$(git -C "$feat_wt" rev-parse --abbrev-ref HEAD)" = "feat" ]; then
-    ok "the worktree is checked out on the new branch 'feat'"
-else
-    bad "the worktree is not on branch 'feat'"
-fi
+assert_present "$feat_wt" "the worktree dir is created"
+assert_eq "$(git -C "$feat_wt" rev-parse --abbrev-ref HEAD)" "feat" \
+    "the worktree is checked out on the new branch 'feat'"
 
 out="$(run_worktree_in_dir "$repoB" feat)"; st=$?
 assert_zero "$st" "reuse exits zero"
@@ -98,7 +95,7 @@ rm -rf "$gone_wt"
 err="$(cd "$repoB" && "$worktree_sh" gone 2>&1 >/dev/null)"; st=$?
 assert_zero "$st" "re-run after 'rm -rf' of the worktree dir exits zero"
 assert_contains "$err" "stale registration" "  -> reporting the stale-registration removal"
-if [ -d "$gone_wt" ]; then ok "  -> and the worktree dir is recreated"; else bad "  -> the worktree dir is not recreated"; fi
+assert_present "$gone_wt" "  -> and the worktree dir is recreated"
 assert_eq "$(git -C "$gone_wt" rev-parse --abbrev-ref HEAD 2>/dev/null)" "gone" \
     "  -> checked out on the pre-existing branch 'gone'"
 
@@ -110,12 +107,9 @@ deep_wt="$root/.worktrees/nested/deep"
 out="$(run_worktree_in_dir "$repoB" nested/deep)"; st=$?
 assert_zero "$st" "nested-NAME create exits zero"
 assert_eq "$out" "$deep_wt" "stdout is the nested worktree path"
-if [ -d "$deep_wt" ]; then ok "the nested worktree dir is created"; else bad "the nested worktree dir is missing"; fi
-if [ "$(git -C "$deep_wt" rev-parse --abbrev-ref HEAD)" = "nested/deep" ]; then
-    ok "the worktree is checked out on the new branch 'nested/deep'"
-else
-    bad "the worktree is not on branch 'nested/deep'"
-fi
+assert_present "$deep_wt" "the nested worktree dir is created"
+assert_eq "$(git -C "$deep_wt" rev-parse --abbrev-ref HEAD)" "nested/deep" \
+    "the worktree is checked out on the new branch 'nested/deep'"
 
 
 # ---------------------------------------------------------------------------
@@ -134,11 +128,8 @@ echo "existing branches are honored"
 git -C "$repoB" branch preexisting >/dev/null 2>&1
 out="$(run_worktree_in_dir "$repoB" preexisting)"; st=$?
 assert_zero "$st" "existing-branch create exits zero"
-if [ "$(git -C "$repoB/.worktrees/preexisting" rev-parse --abbrev-ref HEAD)" = "preexisting" ]; then
-    ok "an existing branch NAME is checked out into the worktree"
-else
-    bad "the worktree is not on the pre-existing branch"
-fi
+assert_eq "$(git -C "$repoB/.worktrees/preexisting" rev-parse --abbrev-ref HEAD)" "preexisting" \
+    "an existing branch NAME is checked out into the worktree"
 
 
 # ---------------------------------------------------------------------------
@@ -154,11 +145,8 @@ out="$(run_worktree_in_dir "$super/thesub" subfeat)"; st=$?
 assert_zero "$st" "create from a submodule root exits zero"
 assert_eq "$out" "$submod_root/.worktrees/subfeat" "the worktree lands under the submodule root (not the module gitdir)"
 assert_absent "$super/.git/modules/thesub/.worktrees" "nothing is created inside the superproject's .git/modules/"
-if [ "$(git -C "$super/thesub/.worktrees/subfeat" rev-parse --abbrev-ref HEAD 2>/dev/null)" = "subfeat" ]; then
-    ok "the worktree is checked out on the new branch 'subfeat'"
-else
-    bad "the worktree is not on branch 'subfeat'"
-fi
+assert_eq "$(git -C "$super/thesub/.worktrees/subfeat" rev-parse --abbrev-ref HEAD 2>/dev/null)" "subfeat" \
+    "the worktree is checked out on the new branch 'subfeat'"
 
 
 # ---------------------------------------------------------------------------
@@ -182,11 +170,8 @@ git -C "$sgd_root" worktree add -q -b sgdlinked "$sgdlinked" >/dev/null 2>&1
 out="$(run_worktree_in_dir_err "$sgdlinked" orphan)"; st=$?
 assert_nonzero "$st" "a linked worktree of a separate-git-dir repo is refused"
 assert_contains "$out" "cannot resolve the repo's main worktree" "  -> naming the unresolvable main worktree"
-if [ -e "$sgdlinked/.worktrees" ] || [ -e "$sgd_git/.worktrees" ]; then
-    bad "  -> and nothing is created (neither in the linked worktree nor the gitdir)"
-else
-    ok  "  -> and nothing is created (neither in the linked worktree nor the gitdir)"
-fi
+assert_absent "$sgdlinked/.worktrees" "  -> and nothing is created in the linked worktree"
+assert_absent "$sgd_git/.worktrees"   "  -> nor in the gitdir"
 
 bare_gd="$TMPDIR/bare.git"
 git clone -q --bare "$repoA" "$bare_gd"
@@ -272,7 +257,8 @@ repo_with_alternates="$TMPDIR/repoAW"; make_repo "$repo_with_alternates"
 alternates="$repo_with_alternates/.git/objects/info/alternates"
 : > "$alternates"
 out="$(run_worktree_in_dir "$repo_with_alternates" altok)"; st=$?
-if [ "$st" -eq 0 ] && [ -d "$repo_with_alternates/.worktrees/altok" ]; then ok "an EMPTY alternates file is not refused (worktree created)"; else bad "an empty alternates file should pass (got $st)"; fi
+assert_zero    "$st" "an EMPTY alternates file is not refused"
+assert_present "$repo_with_alternates/.worktrees/altok" "  -> and the worktree is created"
 printf '%s\n' "$TMPDIR/external-store/objects" > "$alternates"
 out="$(run_worktree_in_dir_err "$repo_with_alternates" altbad)"; st=$?
 assert_nonzero "$st" "a non-empty alternates file is refused"
@@ -315,7 +301,7 @@ rm -rf "$gone_symlinked"
 err="$(cd "$repoD" && "$worktree_sh" gonesym 2>&1 >/dev/null)"; st=$?
 assert_zero "$st" "recreate after 'rm -rf' through a symlinked .worktrees exits zero"
 assert_contains "$err" "stale registration" "  -> reporting the stale-registration removal"
-if [ -d "$gone_symlinked" ]; then ok "  -> and the worktree dir is recreated"; else bad "  -> the worktree dir is not recreated"; fi
+assert_present "$gone_symlinked" "  -> and the worktree dir is recreated"
 assert_eq "$(git -C "$gone_symlinked" rev-parse --abbrev-ref HEAD 2>/dev/null)" "gonesym" \
     "  -> checked out on the pre-existing branch 'gonesym'"
 
@@ -340,11 +326,8 @@ assert_eq "$(git -C "$repoE" config branch.tracked.remote 2>/dev/null)" "elsewhe
 
 # no upstream pre-recorded when there are no remotes
 out="$(run_worktree_in_dir "$repoB" --config "$default_sandbox_cfg" feat)"
-if git -C "$repoB" config branch.feat.remote >/dev/null 2>&1; then
-    bad "no upstream is recorded when the repo has no remotes"
-else
-    ok  "no upstream is recorded when the repo has no remotes"
-fi
+assert_eq "$(git -C "$repoB" config branch.feat.remote 2>/dev/null)" "" \
+    "no upstream is recorded when the repo has no remotes"
 
 # A single remote is the only candidate, so it's recorded even when it isn't 'origin'.
 repoE2="$TMPDIR/repoE2"; make_repo "$repoE2"
@@ -368,11 +351,7 @@ out="$(run_worktree_in_dir_err "$repoE3" --config "$default_sandbox_cfg" torn)";
 assert_nonzero "$st" "multiple remotes without 'origin' exit non-zero"
 assert_contains "$out" "cannot deduce"                 "  -> the error says the remote couldn't be deduced"
 assert_contains "$out" "alpha beta"                    "  -> and names the candidate remotes"
-if git -C "$repoE3" config branch.torn.remote >/dev/null 2>&1; then
-    bad "  -> and no upstream is recorded"
-else
-    ok  "  -> and no upstream is recorded"
-fi
+assert_eq "$(git -C "$repoE3" config branch.torn.remote 2>/dev/null)" "" "  -> and no upstream is recorded"
 
 # ...once the upstream is recorded manually as instructed, the re-run succeeds.
 git -C "$repoE3" config branch.torn.remote alpha
@@ -396,11 +375,8 @@ assert_eq "$(git -C "$repoH" config branch.sidebranch.remote 2>/dev/null)" "orig
     "the upstream is recorded for the checked-out branch, not the worktree name"
 assert_eq "$(git -C "$repoH" config branch.sidebranch.merge 2>/dev/null)" "refs/heads/sidebranch" \
     "  -> along with branch.BRANCH.merge for the checked-out branch"
-if git -C "$repoH" config branch.wtname.remote >/dev/null 2>&1; then
-    bad "  -> and nothing is recorded under the worktree name"
-else
-    ok  "  -> and nothing is recorded under the worktree name"
-fi
+assert_eq "$(git -C "$repoH" config branch.wtname.remote 2>/dev/null)" "" \
+    "  -> and nothing is recorded under the worktree name"
 
 
 # ---------------------------------------------------------------------------
@@ -412,11 +388,8 @@ git -C "$repoI" remote add beta  "$TMPDIR/nonexistent-beta.git"
 git -C "$repoI" worktree add -q --detach "$repoI/.worktrees/loose" >/dev/null 2>&1
 out="$(run_worktree_in_dir "$repoI" --config "$default_sandbox_cfg" loose)"; st=$?
 assert_zero "$st" "reuse with a detached checkout exits zero (even with undeducible remotes)"
-if git -C "$repoI" config branch.loose.remote >/dev/null 2>&1; then
-    bad "  -> and no upstream is recorded under the worktree name"
-else
-    ok  "  -> and no upstream is recorded under the worktree name"
-fi
+assert_eq "$(git -C "$repoI" config branch.loose.remote 2>/dev/null)" "" \
+    "  -> and no upstream is recorded under the worktree name"
 
 
 # ---------------------------------------------------------------------------
@@ -475,11 +448,8 @@ assert_eq "$(cat "$custom_wt/setup-pwd.txt" 2>/dev/null)" "$custom_wt" \
     "setup commands run with the worktree as the working directory"
 assert_eq "$(cat "$custom_wt/setup-name.txt" 2>/dev/null)" "custom" \
     "setup commands see CHOPI_WORKTREE_NAME"
-if git -C "$repoG" config branch.custom.remote >/dev/null 2>&1; then
-    bad "only the configured commands run (no upstream gets recorded)"
-else
-    ok  "only the configured commands run (no upstream gets recorded)"
-fi
+assert_eq "$(git -C "$repoG" config branch.custom.remote 2>/dev/null)" "" \
+    "only the configured commands run (no upstream gets recorded)"
 
 # A config that doesn't mention CHOPI_WORKTREE_SETUP is refused rather than silently skipped
 cfg_plain="$TMPDIR/cfg-plain.sh"
@@ -499,11 +469,8 @@ cfg_empty="$TMPDIR/cfg-empty.sh"
 printf 'CHOPI_WORKTREE_SETUP=()\n' > "$cfg_empty"
 out="$(run_worktree_in_dir "$repoG" --config "$cfg_empty" bare)"; st=$?
 assert_zero "$st" "an explicitly empty setup array exits zero"
-if git -C "$repoG" config branch.bare.remote >/dev/null 2>&1; then
-    bad "  -> and runs no setup at all (no upstream recorded)"
-else
-    ok  "  -> and runs no setup at all (no upstream recorded)"
-fi
+assert_eq "$(git -C "$repoG" config branch.bare.remote 2>/dev/null)" "" \
+    "  -> and runs no setup at all (no upstream recorded)"
 
 # The chopi_record_upstream helper stays callable from a custom setup.
 cfg_helper="$TMPDIR/cfg-helper.sh"

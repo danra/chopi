@@ -333,11 +333,7 @@ assert_not_contains "$out" "$secret"               "read OUTSIDE the workspace i
 assert_contains     "$out" "READ_FAIL"             "  -> and the read itself fails"
 
 chopi_t /bin/sh -c "echo x > '$outside/evil.txt'" >/dev/null 2>&1
-if [ -e "$outside/evil.txt" ]; then
-    bad "write OUTSIDE the workspace is denied (file must not exist)"
-else
-    ok  "write OUTSIDE the workspace is denied (no file created)"
-fi
+assert_absent "$outside/evil.txt" "write OUTSIDE the workspace is denied (no file created)"
 
 out="$(chopi_t /bin/sh -c "cat '$repo/.internal/preflight.sh' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_not_contains "$out" "preflight"             "read of chopi's OWN dir is denied (config stays out of reach)"
@@ -1016,7 +1012,7 @@ assert_contains     "$out" "READ_FAIL"                "  -> and that read fails"
 # All those denied in-repo context files (root and mid-repo) exist right now, yet none
 # gate the run: a blind denial with no visible link is chopi's own isolation at work.
 out="$(chopi_wt_claude -c 'echo RAN' 2>/dev/null)"; rc=$?
-assert_eq       "$rc" "0"    "denied in-repo ancestor context files do NOT refuse the worktree run"
+assert_zero     "$rc"        "denied in-repo ancestor context files do NOT refuse the worktree run"
 assert_contains "$out" "RAN" "  -> the command runs"
 
 # An unreadable symlinked context file ABOVE the repo root, by contrast, refuses the
@@ -1080,11 +1076,7 @@ top="$(chopi_wt git rev-parse --show-toplevel 2>/dev/null)"
 assert_eq "$top" "$nested_wt2"                     "git resolves the worktree as its toplevel"
 out="$(chopi_wt /bin/sh -c 'git tag chopi-probe && echo TAG_OK' 2>/dev/null)"
 assert_contains "$out" "TAG_OK"                    "git can write a ref into the shared .git from inside the sandbox"
-if git -C "$gitrepo" tag | grep -qx chopi-probe; then
-    ok  "  -> and the tag really landed in the repo"
-else
-    bad "  -> but the tag did not land in the repo"
-fi
+assert_has_line "$(git -C "$gitrepo" tag)" chopi-probe "  -> and the tag really landed in the repo"
 
 # Re-running the same NAME reuses the existing worktree rather than failing.
 out="$(chopi_wt /bin/sh -c 'echo REUSED' 2>/dev/null)"
@@ -1150,11 +1142,8 @@ assert_contains "$out" "COMMIT_OK"                 "a commit inside the worktree
 
 out="$(chopi_wt /bin/sh -c 'git push 2>&1 && echo PUSH_OK' 2>/dev/null)"
 assert_contains "$out" "PUSH_OK"                   "bare git push (pre-recorded upstream) succeeds from the sandbox"
-if git -C "$dummy_origin" rev-parse --verify --quiet refs/heads/nested_wt2 >/dev/null; then
-    ok  "  -> and the branch landed in the origin"
-else
-    bad "  -> but the branch did not land in the origin"
-fi
+git -C "$dummy_origin" rev-parse --verify --quiet refs/heads/nested_wt2 >/dev/null
+assert_zero "$?" "  -> and the branch landed in the origin"
 
 # branch create/delete writes refs with a packed backend.
 out="$(chopi_wt /bin/sh -c 'git pack-refs --all && git branch tmpbr && git branch -d tmpbr && echo PACK_OK' 2>/dev/null)"

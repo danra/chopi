@@ -58,15 +58,19 @@ echo "lookup of this chopi clone's PATH line in the rc file"
 set +euo pipefail
 
 file="$(rc_fixture "$CHOPI_PATH_LINE"$'\n')"
-if file_has_line "$file" "$CHOPI_PATH_LINE"; then ok "finds the line"; else bad "finds the line"; fi
+file_has_line "$file" "$CHOPI_PATH_LINE"
+assert_zero "$?" "finds the line"
 
 file="$(rc_fixture "    $CHOPI_PATH_LINE"$'\n')"
-if file_has_line "$file" "$CHOPI_PATH_LINE"; then ok "finds an indented line"; else bad "finds an indented line"; fi
+file_has_line "$file" "$CHOPI_PATH_LINE"
+assert_zero "$?" "finds an indented line"
 
 file="$(rc_fixture "# $CHOPI_PATH_LINE"$'\n')"
-if file_has_line "$file" "$CHOPI_PATH_LINE"; then bad "a commented-out line is not a match"; else ok "a commented-out line is not a match"; fi
+file_has_line "$file" "$CHOPI_PATH_LINE"
+assert_nonzero "$?" "a commented-out line is not a match"
 
-if file_has_line "$TMPDIR/absent" "$CHOPI_PATH_LINE"; then bad "a missing file is not a match"; else ok "a missing file is not a match"; fi
+file_has_line "$TMPDIR/absent" "$CHOPI_PATH_LINE"
+assert_nonzero "$?" "a missing file is not a match"
 
 
 # ---------------------------------------------------------------------------
@@ -88,12 +92,14 @@ assert_eq "$(rc_bytes "$file")" "$original|" "repeated cycles leave nothing behi
 echo "rc_remove_line (exactness)"
 # ---------------------------------------------------------------------------
 file="$(rc_fixture $'export PATH="/opt/bin:$PATH"\n')"
-if rc_remove_line "$file" "$CHOPI_PATH_LINE"; then bad "reports failure when the line is absent"; else ok "reports failure when the line is absent"; fi
+rc_remove_line "$file" "$CHOPI_PATH_LINE"
+assert_nonzero "$?" "reports failure when the line is absent"
 assert_eq "$(cat "$file")" "export PATH=\"/opt/bin:\$PATH\"" "an unrelated PATH edit is untouched"
 
 # A line that contains ours is a different line.
 file="$(rc_fixture "$CHOPI_PATH_LINE"' # chopi'$'\n')"
-if rc_remove_line "$file" "$CHOPI_PATH_LINE"; then bad "a superstring line is not removed"; else ok "a superstring line is not removed"; fi
+rc_remove_line "$file" "$CHOPI_PATH_LINE"
+assert_nonzero "$?" "a superstring line is not removed"
 
 # Indentation is not part of the line, so whatever the lookup finds is what goes.
 file="$(rc_fixture "    $CHOPI_PATH_LINE"$'\n')"

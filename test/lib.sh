@@ -30,6 +30,15 @@ assert_eq() {
     fi
 }
 
+assert_not_eq() {
+    arity 3
+    local got="$1" unwanted="$2" desc="$3"
+    if [ "$got" != "$unwanted" ]; then ok "$desc"; else
+        bad "$desc"
+        printf '         unexpectedly equal: %q\n' "$got"
+    fi
+}
+
 assert_contains() {
     arity 3
     local haystack="$1" needle="$2" desc="$3"
@@ -95,6 +104,18 @@ assert_absent() {
         printf '         unexpectedly exists: %q\n' "$path"
     else
         ok "$desc"
+    fi
+}
+
+# assert_present PATH DESC -- something exists at PATH (an allowed write landed)
+assert_present() {
+    arity 2
+    local path="$1" desc="$2"
+    if [ -e "$path" ]; then
+        ok "$desc"
+    else
+        bad "$desc"
+        printf '         missing: %q\n' "$path"
     fi
 }
 
