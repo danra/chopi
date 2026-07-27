@@ -18,6 +18,7 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 . "$repo/.internal/util.sh"
+. "$repo/.internal/claude-prompt.sh"
 . "$repo/test/lib.sh"
 
 header "test/integration.sh -- chopi's end-to-end integration tests"
@@ -75,7 +76,14 @@ printf 'INSIDE_MARKER\n' > "$ws/readable.txt"
 printf '%s\n' "$secret"  > "$outside/secret.txt"
 
 claude_shim="$claudebin/claude"
-printf '#!/bin/sh\nexec /bin/sh "$@"\n' > "$claude_shim"
+cat > "$claude_shim" <<'EOF'
+#!/bin/sh
+if [ "$1" = --append-system-prompt-file ]; then
+    CHOPI_ITEST_PROMPT="$(cat "$2")"; export CHOPI_ITEST_PROMPT
+    shift 2
+fi
+exec /bin/sh "$@"
+EOF
 chmod +x "$claude_shim"
 
 # Minimal config: no dir grants beyond the stub agent's (so denials are clean), PATH of
@@ -337,6 +345,23 @@ assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
 
 
 # ---------------------------------------------------------------------------
+echo "chopi's addition to claude's system prompt"
+# ---------------------------------------------------------------------------
+# The claude shim reads --append-system-prompt-file into CHOPI_ITEST_PROMPT.
+# shellcheck disable=SC2016 # the variable expands in the sandboxed shell, not here
+probe_prompt='printf %s "${CHOPI_ITEST_PROMPT:-NO_PROMPT}"'
+out="$(chopi_claude -c "$probe_prompt" 2>/dev/null)"
+assert_eq "$out" "$(cat "$CHOPI_CLAUDE_PROMPT_FILE")" "claude's system prompt carries chopi's sandbox document"
+
+out="$(chopi_t /bin/sh -c "$probe_prompt" 2>/dev/null)"
+assert_eq "$out" "NO_PROMPT"                       "  -> and only for claude: no other command gets it"
+
+out="$(chopi_claude -c "cat '$CHOPI_CLAUDE_PROMPT_FILE' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+assert_not_contains "$out" "Denials are configuration" "the document's own path stays unreadable in-sandbox"
+assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
+
+
+# ---------------------------------------------------------------------------
 echo "Claude context files in parent dirs of the workspace"
 # ---------------------------------------------------------------------------
 printf 'PARENT_CLAUDE_MARKER\n' > "$base/CLAUDE.md"
@@ -512,6 +537,7 @@ agentbin="$wrap_repo/agentbin"
 mkdir -p "$agentbin"
 cat > "$agentbin/claude" <<EOF
 #!/bin/sh
+[ "\$1" = --append-system-prompt-file ] && shift 2   # chopi's own, ahead of the args below
 $read_probe
 EOF
 chmod +x "$agentbin/claude"

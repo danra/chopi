@@ -17,6 +17,7 @@ SHELL_SOURCES = \
 	.internal/git-protect-cleanup.sh \
 	.internal/shell-rc.sh \
 	.internal/claude-common.sh \
+	.internal/claude-prompt.sh \
 	.internal/claude-context-reads.sh \
 	.internal/claude-context-check.sh \
 	.internal/worktree.sh \
@@ -37,6 +38,7 @@ SHELL_SOURCES = \
 	test/preflight.sh \
 	test/shell-rc.sh \
 	test/install.sh \
+	test/claude-prompt.sh \
 	test/claude-context-reads.sh \
 	test/claude-context-check.sh \
 	test/integration.sh
@@ -60,6 +62,7 @@ test:
 	@./test/preflight.sh
 	@./test/shell-rc.sh
 	@./test/install.sh
+	@./test/claude-prompt.sh
 	@./test/claude-context-reads.sh
 	@./test/claude-context-check.sh
 	@./test/integration.sh

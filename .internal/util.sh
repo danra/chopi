@@ -19,6 +19,7 @@ GITHUB_RELAY_PORT=4761       # git-smart-HTTP -> github.com
 # mktemp name prefixes of chopi's per-invocation temporaries (created under the private
 # TMPDIR); shared so the tests assert on the same names chopi creates.
 CHOPI_CLAUDE_CONTEXT_READS_PREFIX="chopi-claude-context-reads."
+CHOPI_CLAUDE_SYSTEM_PROMPT_PREFIX="chopi-claude-system-prompt."
 CHOPI_IN_SANDBOX_WRAPPER_PREFIX="chopi-in-sandbox-wrapper."
 CHOPI_CMD_ALIAS_PREFIX="chopi-cmd-alias."
 

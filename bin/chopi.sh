@@ -10,6 +10,7 @@ SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"   # resolve the bin/chopi symlink
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 
 . "$SCRIPT_DIR/../.internal/util.sh"
+. "$SCRIPT_DIR/../.internal/claude-prompt.sh"
 . "$SCRIPT_DIR/../.internal/claude-context-reads.sh"
 . "$SCRIPT_DIR/../.internal/preflight.sh"
 
@@ -129,6 +130,7 @@ main() {
     fi
 
     local context_flags=()
+    local cmd_argv=("$@")
     if is_claude_command "$1"; then
         local claude_context_profile
         claude_context_profile="$(mktemp "$TMPDIR/${CHOPI_CLAUDE_CONTEXT_READS_PREFIX}XXXXXX")" \
@@ -136,6 +138,9 @@ main() {
         write_claude_context_reads_profile "$claude_context_profile" "$run_dir" \
             || { echo "chopi: could not write the claude-context-reads profile" >&2; return 1; }
         context_flags=(--append-profile "$claude_context_profile")
+
+        claude_argv_with_chopi_prompt "$run_dir" "$@" || return 1
+        cmd_argv=("${CLAUDE_ARGV_WITH_CHOPI_PROMPT[@]}")
     fi
 
     # Build chopi's git protection profiles and append them in the order
@@ -230,7 +235,7 @@ main() {
         NO_PROXY="127.0.0.1"  no_proxy="127.0.0.1" \
         GIT_TERMINAL_PROMPT=0 \
         "${wrapper_cmd[@]}" \
-        "$@"
+        "${cmd_argv[@]}"
     { local rc=$?; set +x; } 2>/dev/null
 
     if [ -n "$worktree_dir" ] && [ -t 2 ]; then

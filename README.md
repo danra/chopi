@@ -163,6 +163,11 @@ configuration.
    so anything possibly triggered by the cleanup itself stays confined. `chopi` also refuses
    to start when a sequenced operation is in progress to avoid losing the state on exit.
 
+### Claude Code Integration
+
+When running `claude`, `chopi` appends [context](.internal/claude-sandbox-prompt.md) to the
+system prompt describing the sandbox, what it restricts, and how to guide the user.
+
 ### Advanced
 
 To run the proxy against a different rules file, pass `chopi-proxy --rules FILE`. Keep
