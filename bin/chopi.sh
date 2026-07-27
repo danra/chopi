@@ -223,6 +223,7 @@ main() {
         --append-profile "$CHOPI_DIR/.internal/network.sb" \
         -- \
         "${CHOPI_EXTRA_ENV[@]+"${CHOPI_EXTRA_ENV[@]}"}" \
+        CHOPI_DIR="$CHOPI_DIR" \
         HTTP_PROXY="$proxy"  HTTPS_PROXY="$proxy" \
         http_proxy="$proxy"  https_proxy="$proxy" \
         NODE_USE_ENV_PROXY=1 \

@@ -288,6 +288,10 @@ assert_eq "$out" "OK" "a command actually runs under the minimal sandbox config"
 chopi_t /bin/sh -c 'exit 7' >/dev/null 2>&1; rc=$?
 assert_eq "$rc" "7" "chopi propagates the sandboxed command's exit code"
 
+# shellcheck disable=SC2016 # the variable expands in the sandboxed shell, not here
+out="$(chopi_t /bin/sh -c 'printf %s "${CHOPI_DIR:-unset}"' 2>/dev/null)"
+assert_eq "$out" "$CHOPI_DIR" "the sandboxed command can tell it is confined, and where chopi is (CHOPI_DIR)"
+
 
 # ---------------------------------------------------------------------------
 echo "--verbose gates the safehouse command echo"
