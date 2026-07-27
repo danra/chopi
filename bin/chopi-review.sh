@@ -20,10 +20,12 @@ in_sandbox="${CHOPI_DIR:+1}"
 . "$SCRIPT_DIR/../.internal/git-layout.sh"
 . "$SCRIPT_DIR/../.internal/write-targets.sh"
 
-usage="usage: chopi-review [--config FILE]
+usage="usage: chopi-review [--config FILE] [--queue DIR]
 
   --config FILE    take the safe write targets from FILE instead of the default
-                   config/sandbox.sh"
+                   config/sandbox.sh
+  --queue DIR      review only the patches in queue DIR, instead of every
+                   workspace's"
 
 # Every review gets its own private subfolder under TMPDIR (or /tmp), exported into TMPDIR, so the
 # copies it renders patches off and anything the gits it runs generate are contained in it and
@@ -649,6 +651,7 @@ review_workspace_queue() {
 main() {
     local config="$CHOPI_DIR/config/sandbox.sh"
     local config_given=""
+    local queue_given=""
 
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -656,6 +659,9 @@ main() {
             --config)
                 if [ "$#" -lt 2 ]; then echo "chopi-review: --config requires a file path" >&2; return 1; fi
                 config="$2"; config_given=1; shift 2 ;;
+            --queue)
+                if [ "$#" -lt 2 ]; then echo "chopi-review: --queue requires a directory" >&2; return 1; fi
+                queue_given="$2"; shift 2 ;;
             *) echo "chopi-review: unexpected argument: $1" >&2; echo "$usage" >&2; return 1 ;;
         esac
     done
@@ -689,11 +695,22 @@ main() {
         return 0
     fi
 
+    # One workspace queue with --queue, which is how chopi scopes the offer it makes when a session
+    # exits: the patches counted in the offer are then the patches put to the reviewer. Every
+    # workspace's otherwise, since a review asked for by hand is not asking about any one session.
     local queue_dir
-    for queue_dir in "$CHOPI_PATCH_QUEUE_ROOT"/*; do
-        [ -d "$queue_dir" ] || continue
-        review_workspace_queue "$queue_dir"
-    done
+    if [ -n "$queue_given" ]; then
+        if [ ! -d "$queue_given" ]; then
+            echo "chopi-review: no patch queue at '$queue_given'" >&2
+            return 1
+        fi
+        review_workspace_queue "$queue_given"
+    else
+        for queue_dir in "$CHOPI_PATCH_QUEUE_ROOT"/*; do
+            [ -d "$queue_dir" ] || continue
+            review_workspace_queue "$queue_dir"
+        done
+    fi
 
     if [ "$((applied + rejected + skipped + failed))" -eq 0 ]; then
         echo "chopi-review: nothing pending."

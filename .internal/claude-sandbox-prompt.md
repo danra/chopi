@@ -43,7 +43,7 @@ the user to restart the wrong thing wastes a cycle.
 | Symptom | Cause | Fix, and when it takes effect |
 |---|---|---|
 | `Operation not permitted` / `EPERM` **reading** a path outside the workspace | Filesystem policy | User adds `--add-dirs-ro PATH` to `CHOPI_SAFEHOUSE_FLAGS` in `config/sandbox.sh`. **Needs a new chopi session:** the policy is fixed when the session launches. |
-| `EPERM` writing to a **safe write target** (the slots in `$CHOPI_PATCH_QUEUE` name them) | Read-only by design; changes there are reviewed first | Queue a patch, see below. **Takes effect when the user approves it**, which they do with `chopi-review` on the host. |
+| `EPERM` writing to a **safe write target** (the slots in `$CHOPI_PATCH_QUEUE` name them) | Read-only by design; changes there are reviewed first | Queue a patch, see below. **Takes effect when the user approves it**, which they are offered when the session ends. |
 | `EPERM` **writing** a path outside the workspace and outside every safe write target | Filesystem policy | Two grants to choose between, and the choice is yours to recommend: see "Changing a file outside the workspace" below. **Both need a new chopi session.** |
 | `EPERM` writing under `.git/` (`git config`, `git remote add`, `git worktree add`, `git submodule update`, hook installers like husky) | Git hardening | These cannot be made to work in-session. Ask the user to run the command **outside** the sandbox. For `--worktree` runs, recurring setup belongs in `CHOPI_WORKTREE_SETUP`. |
 | A sibling worktree or another repo is unreadable | Worktree isolation | Intended. Do not ask for it to be lifted unless the task genuinely spans worktrees, in which case the user should run a session at the other worktree. |

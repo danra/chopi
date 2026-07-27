@@ -392,3 +392,31 @@ collect_pending_patches() {
             | sort -zn
     )
 }
+
+# Offer to review the patches queue for the workspace the sandboxed command ran in, succeeding
+# if the user accepted.
+# Asked once the command has exited, while the session it came out of is still in view and the
+# terminal is chopi's again.
+offer_reviewing_queued_workspace_patches() {
+    arity 1
+    local queue_dir="$1"
+    [ -z "$queue_dir" ] && return 1
+    # Must be an interactive terminal
+    { [ -t 0 ] && [ -t 2 ]; } || return 1
+
+    collect_pending_patches "$queue_dir"
+    local pending="${#PENDING_PATCHES[@]}"
+    [ "$pending" -eq 0 ] && return 1
+
+    local answer
+    {
+        echo
+        printf 'chopi: %s patch(es) for review. Review now? [Y/n] ' "$pending"
+    } >&2
+    answer="$(prompt_read_key)" || return 1
+    case "$answer" in
+        '' | y | Y) return 0 ;;
+    esac
+    echo "chopi: left for later; apply them with chopi-review" >&2
+    return 1
+}

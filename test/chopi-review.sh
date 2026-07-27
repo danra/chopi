@@ -133,11 +133,15 @@ answers() {
     { [ "$#" -eq 0 ] || printf '%s\n' "${given[@]}"; yes "$last"; } 2>/dev/null
 }
 
-# Run a command under a pty with the suite's HOME, returning its output with the pty's CRs
-# stripped. CHOPI_DIR is unset explicitly, since the suite itself may be running inside a chopi
-# session, where refusing is the right behavior and is asserted below.
+# Run a command with the suite's HOME. CHOPI_DIR is unset explicitly, since the suite itself may
+# be running inside a chopi session, where refusing is the right behavior and is asserted below.
+with_test_env() {
+    env -u CHOPI_DIR HOME="$home" "$@"
+}
+
+# The same, under a pty, with the pty's CRs stripped.
 under_pty() {
-    env -u CHOPI_DIR HOME="$home" script -q /dev/null "$@" 2>&1 | tr -d '\r'
+    with_test_env script -q /dev/null "$@" 2>&1 | tr -d '\r'
 }
 
 # Output $1 with git's diff colors dropped, for assertions about what a review says rather than
@@ -172,12 +176,15 @@ out="$(CHOPI_DIR="$repo" HOME="$home" "$repo/bin/chopi-review" --config "$config
 assert_eq       "$st" 1              "inside the sandbox it refuses"
 assert_contains "$out" "on the host" "  -> pointing at the side of the sandbox that can apply a change"
 
-out="$(env -u CHOPI_DIR HOME="$home" "$repo/bin/chopi-review" --config "$config" < /dev/null 2>&1)"; st=$?
+out="$(with_test_env "$repo/bin/chopi-review" --config "$config" < /dev/null 2>&1)"; st=$?
 assert_eq       "$st" 1              "without a terminal it refuses"
 assert_contains "$out" "interactive" "  -> saying why"
 
 out="$(review_with "$TMPDIR/absent.sh")"
 assert_contains "$out" "absent.sh" "an unreadable config is an error naming the file"
+
+out="$(answers | under_pty "$repo/bin/chopi-review" --config "$config" --queue "$TMPDIR/absent-queue")"
+assert_contains "$out" "no patch queue" "a queue that was asked for by name and isn't there is an error"
 
 
 # ---------------------------------------------------------------------------
@@ -1012,6 +1019,71 @@ assert_contains     "$out" "nothing pending" "an empty queue says so"
 write_config "$TMPDIR/no-targets.sh"
 out="$(review_with "$TMPDIR/no-targets.sh")"
 assert_contains "$out" "no safe write targets configured" "with the feature unconfigured it says so instead of nothing"
+
+
+# ---------------------------------------------------------------------------
+echo "the offer chopi makes when the command exits"
+# ---------------------------------------------------------------------------
+# Composed the way chopi.sh composes it -- the offer decides, the caller runs the review.
+exit_offer="
+    . '$repo/.internal/util.sh'
+    . '$repo/.internal/write-targets.sh'
+    offer_reviewing_queued_workspace_patches '$queue' && '$repo/bin/chopi-review' --config '$config' --queue '$queue'"
+
+run_exit_offer() {
+    answers "$@" | under_pty bash -c "$exit_offer"
+}
+
+reset_fixture
+out="$(run_exit_offer)"
+assert_not_contains "$out" "for review" "with nothing pending it makes no offer, so a clean session ends clean"
+
+reset_fixture
+queue_patch offered "A rule worth keeping."
+out="$(run_exit_offer n)"
+assert_contains "$out" "1 patch(es) for review" "with something pending it offers to review"
+assert_contains "$out" "left for later"         "  -> and declining leaves it queued"
+assert_contains "$out" "chopi-review"           "  -> naming the command that applies it"
+assert_eq "$(target_num_commits)" "$fixture_num_commits" "  -> having committed nothing"
+
+out="$(run_exit_offer "" a)"
+assert_contains "$out" "patch for $target" "an empty answer accepts the offer and starts the review"
+assert_eq "$(target_log)" "offered"        "  -> which applies the patch"
+
+reset_fixture
+queue_patch mine "A rule from this session."
+other_work="$TMPDIR/other-work"
+make_repo "$other_work"
+other_queue="$(build_queue "$other_work" "$config")"
+other_slot="$other_queue/$(path_id "$target")"
+queue_patch_into theirs "$other_slot" "A rule from another session." Guidelines.md "$target"
+out="$(run_exit_offer "" s)"
+assert_contains "$out" "1 patch(es) for review" "the offer counts only the exiting session's workspace queue"
+assert_contains "$out" "0 applied, 0 rejected, 1 skipped, 0 failed" \
+    "  -> and the review it starts puts that same one to the reviewer"
+assert_contains     "$out" "A rule from this session."    "  -> the patch being this session's"
+assert_not_contains "$out" "A rule from another session." "  -> not one another workspace's session queued"
+assert_present "$other_slot/theirs.patch" "  -> which stays queued for a review of its own"
+out="$(run_review s)"
+assert_contains "$out" "A rule from another session." "run by hand it reviews every workspace's queue"
+
+reset_fixture
+queue_patch skipped "A rule to skip."
+out="$(answers a | with_test_env bash -c "$exit_offer" 2>&1)"
+assert_eq "$out" "" "without a terminal the offer is skipped rather than stalling a scripted run"
+assert_eq "$(target_num_commits)" "$fixture_num_commits" "  -> and nothing is applied unattended"
+
+# ---------------------------------------------------------------------------
+echo "Robust to a patch path that contains a newline"
+# ---------------------------------------------------------------------------
+reset_fixture
+queue_patch awkward "A rule under an awkward name."
+mv "$slot/awkward.patch" "$slot/two"$'\n'"lines.patch"
+out="$(run_exit_offer "" a)"
+assert_contains "$out" "1 patch(es) for review"        "a patch named with a newline is counted"
+assert_contains "$out" "A rule under an awkward name." "  -> and put to review"
+assert_eq "$(target_log)" "awkward"                    "  -> and applies like any other"
+assert_absent "$slot/two"$'\n'"lines.patch"            "  -> leaving the queue"
 
 
 # ---------------------------------------------------------------------------

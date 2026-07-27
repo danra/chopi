@@ -270,6 +270,18 @@ main() {
         } >&2
     fi
 
+    # Anything the command proposed is waiting now, with the session it came out of still in
+    # view, so offer the review here instead of leaving it for the user to remember. The
+    # command has exited, so the terminal is chopi's again and chopi-review can have it.
+    #
+    # chopi-review's exit status is dropped: reviewing is a separate errand from the command
+    # chopi ran, so `chopi cmd && next` still keys off the command.
+    # Scoped to this session's workspace queue, since that is what the offer counted: a patch some
+    # other workspace has waiting is not what was just proposed, and belongs to a review of its own.
+    if offer_reviewing_queued_workspace_patches "$queue_dir"; then
+        "$CHOPI_DIR/bin/chopi-review" --config "$config" --queue "$queue_dir" || true
+    fi
+
     return "$rc"
 }
 
