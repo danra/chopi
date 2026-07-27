@@ -2,6 +2,8 @@
 
 Run an agent or any other command under a macOS sandbox that:
 - Confines filesystem access
+- Lets the command propose changes to [safe write targets](#safe-write-targets) as patches
+  you review outside the sandbox
 - Restricts outgoing network connections to allowed hosts
 - Restricts git pushes to allowed repos (currently GitHub only)
 - Hardens git internals
@@ -51,6 +53,9 @@ settings can be reviewed later):
   For secrets or anything you'd rather keep off the visible command line, use `safehouse`'s
   flags `--env-pass NAME` (forward a host var by name) or `--env=FILE` (source an env file) in
   `CHOPI_SAFEHOUSE_FLAGS`.
+- `CHOPI_SAFE_WRITE_TARGETS`: paths you'd like to allow writing to from inside the sandbox, but
+  which can't be simply trusted to be written by an agent in auto mode, requiring review outside
+  of the sandbox. See [Safe write targets](#safe-write-targets) below.
 
 Edits to `config/sandbox.sh` take effect on any following `chopi` invocations.
 
@@ -167,6 +172,37 @@ configuration.
 
 When running `claude`, `chopi` appends [context](.internal/claude-sandbox-prompt.md) to the
 system prompt describing the sandbox, what it restricts, and how to guide the user.
+
+### Safe write targets
+
+Sometimes a change should be read before it lands, for example:
+- An agent that has learned something general and should write it to guidelines shared with
+  your team, which the sandbox grants read-only.
+- A persistent change to an in-workspace CLAUDE.md file.
+
+`CHOPI_SAFE_WRITE_TARGETS` in `config/sandbox.sh` names paths of such directories/single files,
+absolute or relative to the workspace dir. For example:
+
+```sh
+CHOPI_SAFE_WRITE_TARGETS=(
+    "$HOME/dev/team/common_knowledge"
+    docs                                          # relative to the workspace root
+    CLAUDE.md                                     # a single file works too
+)
+```
+
+Each named target is denied write, granted read-only access, and gets a slot in the workspace's
+queue under `~/.chopi/patch-queue`, where the command drops a `git format-patch`-shaped patch
+instead of writing directly. Agents running under chopi need to be instructed on safe write
+targets; chopi currently provides such instructions out-of-the box for Claude Code (see
+[Claude Code Integration](#claude-code-integration) above).
+
+When the command exits, `chopi` offers to review all patches queued in the workspace. You can also
+run `chopi-review` at any time to review all queued patches across all workspaces. For each patch,
+you are presented with the proposed message and diff, and choose to apply, reject or skip it.
+Applying a patch commits it in the repo holds the target (or stops to let you resolve a conflict),
+or writes it in place leaving a `.orig` backup if the target isn't contained in a repo. Nothing is
+applied without you approving it, and `chopi-review` runs only out-of-sandbox.
 
 ### Advanced
 
