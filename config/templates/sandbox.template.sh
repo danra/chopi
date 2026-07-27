@@ -13,7 +13,9 @@ CHOPI_SAFEHOUSE_FLAGS=(
     # Enable read access to additional application binaries
     # --add-dirs-ro /Applications/CMake.app:/Applications/Postgres.app
 
-    # Enable additional read-write access
+    # Enable additional read-write access. Use for things like caches, build outputs and tool
+    # state. For out-of-sandbox writes that should be reviewed, use CHOPI_SAFE_WRITE_TARGETS
+    # below instead.
     # --add-dirs "$HOME/.cache"
 )
 
@@ -48,6 +50,20 @@ CHOPI_EXTRA_ENV=(
     # Forward a host env var into the sandbox. If the host var is unset, chopi hard-errors
     # rather than forwarding an empty value, so a missing var is caught loudly:
     # FOO="$FOO"
+)
+
+# Safe write targets: Paths of directories/single files, absolute or relative to the workspace
+# root. Each is denied write, granted read, and gets a dedicated slot in the workspace's patch
+# queue to review once the session is finished, or later by invoking chopi-review.
+#
+# For out-of-sandbox that don't need review, use --add-dirs in CHOPI_SAFEHOUSE_FLAGS above
+# instead.
+CHOPI_SAFE_WRITE_TARGETS=(
+    # Shared guidelines the agent should be able to contribute what it learns to, e.g.:
+    # "$HOME/dev/team/common_knowledge"
+
+    # A workspace file whose changes you want to review before they land:
+    # CLAUDE.md
 )
 
 # Extra git config for the sandboxed command, as key=value pairs. They are appended to the

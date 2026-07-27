@@ -12,6 +12,7 @@ SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 . "$SCRIPT_DIR/../.internal/util.sh"
 . "$SCRIPT_DIR/../.internal/claude-prompt.sh"
 . "$SCRIPT_DIR/../.internal/claude-context-reads.sh"
+. "$SCRIPT_DIR/../.internal/write-targets.sh"
 . "$SCRIPT_DIR/../.internal/preflight.sh"
 
 usage="usage: chopi [--config FILE] [--verbose] [--worktree NAME] <executable> [args...]
@@ -88,6 +89,7 @@ main() {
     local CHOPI_SAFEHOUSE_FLAGS=()
     local CHOPI_EXTRA_ENV=()
     local CHOPI_GIT_CONFIG=()
+    local CHOPI_SAFE_WRITE_TARGETS=()
     if [ ! -r "$config" ]; then
         if [ -n "$config_given" ]; then
             echo "chopi: cannot read sandbox config '$config'" >&2
@@ -127,6 +129,26 @@ main() {
 
     if [ -n "$config_given" ]; then
         preflight_config_placement "$config" "$run_dir" || return $?
+    fi
+
+    # The patch queue: where the command drops changes it wants made to a configured
+    # write target, for the user to review and apply on the host with chopi-review.
+    # A config that can't be honored stops the session before any of it is granted.
+    if ! validate_write_targets "$run_dir" chopi; then
+        echo "chopi: refusing to run" >&2
+        return 1
+    fi
+    local queue_flags=() queue_env=() queue_dir=""
+    if [ "${#CHOPI_SAFE_WRITE_TARGETS[@]}" -gt 0 ]; then
+        queue_dir="$(create_patch_queue "$run_dir")" \
+            || { echo "chopi: refusing to run" >&2; return 1; }
+        local queue_profile
+        queue_profile="$(mktemp "$TMPDIR/chopi-patch-queue.XXXXXX")" \
+            || { echo "chopi: could not create a temp file for the patch-queue profile" >&2; return 1; }
+        write_patch_queue_profile "$queue_profile" "$queue_dir" \
+            || { echo "chopi: could not write the patch-queue profile" >&2; return 1; }
+        queue_flags=(--append-profile "$queue_profile")
+        queue_env=(CHOPI_PATCH_QUEUE="$queue_dir")
     fi
 
     local context_flags=()
@@ -222,12 +244,14 @@ main() {
     [ -n "$verbose" ] && { echo; set -x; }
     safehouse \
         "${CHOPI_SAFEHOUSE_FLAGS[@]+"${CHOPI_SAFEHOUSE_FLAGS[@]}"}" \
+        "${queue_flags[@]+"${queue_flags[@]}"}" \
         "${context_flags[@]+"${context_flags[@]}"}" \
         "${protection_flags[@]}" \
         "${wrapper_flags[@]}" \
         --append-profile "$CHOPI_DIR/.internal/network.sb" \
         -- \
         "${CHOPI_EXTRA_ENV[@]+"${CHOPI_EXTRA_ENV[@]}"}" \
+        "${queue_env[@]+"${queue_env[@]}"}" \
         CHOPI_DIR="$CHOPI_DIR" \
         HTTP_PROXY="$proxy"  HTTPS_PROXY="$proxy" \
         http_proxy="$proxy"  https_proxy="$proxy" \

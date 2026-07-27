@@ -4,6 +4,7 @@
 SHELL_SOURCES = \
 	bin/chopi.sh \
 	bin/chopi-proxy.sh \
+	bin/chopi-review.sh \
 	install.sh \
 	.internal/util.sh \
 	.internal/classify-log.sh \
@@ -20,6 +21,7 @@ SHELL_SOURCES = \
 	.internal/claude-prompt.sh \
 	.internal/claude-context-reads.sh \
 	.internal/claude-context-check.sh \
+	.internal/write-targets.sh \
 	.internal/worktree.sh \
 	.internal/preflight.sh \
 	config/templates/sandbox.template.sh \
@@ -41,6 +43,8 @@ SHELL_SOURCES = \
 	test/claude-prompt.sh \
 	test/claude-context-reads.sh \
 	test/claude-context-check.sh \
+	test/write-targets.sh \
+	test/chopi-review.sh \
 	test/integration.sh
 
 PROXY_DIR = .internal/proxy
@@ -65,6 +69,8 @@ test:
 	@./test/claude-prompt.sh
 	@./test/claude-context-reads.sh
 	@./test/claude-context-check.sh
+	@./test/write-targets.sh
+	@./test/chopi-review.sh
 	@./test/integration.sh
 
 lint:

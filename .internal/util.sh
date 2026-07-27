@@ -55,6 +55,15 @@ strip_comment_and_trim() {
     trim "${1%%#*}"
 }
 
+# Get the next keystroke for a prompt, as soon as it is pressed rather than waiting for a return
+prompt_read_key() {
+    arity 0
+    local key
+    IFS= read -r -n 1 key || return 1
+    printf '\n' >&2
+    printf '%s' "$key"
+}
+
 # Print the 1-based number of FILE's first line that matches LINE, modulo trimming whitespace
 # around it. Prints nothing and fails when FILE has no such line (or can't be read).
 file_line_number() {
