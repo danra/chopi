@@ -75,6 +75,18 @@ write_isolation_profile() {
             fi
         fi
 
+        # Pin the nodes between the workspace root and each nested sibling.
+        # Unlike the rest of the isolation, this part is strictly security-oriented, and logically
+        # belongs with the git-hardening profile: prevent a rogue agent from renaming a parent dir
+        # *inside the granted workspace* to be able to write into another nested worktree.
+        local nested_parents=()
+        for wt in "${CHOPI_GIT_OTHER_WORKTREES[@]+"${CHOPI_GIT_OTHER_WORKTREES[@]}"}"; do
+            is_path_within "$wt" "$CHOPI_GIT_TARGET_WORKTREE" || continue
+            nested_parents+=("$(dirname "$wt")")
+        done
+        pin_ancestries "$CHOPI_GIT_TARGET_WORKTREE" \
+            "${nested_parents[@]+"${nested_parents[@]}"}"
+
         # Deny the command any access to this appended profile itself.
         # Belt-and-suspenders: The profile is temporary, only used for this run, and
         # safehouse compiles it into the live policy before, so writes to it don't matter

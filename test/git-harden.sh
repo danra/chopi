@@ -66,6 +66,20 @@ assert_contains "$profile" '(deny file-write* (subpath "'"$gitdir/hooks"'"))'   
 assert_contains "$profile" '(deny file-write* (literal "'"$root/.git"'"))'               "the worktree's top-level .git is read-only"
 assert_contains "$profile" '(deny file-read* file-write* (literal "'"$profile_path"'"))'      "the profile denies access to itself"
 
+# The worktree node and its ancestry are pinned.
+assert_contains "$profile" '(deny file-write* (literal "'"$root"'"))'   "the worktree's own node is pinned against rename and delete"
+unpinned=""
+node="$(dirname "$root")"
+while [ "$node" != / ]; do
+    case "$profile" in
+        *'(deny file-write* (literal "'"$node"'"))'*) ;;
+        *) unpinned="$unpinned $node" ;;
+    esac
+    node="$(dirname "$node")"
+done
+assert_eq "$unpinned" "" "  -> and every node above it"
+assert_not_contains "$profile" '(deny file-write* (literal "/"))'       "  -> stopping short of the root"
+
 # Rule order: First blanket deny, then data-path allow holes, then deny exec surface
 objects_allow='(allow file-write* (subpath "'"$gitdir/objects"'"))'
 assert_rule_order "$profile_path" '(deny file-write* (subpath "'"$gitdir"'"))' "$objects_allow" \
@@ -99,6 +113,7 @@ assert_contains "$profile" '(deny file-write* (literal "'"$gitdir/config"'"))'  
 assert_contains "$profile" '(deny file-write* (subpath "'"$gitdir/hooks"'"))'                     "  -> and the shared hooks/"
 assert_contains "$profile" '(deny file-write* (literal "'"$feat/.git"'"))'                        "the worktree's own .git pointer file is read-only"
 assert_contains "$profile" '(deny file-read* file-write* (literal "'"$profile_path"'"))'               "profile denies access to itself"
+assert_contains "$profile" '(deny file-write* (literal "'"$feat"'"))'                             "the linked worktree's own node is pinned against rename and delete"
 
 # Running WITHOUT the DIR argument from inside the linked worktree hardens the same way.
 profile_path="$(harden_in "$feat")"; st=$?
@@ -138,6 +153,9 @@ assert_not_contains "$profile" '(allow file-write* (subpath "'"$sub_gitdir/info"
 assert_contains "$profile" '(deny file-write* (literal "'"$sub_main_worktree/.git"'"))'      "its .git pointer file is read-only"
 assert_contains "$profile" '(deny file-write* (literal "'"$sub_gitdir/config"'"))'    "  -> and its gitdir's config"
 assert_contains "$profile" '(deny file-write* (subpath "'"$sub_gitdir/hooks"'"))'     "  -> and its gitdir's hooks/"
+# The submodule's node is pinned like the worktree's own (see above): renaming it would
+# carry its pinned .git pointer out from under the deny.
+assert_contains "$profile" '(deny file-write* (literal "'"$sub_main_worktree"'"))'    "the submodule's own node is pinned against rename and delete"
 
 # A submodule that fails to resolve aborts the run (no silently weakened profile)
 shimdir="$TMPDIR/rp-shim"; mkdir -p "$shimdir"

@@ -129,6 +129,14 @@ write_hardening_profile() {
         # this harmlessly re-denies writing the common git dir (just the dir itself).
         rule 'deny file-write*'                  literal "$CHOPI_GIT_TARGET_WORKTREE/.git"
 
+        # Pin the worktree's own node and every node above it to prevent bypassing denies by
+        # renaming a parent dir.
+        pin_ancestries / "$CHOPI_GIT_TARGET_WORKTREE"
+
+        # Also pin submodule worktrees the same way.
+        pin_ancestries "$CHOPI_GIT_TARGET_WORKTREE" \
+            "${CHOPI_GIT_TARGET_SUB_MAIN_WORKTREES[@]+"${CHOPI_GIT_TARGET_SUB_MAIN_WORKTREES[@]}"}"
+
         # Re-deny known vectors; They're not included in the grants above, but just in case
         # something accidentally opens them up in the future.
         if [ -z "$CHOPI_GIT_TARGET_IS_MAIN" ]; then

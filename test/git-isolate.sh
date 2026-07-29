@@ -53,6 +53,12 @@ profile="$(cat "$profile_path" 2>/dev/null)"
 
 assert_contains "$profile" '(deny file-read* file-write* (subpath "'"$sibling_worktree"'"))'                 "the nested sibling worktree is denied"
 assert_contains "$profile" '(deny file-read* file-write* (subpath "'"$ext_worktree_real"'"))'          "the external sibling worktree is denied"
+
+# The nodes between the workspace root and a nested sibling are pinned
+ext_worktree_parent="$(dirname "$ext_worktree_real")"
+assert_contains "$profile" '(deny file-write* (literal "'"$root/.worktrees"'"))'                "the node on the way to the nested sibling is pinned against rename"
+assert_not_contains "$profile" '(deny file-write* (literal "'"$root"'"))'                       "  -> not the workspace root itself (git-harden's job)"
+assert_not_contains "$profile" '(deny file-write* (literal "'"$ext_worktree_parent"'"))'        "  -> nor the external sibling's parent (outside the workspace)"
 assert_not_contains "$profile" '(deny file-read* file-write* (subpath "'"$root"'"))'            "the main worktree itself is NOT denied"
 assert_not_contains "$profile" '(allow file-read* file-write* (subpath "'"$root"'"))'           "  -> and NOT re-allowed (in case safehouse denied anything)"
 assert_not_contains "$profile" '(allow file-read* (subpath "'"$gitdir"'"))'                     "no read grant is added on .git (the workspace grant already covers it)"
@@ -110,7 +116,7 @@ profile="$(cat "$profile_path" 2>/dev/null)"
 assert_contains "$profile" '(deny file-read* file-write* (subpath "'"$root"'"))'                  "  -> it denies the main repo tree"
 assert_contains "$profile" '(allow file-read* file-write* (subpath "'"$feat"'"))'                 "  -> and re-allows the current worktree"
 
-inner="$feat/inner"
+inner="$feat/nest/inner"
 git -C "$main_repo" worktree add -q -b inner "$inner"
 profile_path="$(isolate_in "$main_repo" "$feat")"; st=$?
 assert_zero "$st" "a sibling nested inside the target worktree exits zero"
@@ -118,6 +124,10 @@ assert_rule_order "$profile_path" \
     '(allow file-read* file-write* (subpath "'"$feat"'"))' \
     '(deny file-read* file-write* (subpath "'"$inner"'"))' \
     "  -> and its deny follows the target's allow (so the allow can't reopen it)"
+assert_rule_order "$profile_path" \
+    '(allow file-read* file-write* (subpath "'"$feat"'"))' \
+    '(deny file-write* (literal "'"$feat/nest"'"))' \
+    "  -> and so does the pin of the node on the way to it"
 git -C "$main_repo" worktree remove --force "$inner" >/dev/null 2>&1
 git -C "$main_repo" branch -D inner >/dev/null 2>&1
 

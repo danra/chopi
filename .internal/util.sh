@@ -77,6 +77,17 @@ file_has_line() {
     file_line_number "$1" "$2" >/dev/null
 }
 
+# Is ITEM ($1) exactly one of the arguments after it?
+# The list is passed as separate arguments, so items may contain any byte, newlines included.
+is_item_in_list() {
+    local item="$1"; shift
+    local candidate
+    for candidate in "$@"; do
+        [ "$candidate" = "$item" ] && return 0
+    done
+    return 1
+}
+
 # Escape a filesystem path for embedding inside a Seatbelt string literal (the "..." of a
 # subpath/literal/prefix matcher).
 _sb_string_escape() {
@@ -98,6 +109,27 @@ rule() {
         exit 2
     fi
     printf '(%s (%s "%s"))\n' "$action" "$matcher" "$(_sb_string_escape "$path")"
+}
+
+# Emit a write-deny literal for each directory node from every START (inclusive) up to
+# STOP (exclusive; the walk also stops at the filesystem root). Plugs the Seatbelt hole of
+# being able to write into a denied literal path by first moving a parent dir elsewhere,
+# writing, and moving the parent dir back.
+#
+# usage: pin_ancestries STOP [START...]
+pin_ancestries() {
+    local stop="$1"; shift
+    local pinned=() start node
+    for start in "$@"; do
+        node="$start"
+        while [ "$node" != "$stop" ] && [ "$node" != / ]; do
+            if ! is_item_in_list "$node" "${pinned[@]+"${pinned[@]}"}"; then
+                pinned+=("$node")
+                rule 'deny file-write*' literal "$node"
+            fi
+            node="$(dirname "$node")"
+        done
+    done
 }
 
 # Is directory $1 the same as, or nested inside, directory $2? Both are absolute and
