@@ -56,14 +56,7 @@ preflight_initial() {
     local workspace_dir
     workspace_dir="$(pwd -P)" || { echo "error: cannot resolve current directory" >&2; return 1; }
 
-    # chopi's whole promise is that it lives OUTSIDE the tree it sandboxes, so a
-    # confined command can't reach chopi's own policy and edit what confines
-    # it. Enforce it: refuse when the workspace and chopi's own dir overlap in EITHER
-    # direction -- the workspace is chopi's dir, contains it (a parent), or is nested
-    # inside it (e.g. run from chopi/config). In any of those the workspace's
-    # read/write grant would cover chopi's own config. Setting CHOPI_ALLOW_SELF
-    # downgrades the hard error to a warning (for developing chopi itself).
-    if is_path_within "$CHOPI_DIR" "$workspace_dir" || is_path_within "$workspace_dir" "$CHOPI_DIR"; then
+    if overlaps_chopi_dir "$workspace_dir"; then
         refuse_or_warn \
             "workspace '$workspace_dir' overlaps chopi's own directory ('$CHOPI_DIR')" \
             "the sandboxed command would get read/write access to its own config" \

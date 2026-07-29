@@ -154,6 +154,16 @@ realpath_or_self() {
     realpath "$1" 2>/dev/null || printf '%s\n' "$1"
 }
 
+# Does path $1 reach chopi's own directory, in either direction? Its own function so the invariant
+# has a name: a command must not reach the policy confining it, whether by a path inside chopi's
+# directory or one that holds it.
+overlaps_chopi_dir() {
+    arity 1
+    local real
+    real="$(realpath_or_self "$1")"
+    is_path_within "$real" "$CHOPI_DIR" || is_path_within "$CHOPI_DIR" "$real"
+}
+
 # Resolve the GitHub token the relay authenticates with, following gh's own source precedence:
 # GH_TOKEN, then GITHUB_TOKEN, then gh's stored login. A variable that is SET wins over the next
 # source even when EMPTY -- an explicit GH_TOKEN='' (or GITHUB_TOKEN='' when GH_TOKEN is unset) means
