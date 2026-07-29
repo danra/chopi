@@ -198,6 +198,24 @@ assert_zero "$st" "with the fixtures reverted, the submodule repo passes again"
 
 
 # ---------------------------------------------------------------------------
+echo "a submodule gitdir embedded in its worktree (unabsorbed) is refused"
+# ---------------------------------------------------------------------------
+embedded_src="$TMPDIR/embedded_src"; make_repo "$embedded_src"
+repo_embedded_sub="$TMPDIR/repo_embedded_sub"; make_repo "$repo_embedded_sub"
+env "${allow_git_file_protocol[@]}" git -C "$repo_embedded_sub" submodule add -q "$embedded_src" thesub 2>/dev/null
+git -C "$repo_embedded_sub" commit -q -m 'add submodule'
+# De-absorb the gitdir back into the worktree: the old-style layout absorbgitdirs migrates.
+embedded_gitdir="$(realpath "$(git -C "$repo_embedded_sub/thesub" rev-parse --absolute-git-dir)")"
+rm "$repo_embedded_sub/thesub/.git"
+mv "$embedded_gitdir" "$repo_embedded_sub/thesub/.git"
+git config --file "$repo_embedded_sub/thesub/.git/config" --unset core.worktree
+out="$(run_preflight_in_dir "$repo_embedded_sub")"; st=$?
+assert_nonzero "$st" "an embedded submodule gitdir is refused"
+assert_contains "$out" "embeds its git dir" "  -> naming the cause"
+assert_contains "$out" "absorbgitdirs" "  -> and the way out"
+
+
+# ---------------------------------------------------------------------------
 echo "the DIR argument selects the checked worktree (as --worktree runs use)"
 # ---------------------------------------------------------------------------
 out="$(run_preflight_in_dir "$plain" "$repo_with_alternates")"; st=$?

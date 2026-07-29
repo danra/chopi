@@ -96,7 +96,9 @@ write_hardening_profile() {
         # The shared-git-dir lockdown: writable ONLY on git's data paths -- allowing hooks/
         # or config would let the confined command plant code that runs UNSANDBOXED on the
         # developer's next git operation. The blanket deny also covers the worktree admin dirs
-        # and submodule gitdirs; holes are poked later.
+        # and submodule gitdirs, all absorbed under the shared dir (preflight refuses an
+        # old-style submodule gitdir embedded in its worktree, which no deny here would
+        # cover); holes are poked later.
         rule 'deny file-write*'  subpath "$CHOPI_GIT_COMMON_DIR"
         allow_ref_writes       "$CHOPI_GIT_COMMON_DIR"
         allow_repo_data_writes "$CHOPI_GIT_COMMON_DIR"

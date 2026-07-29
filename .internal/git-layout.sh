@@ -68,6 +68,24 @@ refuse_relocated_ref_storage() {
     return 1
 }
 
+# Refuse a submodule whose gitdir $2 is embedded inside its worktree $1 instead of absorbed
+# under the superproject's git dir, as git has kept it since 1.7.8. The hardening profile's
+# blanket write-deny covers absorbed gitdirs; an embedded one sits in the writable
+# workspace, its config and hooks open to the sandboxed command.
+refuse_embedded_submodule_gitdir() {
+    arity 2
+    local worktree="$1" gitdir="$2"
+    is_path_within "$gitdir" "$worktree" || return 0
+    {
+        echo "error: refusing to run: the submodule at '$worktree' embeds its git dir inside its worktree:"
+        echo "           $gitdir"
+        echo "chopi's git hardening covers submodule git dirs absorbed under the superproject's .git;"
+        echo "an embedded one would stay writable (config, hooks). Absorb it with:"
+        echo "           git submodule absorbgitdirs"
+    } >&2
+    return 1
+}
+
 # Report the exec-capable git sequencing operation in progress in worktree $1, if any:
 # prints 'rebase' or 'sequencer' (a cherry-pick/revert sequence), else nothing.
 #

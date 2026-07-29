@@ -48,11 +48,14 @@ main() {
     # refuse to start on top of one so chopi only ever aborts operations the sandboxed run left.
     refuse_inflight_sequencing "$run_dir"
 
-    # Submodule gitdirs can relocate their own ref storage, can read objects through alternates
-    # of their own, and can hold their own in-progress sequencing state.
+    # Submodule gitdirs can be embedded in their worktrees (the pre-absorbgitdirs layout),
+    # can relocate their own ref storage, can read objects through alternates of their own,
+    # and can hold their own in-progress sequencing state.
     collect_submodules "$run_dir"
     local i
     for ((i = 0; i < ${#CHOPI_GIT_TARGET_SUB_GITDIRS[@]}; i++)); do
+        refuse_embedded_submodule_gitdir "${CHOPI_GIT_TARGET_SUB_MAIN_WORKTREES[i]}" \
+                                         "${CHOPI_GIT_TARGET_SUB_GITDIRS[i]}"
         refuse_relocated_ref_storage "${CHOPI_GIT_TARGET_SUB_GITDIRS[i]}"
         refuse_object_alternates "${CHOPI_GIT_TARGET_SUB_GITDIRS[i]}"
         refuse_inflight_sequencing "${CHOPI_GIT_TARGET_SUB_MAIN_WORKTREES[i]}"
