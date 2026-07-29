@@ -98,7 +98,11 @@ is_item_in_list() {
 }
 
 # Escape a filesystem path for embedding inside a Seatbelt string literal (the "..." of a
-# subpath/literal/prefix matcher).
+# subpath/literal/prefix matcher). Newline deliberately passes through raw: only an unescaped
+# quote can end the literal, so the profile reader either takes the rule intact or rejects the
+# whole profile and the sandbox never starts (fail-closed). Escaping it as \n instead would be
+# fail-open for a deny if the reader lacked that escape: the rule would match a different path
+# than the sibling it denies.
 _sb_string_escape() {
     arity 1
     local s="$1"
