@@ -76,6 +76,19 @@ assert_eq "$st" 2 "an empty outer path is a hard error (exit 2)"
 
 
 # ---------------------------------------------------------------------------
+echo "overlapping_dirs (the same question in both directions)"
+# ---------------------------------------------------------------------------
+overlapping_dirs /a/b /a; st=$?
+assert_zero "$st" "a directory inside the other overlaps it"
+overlapping_dirs /a /a/b; st=$?
+assert_zero "$st" "  -> and the same pair asked the other way round"
+overlapping_dirs /a /a; st=$?
+assert_zero "$st" "a directory overlaps itself"
+overlapping_dirs /a/b /a/c; st=$?
+assert_nonzero "$st" "siblings do not overlap"
+
+
+# ---------------------------------------------------------------------------
 echo "preflight_initial (chopi/workspace directory overlap)"
 # ---------------------------------------------------------------------------
 out="$( cd "$repo" && { unset CHOPI_ALLOW_SELF; preflight_initial; } 2>&1 )"; st=$?

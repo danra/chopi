@@ -147,6 +147,11 @@ is_path_within() {
     return 1
 }
 
+overlapping_dirs() {
+    arity 2
+    is_path_within "$1" "$2" || is_path_within "$2" "$1"
+}
+
 # Canonicalize path $1, keeping it as-is when realpath fails (a dangling path, or -- in the
 # sandbox -- a component whose metadata the sandbox blinds).
 realpath_or_self() {
@@ -161,7 +166,7 @@ overlaps_chopi_dir() {
     arity 1
     local real
     real="$(realpath_or_self "$1")"
-    is_path_within "$real" "$CHOPI_DIR" || is_path_within "$CHOPI_DIR" "$real"
+    overlapping_dirs "$real" "$CHOPI_DIR"
 }
 
 # Resolve the GitHub token the relay authenticates with, following gh's own source precedence:
