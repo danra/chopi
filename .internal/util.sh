@@ -132,19 +132,29 @@ pin_ancestries() {
     done
 }
 
+# Print dir $1's path relative to dir $2 -- nothing when they are the same directory -- failing
+# when $1 is not within $2. Both are absolute and normalized (no trailing slash except the
+# root "/").
+relative_path_within() {
+    arity 2
+    local inner="$1" outer="$2"
+    if [ -z "$inner" ] || [ -z "$outer" ]; then
+        printf 'BUG: relative_path_within called with an empty path\n' >&2
+        exit 2
+    fi
+    [ "$inner" = "$outer" ] && return 0
+    [ "$outer" = "/" ] && { printf '%s' "${inner#/}"; return 0; }   # every absolute path is inside the root
+    case "$inner" in
+        "$outer"/*) printf '%s' "${inner#"$outer"/}" ;;
+        *)          return 1 ;;
+    esac
+}
+
 # Is directory $1 the same as, or nested inside, directory $2? Both are absolute and
 # normalized (no trailing slash except the root "/").
 is_path_within() {
     arity 2
-    local inner="$1" outer="$2"
-    if [ -z "$inner" ] || [ -z "$outer" ]; then
-        printf 'BUG: is_path_within called with an empty path\n' >&2
-        exit 2
-    fi
-    [ "$inner" = "$outer" ] && return 0
-    [ "$outer" = "/" ] && return 0   # every absolute path is inside the root
-    case "$inner" in "$outer"/*) return 0 ;; esac
-    return 1
+    relative_path_within "$1" "$2" >/dev/null
 }
 
 overlapping_dirs() {
