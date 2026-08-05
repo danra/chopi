@@ -45,7 +45,8 @@ main() {
     refuse_object_alternates "$git_common_dir"
 
     # An in-progress rebase/sequence would be aborted at teardown (see git-protect-cleanup.sh);
-    # refuse to start on top of one so chopi only ever aborts operations the sandboxed run left.
+    # starting on top of one takes the user's explicit consent, so chopi never aborts an
+    # operation the developer began outside it without warning.
     refuse_inflight_sequencing "$run_dir"
 
     # Submodule gitdirs can be embedded in their worktrees (the pre-absorbgitdirs layout),

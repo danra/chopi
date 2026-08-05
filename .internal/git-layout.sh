@@ -116,9 +116,11 @@ sequencing_phrase() {
     esac
 }
 
-# Refuse to start when worktree $1 already has an exec-capable sequencing op in progress.
-# Chopi aborts such an op when it exits, so refusing up front guarantees it never aborts
-# one the developer began outside chopi.
+# Refuse to start when worktree $1 already has an exec-capable sequencing op in progress,
+# unless an interactive user explicitly consents. Chopi aborts such an op when it exits, so
+# the gate guarantees it never aborts one the developer began outside chopi without their
+# consent. Non-interactively there is nobody to ask (and stdin belongs to the sandboxed
+# command), so the refusal stays unconditional.
 refuse_inflight_sequencing() {
     arity 1
     local worktree="$1" op
@@ -127,12 +129,23 @@ refuse_inflight_sequencing() {
     local phrase
     phrase="$(sequencing_phrase "$op")"
     {
-        echo "error: refusing to run: a git $phrase is already in progress in:"
+        echo "warning: a git $phrase is already in progress in:"
         echo "           $worktree"
         echo "chopi aborts an in-progress rebase or cherry-pick/revert sequence when it exits, because a"
         echo "sandboxed command can plant 'exec' lines in it that would then run unsandboxed if the sequence"
-        echo "is --continued. Finish or abort it before running chopi."
+        echo "is --continued."
     } >&2
+    if [ -t 0 ] && [ -t 2 ]; then
+        local answer
+        printf 'Run anyway, aborting the %s when chopi exits? [y/N] ' "$phrase" >&2
+        answer="$(prompt_read_key)" || answer=""
+        case "$answer" in
+            y | Y) return 0 ;;
+        esac
+        echo "error: refusing to run" >&2
+    else
+        echo "error: refusing to run; finish or abort it before running chopi" >&2
+    fi
     return 1
 }
 

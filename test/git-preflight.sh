@@ -225,7 +225,7 @@ assert_zero "$st" "a supported repo passed as DIR exits zero (whatever the cwd)"
 
 
 # ---------------------------------------------------------------------------
-echo "an in-progress rebase or cherry-pick/revert sequence is refused up front"
+echo "an in-progress rebase or cherry-pick/revert sequence is refused up front (non-interactive)"
 # ---------------------------------------------------------------------------
 repo_rebasing="$TMPDIR/repo_rebasing"; make_repo "$repo_rebasing"
 stop_a_rebase_in "$repo_rebasing"
@@ -258,6 +258,45 @@ assert_nonzero "$st" "an in-progress rebase inside a submodule is refused"
 git -C "$repo_with_submod/thesub" rebase --abort >/dev/null 2>&1
 out="$(run_preflight_in_dir "$repo_with_submod")"; st=$?
 assert_zero "$st" "  -> and with it aborted, the submodule repo passes again"
+
+
+# ---------------------------------------------------------------------------
+echo "interactively, the in-progress refusal becomes a [y/N] prompt"
+# ---------------------------------------------------------------------------
+
+# Run the preflight in DIR under a pty (so it sees a terminal and prompts), typing ANSWER
+# at any prompt; the answer repeats forever so the pty never runs dry mid-ask. The
+# preflight's exit status comes back as a "pty-status=N" line in the output: the
+# pipeline's own status is useless (`yes` dies of SIGPIPE under pipefail).
+preflight_under_pty() {
+    arity 2
+    local dir="$1" answer="$2"
+    # shellcheck disable=SC2016  # $1/$2/$? are for the inner sh, not this shell
+    yes "$answer" 2>/dev/null \
+        | script -q /dev/null sh -c 'cd "$1" && "$2"; echo "pty-status=$?"' pty "$dir" "$git_preflight_sh" 2>&1 \
+        | tr -d '\r'
+}
+
+repo_prompting="$TMPDIR/repo_prompting"; make_repo "$repo_prompting"
+stop_a_rebase_in "$repo_prompting"
+
+out="$(preflight_under_pty "$repo_prompting" y)"
+assert_contains "$out" "a git rebase is already in progress" "an interactive run states the situation"
+assert_contains "$out" "[y/N]" "  -> and asks instead of refusing outright"
+assert_contains "$out" "pty-status=0" "  -> answering y lets the run proceed"
+
+out="$(preflight_under_pty "$repo_prompting" n)"
+assert_contains "$out" "pty-status=1" "answering n refuses"
+assert_contains "$out" "error: refusing to run" "  -> saying so"
+assert_eq "$(printf '%s\n' "$out" | grep -c 'chopi aborts an in-progress')" 1 \
+    "  -> without repeating the rationale the prompt already gave"
+
+out="$(preflight_under_pty "$repo_prompting" '')"
+assert_contains "$out" "pty-status=1" "a bare return takes the default and refuses"
+
+out="$(preflight_under_pty "$standard_repo" y)"
+assert_contains "$out" "pty-status=0" "a repo with nothing in progress never prompts"
+assert_not_contains "$out" "[y/N]" "  -> no prompt appears"
 
 
 # ---------------------------------------------------------------------------
