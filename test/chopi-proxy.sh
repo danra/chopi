@@ -12,7 +12,7 @@ BEL="$(printf '\007')"   # U+0007 BEL: format-deny.jq prefixes an interactive DE
 ESC="$(printf '\033')"   # U+001B ANSI escape: introduces the DENY color code
 set +euo pipefail
 
-header "test/chopi-proxy.sh -- unit tests for bin/chopi-proxy.sh's log logic + proxy-port invariant + github migration refusal"
+header "test/chopi-proxy.sh -- unit tests for bin/chopi-proxy.sh's log logic + proxy-port invariant + github migration refusal + relay reaper"
 
 # Exported so the scripts under test leave their temporaries here too.
 TMPDIR="$(mktemp -d)"; export TMPDIR
@@ -408,6 +408,39 @@ ports_sb="$(grep -oE 'localhost:[0-9]+' "$repo/.internal/network.sb" | grep -oE 
 want_ports="$PROXY_PORT
 $GITHUB_RELAY_PORT"
 assert_eq "$ports_sb" "$want_ports" "network.sb loopback ports match util.sh (smokescreen $PROXY_PORT, GitHub relay $GITHUB_RELAY_PORT)"
+
+
+# ---------------------------------------------------------------------------
+echo "relay reaper (caddy must not outlive smokescreen -- terminal hangup included)"
+# ---------------------------------------------------------------------------
+# A closing terminal (window closed, multiplexer restarted) HUPs the whole foreground
+# process group: smokescreen dies of it, but Caddy ignores HUP by design, so the reaper is
+# the only thing left to take Caddy down -- if the same HUP kills the reaper, the orphaned
+# Caddy keeps the relay port bound and blocks every later chopi-proxy start. Stand-ins:
+# a `sleep` each for smokescreen (killed explicitly, as the HUP would) and for Caddy
+# (sent nothing, as ignoring the HUP).
+sleep 30 & fake_main=$!
+sleep 30 & fake_caddy=$!
+reaper_tmpdir="$TMPDIR/reaper-tmpdir"; mkdir "$reaper_tmpdir"
+start_relay_reaper "$fake_main" "$fake_caddy" "$reaper_tmpdir"
+reaper=$!
+
+sleep 0.3   # give the reaper time to install its signal traps
+kill -HUP "$reaper" 2>/dev/null
+sleep 0.3
+kill -0 "$reaper" 2>/dev/null
+assert_zero $? "the reaper survives the terminal's HUP"
+kill -0 "$fake_caddy" 2>/dev/null
+assert_zero $? "caddy is left alone while smokescreen lives"
+
+kill "$fake_main" 2>/dev/null; wait "$fake_main" 2>/dev/null
+# The reaper exits right after the kill and the rm -- or is already dead, the failing case.
+for _ in {1..30}; do kill -0 "$reaper" 2>/dev/null || break; sleep 0.1; done
+kill -0 "$fake_caddy" 2>/dev/null
+assert_nonzero $? "caddy is killed once smokescreen is gone"
+assert_absent "$reaper_tmpdir" "the proxy's temp dir is removed"
+
+kill "$fake_main" "$fake_caddy" "$reaper" 2>/dev/null   # strays, if any assertion failed
 
 
 # ---------------------------------------------------------------------------
