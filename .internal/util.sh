@@ -329,3 +329,17 @@ start_github_relay() {
     CADDY_PID=$!
     wait_for_listener "$GITHUB_RELAY_PORT" "$CADDY_PID"
 }
+
+# TODO: Here for testability, but awkward in util.sh
+# Watch process MAIN_PID from the background; once it exits, kill CADDY_PID and remove
+# TMPDIR. chopi-proxy execs smokescreen over itself, losing its EXIT trap, so this reaper is
+# what takes Caddy and the temp dir down with it. INT and TERM are ignored: a Ctrl-C is
+# meant for smokescreen, and the reaper must outlive it to clean up.
+start_relay_reaper() {
+    arity 3
+    local main_pid="$1" caddy_pid="$2" tmpdir="$3"
+    ( trap '' INT TERM
+      while kill -0 "$main_pid" 2>/dev/null; do sleep 0.2; done
+      kill "$caddy_pid" 2>/dev/null || true
+      rm -rf "$tmpdir" ) &
+}

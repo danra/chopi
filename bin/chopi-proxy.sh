@@ -245,11 +245,7 @@ fi
 CADDYFILE_TEXT=""
 
 # Tie Caddy's lifetime to smokescreen's.
-main_pid=$$
-( trap '' INT TERM
-  while kill -0 "$main_pid" 2>/dev/null; do sleep 0.2; done
-  kill "$CADDY_PID" 2>/dev/null || true
-  rm -rf "$TMPDIR" ) &
+start_relay_reaper $$ "$CADDY_PID" "$TMPDIR"
 
 # Start smokescreen
 echo "[$SCRIPT_NAME] GitHub relay on 127.0.0.1:$GITHUB_RELAY_PORT" >&2
