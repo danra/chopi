@@ -6,6 +6,7 @@
 # as ALLOW_REPO=<owner/repo>
 #
 # It renders the relay config for a throwaway allowlist, starts caddy, and checks that:
+#   0. the relay listens on loopback only                          (not on all interfaces)
 #   1. anonymous public fetch works through the relay
 #   1b. a gzipped fetch is decoded by GitHub
 #   1c. fetch of a private/nonexistent repo fails with an informative error message
@@ -67,6 +68,13 @@ if ! start_github_relay "$caddy_cfg" "$WORK/caddy.log"; then
 fi
 
 git_url="http://127.0.0.1:$GITHUB_RELAY_PORT"
+
+# 0. the relay must listen on loopback only: a caddy site-address host is a Host matcher,
+#    not a bind, so without an explicit bind caddy listens on all interfaces -- where a LAN
+#    client sending "Host: 127.0.0.1" reaches the credentialed routes.
+listeners="$(lsof -a -p "$CADDY_PID" -iTCP -sTCP:LISTEN -P -n | awk 'NR>1 {print $9}')"
+assert_contains     "$listeners" "127.0.0.1:$GITHUB_RELAY_PORT" "git relay listener is bound to loopback"
+assert_not_contains "$listeners" '*:'                           "no relay listener on the wildcard interface"
 
 # 1. anonymous public fetch through the relay
 if git clone -q "$git_url/octocat/Hello-World" "$WORK/hw" 2>"$WORK/e1"; then

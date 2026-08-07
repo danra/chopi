@@ -39,6 +39,14 @@ for cf in github-populated github-empty; do
         grep '^[+-]' "$WORK/log" >&2 || cat "$WORK/log" >&2
         exit 1
     fi
+    # The relay must listen on loopback only. A site-address host only MATCHES requests, it
+    # never binds: a site without an explicit bind gets Caddy's default wildcard listener.
+    caddy adapt --adapter caddyfile --config "$WORK/$cf" > "$WORK/json" 2>/dev/null
+    if grep -qE '":[0-9]+"|"0\.0\.0\.0:' "$WORK/json"; then
+        echo "the $cf render listens on a non-loopback interface:" >&2
+        grep -oE '"listen":\[[^]]*\]' "$WORK/json" >&2
+        exit 1
+    fi
 done
 
 echo "caddy relay configs: valid"
