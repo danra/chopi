@@ -36,6 +36,11 @@
 
 # GitHub relay start
 http://127.0.0.1:@@GITPORT@@ {
+	# The site address host above only MATCHES requests; it does not bind the listener.
+	# Without an explicit bind Caddy listens on ALL interfaces, where a LAN client sending
+	# "Host: 127.0.0.1" would reach the credentialed routes.
+	bind 127.0.0.1
+
 	map {http.request.header.Content-Encoding} {content_encoding} {
 		gzip gzip
 		default identity
