@@ -309,6 +309,7 @@ make build    # build the proxy binary (needs go)
 make test     # build, then run unit and integration tests
 make lint     # shellcheck the scripts, go vet the proxy
 make check    # lint, then test
+[ALLOW_REPO=owner/repo] make github-relay-test    # manual end-to-end test of the GitHub relay (not in `make test`)
 ```
 
 ### Dogfooding Chopi
