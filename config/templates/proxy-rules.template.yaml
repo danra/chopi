@@ -36,4 +36,6 @@ global_deny_list:
     - "*.datadoghq.com"
     # github.com is reachable only for git, and only via the GitHub relay we run for it
     - github.com
+    # api.github.com is reachable only for the gh REST API, and only via the GitHub relay's unix
+    # socket; direct hits (e.g. Claude Code's plugin-marketplace update poll) are expected
     - api.github.com

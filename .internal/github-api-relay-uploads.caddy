@@ -1,0 +1,23 @@
+# The GitHub API relay uploads site: release-asset uploads for allowlisted repos.
+#
+# gh uploads release assets by POSTing to uploads.github.com -- the upload_url host in the
+# API's release responses -- and its host-blind socket dialer lands those here like every
+# absolute URL it follows. Despite the separate hostname this IS a part of GitHub's REST API.
+# The upload path names /repos/{owner}/{repo}, so the credential is scoped by the same
+# path-allowlist as the standard API site.
+http://uploads.github.com {
+	bind "unix/@@CHOPI_GH_SOCK@@"
+
+	@uploads_allowed path_regexp (?i)^/repos/(@@ALLOWLIST_REGEX@@)(/.*)?$
+	handle @uploads_allowed {
+		import apiproxy uploads.github.com {
+			header_up Authorization "@@CHOPI_API_AUTH@@"
+			import rejected_credential
+		}
+	}
+
+	handle {
+		header Content-Type application/json
+		respond `{"message":"chopi: GitHub requires authentication for this operation; the relay authenticates only repos in chopi's config/github-allowlist"}` 401
+	}
+}

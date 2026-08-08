@@ -26,6 +26,10 @@ cfg="$(github_relay_git_config)"
 assert_contains "$cfg" "url.$relay/.insteadOf=https://github.com/"   "rewrites the https github prefix to the relay"
 assert_contains "$cfg" "url.$relay/.insteadOf=git@github.com:"       "rewrites the scp-style ssh github prefix"
 assert_contains "$cfg" "url.$relay/.insteadOf=ssh://git@github.com/" "rewrites the ssh:// github prefix"
+# gh builds git remote URLs from GH_HOST=github.localhost (as plaintext http, a gh special
+# case for that hostname) in commands that shell out to git, so the alias reroutes too.
+assert_contains "$cfg" "url.$relay/.insteadOf=http://github.localhost/"  "rewrites gh's plaintext github.localhost alias"
+assert_contains "$cfg" "url.$relay/.insteadOf=https://github.localhost/" "rewrites the https github.localhost alias"
 assert_contains "$cfg" "lfs.$relay/.locksverify=true"                "silences git-lfs locksverify for the relay url"
 
 # Resolve against a controlled git config: neutralize system scope; GIT_CONFIG_GLOBAL is (re)set
@@ -52,6 +56,11 @@ echo "-- effective with no competing config --"
 export GIT_CONFIG_GLOBAL="$empty"
 reroute_in "$repo"; rc=$?
 assert_zero "$rc" "all github remote forms route to the relay"
+
+echo "-- gh's github.localhost alias resolves to the relay --"
+export GIT_CONFIG_GLOBAL="$empty"
+resolved="$(cd "$repo" && git ls-remote --get-url http://github.localhost/o/r)"
+assert_eq "$resolved" "$relay/o/r" "a gh-built github.localhost url routes to the relay"
 
 echo "-- ineffective against a competing global https->ssh rewrite --"
 ssh_global="$WORK/ssh-global"

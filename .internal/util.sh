@@ -16,6 +16,17 @@ PROXY_PORT=4760
 # .internal/network.sb (a Seatbelt profile can't read these shell vars).
 GITHUB_RELAY_PORT=4761       # git-smart-HTTP -> github.com
 
+# The Caddy GitHub-API relay's endpoint. Unlike the git relay (a TCP port), gh reaches this over a
+# unix socket: chopi sets GH_HOST=github.localhost so gh addresses the API as plaintext
+# http://api.github.localhost/... (no CA needed), and gh's http_unix_socket config dials this path
+# instead of resolving that name. The relay therefore sees the cleartext API request and scopes it
+# to the same allowlist as git. Per-user under TMPDIR; chopi.sh opens a Seatbelt hole to this exact
+# path. Computed from the login-canonical TMPDIR -- before the entry scripts repoint TMPDIR to their
+# private self-cleaning dirs -- so chopi-proxy.sh and chopi.sh can share it.
+_gh_tmp="${TMPDIR:-/tmp}"
+GH_RELAY_SOCK="${_gh_tmp%/}/chopi-gh-relay.sock"
+unset _gh_tmp
+
 # mktemp name prefixes of chopi's per-invocation temporaries (created under the private
 # TMPDIR); shared so the tests assert on the same names chopi creates.
 CHOPI_CLAUDE_CONTEXT_READS_PREFIX="chopi-claude-context-reads."
@@ -40,6 +51,19 @@ alias arity='_arity "$#"'
 # trace executed commands on/off
 alias trace_on='set -x'
 alias trace_off='{ set +x; } 2>/dev/null'
+
+# readarray -t NAME -- the bash-4 builtin, polyfilled: split stdin into array NAME, one element
+# per line. macOS's bash 3.2 lacks it; defined unconditionally so newer bashes run the same code.
+# Only the -t form is supported, and NAME must be a plain identifier (it is eval'd).
+readarray() {
+    local _ra_name="${2-}" _ra_line _ra_lines=()
+    if [ "$#" -ne 2 ] || [ "$1" != -t ] || [[ ! "$_ra_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+        printf 'BUG: this readarray polyfill supports exactly: readarray -t NAME\n' >&2
+        exit 2
+    fi
+    while IFS= read -r _ra_line; do _ra_lines+=("$_ra_line"); done
+    eval "$_ra_name=(\${_ra_lines[@]+\"\${_ra_lines[@]}\"})"
+}
 
 trim() {
     arity 1
@@ -226,6 +250,14 @@ gh_basic_auth_header() {
     printf 'Basic %s' "$encoded"
 }
 
+# The "Bearer ..." Authorization header the relay's API routes inject. Shared for the same
+# reason as gh_basic_auth_header above.
+gh_bearer_auth_header() {
+    arity 1
+    local token="$1"
+    printf 'Bearer %s' "$token"
+}
+
 # Print the github domains in a rules file's allowed_domains sections that make exfiltration
 # trivial: supports migration from when they were allowed in the template
 exfiltration_prone_github_allowed_domains() {
@@ -263,6 +295,15 @@ github_relay_git_config() {
         "url.$relay/.insteadOf=git@github.com:" \
         "url.$relay/.insteadOf=ssh://git@github.com/"
 
+    # gh commands that shell out to git build remote URLs from GH_HOST=github.localhost --
+    # as plaintext http, a gh special case for that hostname -- so reroute the alias like
+    # github.com itself, mirroring the API relay answering for both api hostnames. gh never
+    # emits the https form; it's for completeness, in case an agent seeing GH_HOST in its
+    # environment constructs such a URL itself.
+    printf '%s\n' \
+        "url.$relay/.insteadOf=http://github.localhost/" \
+        "url.$relay/.insteadOf=https://github.localhost/"
+
     # git-lfs verbosely warns on not having a config for whether locks verification
     # is enabled or not, EXCEPT for github.com which is baked in the git-lfs binary
     # as a special case (lfs.https://github.com/.locksverify=true). Since we rewrite
@@ -270,6 +311,22 @@ github_relay_git_config() {
     # by setting the config value (to true, after confirming the feature does indeed
     # work through the relay)
     printf '%s\n' "lfs.$relay/.locksverify=true"
+}
+
+# The env wiring (VAR=val lines) pointing gh at the API relay, writing CONFIG_DIR's config file on
+# the way: GH_HOST=github.localhost makes gh address the API as plaintext
+# http://api.github.localhost/... (no CA), and http_unix_socket makes it dial the relay socket
+# instead of resolving that name -- it has no environment variable, so it goes in the config file.
+# The GH_TOKEN placeholder only has to make gh consider itself logged in; the relay wipes it and
+# injects the real token host-side.
+github_relay_gh_env() {
+    arity 1
+    local config_dir="$1"
+    printf 'http_unix_socket: %s\n' "$GH_RELAY_SOCK" > "$config_dir/config.yml" || return 1
+    printf '%s\n' \
+        "GH_HOST=github.localhost" \
+        "GH_CONFIG_DIR=$config_dir" \
+        "GH_TOKEN=x-chopi-relay"
 }
 
 # Do github remote URLs resolve to the relay under the ambient git config (all scopes, read from
@@ -291,6 +348,13 @@ is_github_relay_reroute_effective() {
 port_has_listener() {
     arity 1
     nc -z 127.0.0.1 "$1" 2>/dev/null
+}
+
+# True when something accepts connections on unix socket PATH. curl does the dialing because
+# macOS nc cannot -z-scan a unix socket; any HTTP outcome after a successful connect counts.
+sock_has_listener() {
+    arity 1
+    curl -s -o /dev/null --max-time 2 --unix-socket "$1" http://sock/ 2>/dev/null
 }
 
 # Print the first of the given 127.0.0.1 ports that already has a listener and return 0; print
@@ -323,6 +387,17 @@ wait_for_listener() {
 start_github_relay() {
     arity 2
     local caddyfile_text="$1" log="$2"
+    # Fill the socket slot with this process's GH_RELAY_SOCK (see its definition for why the
+    # generator can't), and clear any stale socket a crashed prior run left. A socket that
+    # still answers is a sibling relay that won the port race since the caller's busy-port
+    # check (the two aren't atomic): back off before launching caddy, which would itself
+    # unlink the sibling's socket while dying on the busy port.
+    caddyfile_text="${caddyfile_text//@@CHOPI_GH_SOCK@@/$GH_RELAY_SOCK}"
+    if sock_has_listener "$GH_RELAY_SOCK"; then
+        echo "error: a running GitHub API relay already owns $GH_RELAY_SOCK" >&2
+        return 1
+    fi
+    rm -f "$GH_RELAY_SOCK"
     # Feed the config to Caddy over a pipe (--config -): printf is a builtin, so the baked GitHub
     # token doesn't appear in any process's argv.
     printf '%s' "$caddyfile_text" | caddy run --adapter caddyfile --config - > "$log" 2>&1 &
@@ -331,17 +406,16 @@ start_github_relay() {
 }
 
 # TODO: Here for testability, but awkward in util.sh
-# Watch process MAIN_PID from the background; once it exits, kill CADDY_PID and remove
-# TMPDIR. chopi-proxy execs smokescreen over itself, losing its EXIT trap, so this reaper is
-# what takes Caddy and the temp dir down with it. INT, TERM and HUP are ignored: a Ctrl-C
-# or a closing terminal terminate smokescreen, and the reaper must outlive it to clean up;
-# Caddy ignores HUP, so if the reaper dies on it, Caddy would be left orphaned holding the
-# relay port.
+# Watch process MAIN_PID from the background; once it exits, kill CADDY_PID and remove TMPDIR
+# and GH_SOCK. chopi-proxy execs smokescreen over itself, losing its EXIT trap, so this reaper is
+# what takes Caddy and its leftovers down with it. INT, TERM and HUP are ignored: a Ctrl-C or a
+# closing terminal terminate smokescreen, and the reaper must outlive it to clean up; Caddy
+# ignores HUP, so if the reaper dies on it, Caddy would be left orphaned holding the relay port.
 start_relay_reaper() {
-    arity 3
-    local main_pid="$1" caddy_pid="$2" tmpdir="$3"
+    arity 4
+    local main_pid="$1" caddy_pid="$2" tmpdir="$3" gh_sock="$4"
     ( trap '' INT TERM HUP
       while kill -0 "$main_pid" 2>/dev/null; do sleep 0.2; done
       kill "$caddy_pid" 2>/dev/null || true
-      rm -rf "$tmpdir" ) &
+      rm -rf "$tmpdir" "$gh_sock" ) &
 }

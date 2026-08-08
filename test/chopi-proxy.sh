@@ -422,7 +422,8 @@ echo "relay reaper (caddy must not outlive smokescreen -- terminal hangup includ
 sleep 30 & fake_main=$!
 sleep 30 & fake_caddy=$!
 reaper_tmpdir="$TMPDIR/reaper-tmpdir"; mkdir "$reaper_tmpdir"
-start_relay_reaper "$fake_main" "$fake_caddy" "$reaper_tmpdir"
+reaper_sock="$TMPDIR/reaper-sock"; : > "$reaper_sock"
+start_relay_reaper "$fake_main" "$fake_caddy" "$reaper_tmpdir" "$reaper_sock"
 reaper=$!
 
 sleep 0.3   # give the reaper time to install its signal traps
@@ -439,6 +440,7 @@ for _ in {1..30}; do kill -0 "$reaper" 2>/dev/null || break; sleep 0.1; done
 kill -0 "$fake_caddy" 2>/dev/null
 assert_nonzero $? "caddy is killed once smokescreen is gone"
 assert_absent "$reaper_tmpdir" "the proxy's temp dir is removed"
+assert_absent "$reaper_sock"   "the GitHub API relay socket is removed"
 
 kill "$fake_main" "$fake_caddy" "$reaper" 2>/dev/null   # strays, if any assertion failed
 

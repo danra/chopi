@@ -1,0 +1,44 @@
+# GitHub API relay head fragment: the gh REST API on a unix socket. gh reaches it because chopi
+# sets GH_HOST=github.localhost (=> plaintext http://api.github.localhost/...) and gh's
+# http_unix_socket config dials @@CHOPI_GH_SOCK@@.
+
+# Allowlisted API headers
+(apihdrs) {
+	header_up Content-Type {http.request.header.Content-Type}
+	header_up Accept {http.request.header.Accept}
+	header_up User-Agent {http.request.header.User-Agent}
+	header_up X-GitHub-Api-Version {http.request.header.X-GitHub-Api-Version}
+}
+
+# Proxy to a GitHub API host, named by {args[0]}: wipe all inbound headers (incl. the
+# sandbox's placeholder Authorization), re-add only the allowlisted API set. Routes add their
+# extra header lines via the import block.
+(apiproxy) {
+	reverse_proxy https://{args[0]} {
+		header_up -*
+		header_up Host {args[0]}
+		import apihdrs
+		flush_interval -1
+		{block}
+	}
+}
+
+# Convert a 401 on a credentialed route: it means GitHub rejected the injected token, and
+# GitHub's raw "Bad credentials" would read like a sandbox-side problem, so name the
+# host-side remedy (gh surfaces the message field of JSON error bodies).
+(rejected_credential) {
+	@unauth status 401
+	handle_response @unauth {
+		header Content-Type application/json
+		respond `{"message":"chopi: GitHub rejected the relay credential; refresh the host's GitHub token outside the sandbox (gh auth login / GH_TOKEN)"}` 401
+	}
+}
+
+# GitHub API site start
+# api.github.com is served too: absolute URLs in API responses (jobs_url, pagination Link
+# headers) keep their real host, and gh's host-blind socket dialer sends them here as well.
+http://api.github.localhost, http://api.github.com {
+	# Quoted: the socket path is TMPDIR-derived and may hold whitespace.
+	bind "unix/@@CHOPI_GH_SOCK@@"
+
+	# ... Followed by caddyfile fragments for the API allowed and pub routes

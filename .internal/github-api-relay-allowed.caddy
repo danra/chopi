@@ -1,0 +1,26 @@
+	# The GitHub API relay allowed repos fragment: API requests for allowlisted repos are
+	# proxied with the injected GitHub token.
+
+	# allowlisted repos: full REST access, with the injected credential. (?i): GitHub treats
+	# owner/repo slugs case-insensitively, so a case-mismatched request must still take this
+	# credentialed route rather than fall through to the anonymous one.
+	#
+	# Note: the regex relies on Caddy resolving dot segments before matching, otherwise a raw
+	# `/repos/allowed/x/../../../user` would match and carry the token off-allowlist. This is
+	# verified safe in test/github-relay-test.sh.
+	@api_allowed path_regexp (?i)^/repos/(@@ALLOWLIST_REGEX@@)(/.*)?$
+	handle @api_allowed {
+		import apiproxy api.github.com {
+			header_up Authorization "@@CHOPI_API_AUTH@@"
+
+			# Pagination Link headers use id-form /repositories/{id} URLs, which can't be matched
+			# to the name-based allowlist; rewrite them back to their name form to keep pagination
+			# authenticated.
+			header_down Link https://api\.github\.com/repositories/[0-9]+ https://api.github.com/repos/{re.1}
+
+			# A renamed repo's 301 Location points at an id-form URL too, but that's BECAUSE the name changed;
+			# mapping it back would redirect endlessly.
+
+			import rejected_credential
+		}
+	}

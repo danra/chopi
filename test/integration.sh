@@ -17,6 +17,13 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+
+# A private TMPDIR, exported so the scripts under test leave their temporaries here too. Created
+# before sourcing util.sh, which derives GH_RELAY_SOCK from it; trap it now so an early skip still
+# cleans up (the rest of the fixtures, and the fuller trap, come after the skip guards below).
+TMPDIR="$(mktemp -d)"; export TMPDIR
+trap 'rm -rf "$TMPDIR"' EXIT
+
 . "$repo/.internal/util.sh"
 . "$repo/.internal/claude-prompt.sh"
 . "$repo/test/lib.sh"
@@ -34,7 +41,7 @@ OTHER_DENIED_HOST="www.wikipedia.org"  # never allowed -> stays refused across t
 skip() { arity 1; echo "SKIP: $1"; exit 0; }
 
 [ "$(uname -s)" = "Darwin" ] || skip "not macOS (the sandbox needs Seatbelt/safehouse)"
-for t in safehouse jq alerter nc caddy git; do
+for t in safehouse jq alerter nc caddy git gh; do
     command -v "$t" >/dev/null 2>&1 || skip "missing required tool on PATH: $t"
 done
 # The proxy binary is invoked by absolute path (it isn't on PATH); mirror chopi-proxy.sh's check.
@@ -45,15 +52,13 @@ fi
 
 
 # ---------------------------------------------------------------------------
-# Fixtures -- a private TMPDIR (exported so the scripts under test leave their
-# temporaries here too), and everything else under one CANONICAL base dir in /var/tmp
+# Fixtures -- everything under one CANONICAL base dir in /var/tmp
 # (Seatbelt filters, and so the assertions below, see /private/var/tmp, not the /var symlink).
 # Why /var/tmp: safehouse grants nothing there, unlike /tmp and /var/folders; and unlike
 # $HOME, its ancestors hold no Claude context files of the developer's, whose symlink
 # targets and @-imports the minimal configs here do not grant, so every claude run below
 # would be refused.
 # ---------------------------------------------------------------------------
-TMPDIR="$(mktemp -d)"; export TMPDIR
 vartmp="$(cd /var/tmp && pwd -P)" || { echo "error: cannot resolve /var/tmp" >&2; exit 1; }
 base="$(mktemp -d "$vartmp/chopi-itest.XXXXXX")" || { echo "error: mktemp failed" >&2; exit 1; }
 marker_file=""
@@ -634,6 +639,28 @@ assert_not_contains "$code" "200"                  "a direct outgoing connection
 # that network.sb does not allow (it allows 4760-4761) is blocked by Seatbelt. Offline-safe.
 code="$(sandbox_curl --max-time 15 --proxy "http://127.0.0.1:9999" "https://$ALLOWED_HOST")"
 assert_not_contains "$code" "200"                  "an outgoing connection to a non-allowlisted loopback port is blocked by the sandbox"
+
+# (5) gh's relay plumbing, end-to-end: chopi writes the http_unix_socket config, exports the gh
+# env, and opens the socket's Seatbelt hole -- and the real gh consumes all of it from inside
+# the sandbox. GraphQL is denied by the relay itself, so this stays offline-safe: Caddy answers
+# the 403 locally, and gh displays the JSON deny message.
+[ -S "$GH_RELAY_SOCK" ] || bad "the GitHub API relay socket file is missing on the host: $GH_RELAY_SOCK"
+# The config's in-sandbox PATH is system-only, so gh (a homebrew tool) must be invoked by
+# absolute path, like the other in-sandbox commands; the profile allows reading+exec under /opt.
+gh_bin="$(command -v gh)"
+api_deny="$(chopi_t "$gh_bin" api graphql -f query='{viewer{login}}' 2>&1)"; rc=$?
+assert_nonzero  "$rc"       "in-sandbox gh api graphql is refused"
+assert_contains "$api_deny" 'not an allowed API operation' "  -> gh reached the relay through its socket and displays the deny"
+assert_contains "$api_deny" 'HTTP 403'                     "  -> as the relay's own 403"
+
+# (6) Conversely, chopi refuses upfront when no relay socket is present at the path it derives from
+# TMPDIR.
+no_sock_tmp="$(mktemp -d "$base/chopi-no-sock.XXXXXX")"
+refuse_out="$(TMPDIR="$no_sock_tmp" chopi_t /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_nonzero     "$rc"         "chopi refuses when the GitHub API relay socket is absent"
+assert_contains    "$refuse_out" "no GitHub API relay listening at $no_sock_tmp/chopi-gh-relay.sock" \
+    "  -> the refusal names the missing relay socket"
+assert_not_contains "$refuse_out" "RAN"                "  -> the sandboxed command never runs"
 
 
 # ---------------------------------------------------------------------------

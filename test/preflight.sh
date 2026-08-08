@@ -203,7 +203,7 @@ assert_contains "$out" "no GitHub relay"         "a dead relay is refused with a
 assert_nonzero "$st" "  -> and returns non-zero"
 
 # The check cleared is all this case pins: past it, preflight_initial goes on to probe
-# host state (the safehouse CLI) that a unit test doesn't control.
+# host state (the GitHub API relay socket, the safehouse CLI) that a unit test doesn't control.
 out="$(relay_probe 0)"
 assert_not_contains "$out" "no GitHub relay" "a live relay clears the check"
 

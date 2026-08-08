@@ -1,25 +1,31 @@
 #!/usr/bin/env bash
 #
-# github-relay-caddyfile.sh -- emit the Caddy config for chopi's GitHub relay.
+# github-relays-caddyfile.sh -- emit the Caddy config for chopi's GitHub relays.
 #
-#   github-relay-caddyfile.sh <allowlist-file>   # prints a Caddyfile to stdout
+#   github-relays-caddyfile.sh <allowlist-file>   # prints a Caddyfile to stdout
 #
 # Compiles the GitHub repo allowlist into a path regex and assembles the Caddyfile from the
-# github-relay-{head,allowed,pub}.caddy fragments next to this script: one loopback
-# reverse-proxy listener,
+# github-relay-*.caddy (git) and github-api-relay-*.caddy (API) fragments next to this script:
+# two loopback reverse-proxy listeners,
 #
-#   :GITHUB_RELAY_PORT   git-smart-HTTP -> github.com
+#   :GITHUB_RELAY_PORT (TCP)      git-smart-HTTP -> github.com
+#   GH_RELAY_SOCK (unix socket)   gh REST API    -> api.github.com / uploads.github.com
 #
-# with the credentialed routes included only when the allowlist has entries.
+# with the credentialed routes included only when the allowlist has entries, and a catch-all
+# tail on the API relay: an anonymous passthrough for GitHub's signed-storage download hosts
+# (gh follows those redirects over the socket) and a loud refusal for any other Host.
 #
-# chopi-proxy.sh renders this, fills the @@CHOPI_AUTH@@ credential slot in memory, and pipes the
-# result to Caddy over stdin -- so the credential never touches disk.
+# chopi-proxy.sh renders this, fills the @@CHOPI_AUTH@@ / @@CHOPI_API_AUTH@@ credential slots and
+# the @@CHOPI_GH_SOCK@@ socket-path slot in memory, and pipes the result to Caddy over stdin -- so
+# they never touch disk.
 #
-# This is a reverse proxy, not a MITM: the sandbox reaches it over plaintext loopback HTTP, and
-# Caddy originates its own TLS to GitHub with real certs, so no CA is involved.
+# These are reverse proxies, not MITMs: the sandbox reaches them over plaintext loopback HTTP (gh
+# speaks plaintext because chopi sets GH_HOST=github.localhost, dialing the socket via
+# http_unix_socket), and Caddy originates its own TLS to GitHub with real certs, so no CA is
+# involved.
 #
-# Every route drops all inbound request headers and re-adds only a fixed git/LFS-necessary set.
-# The injected credential is re-added ONLY on the allowlisted @allowed routes.
+# Every route drops all inbound request headers and re-adds only a fixed necessary set. The
+# injected credentials are re-added ONLY on the allowlisted @allowed / @api_allowed routes.
 
 set -euo pipefail
 
@@ -29,12 +35,12 @@ unset _render_dir
 
 main() {
     if [ "$#" -ne 1 ]; then
-        echo "github-relay-caddyfile.sh: usage: github-relay-caddyfile.sh <allowlist-file>" >&2
+        echo "github-relays-caddyfile.sh: usage: github-relays-caddyfile.sh <allowlist-file>" >&2
         exit 2
     fi
     local allowlist="$1"
     if [ ! -f "$allowlist" ]; then
-        echo "github-relay-caddyfile.sh: allowlist file not found: $allowlist" >&2
+        echo "github-relays-caddyfile.sh: allowlist file not found: $allowlist" >&2
         exit 2
     fi
 
@@ -56,7 +62,7 @@ build_allowlist_regex() {
         [ -z "$entry" ] && continue
         case "$entry" in
             */*) ;;
-            *) echo "github-relay-caddyfile.sh: allowlist entry needs owner/repo or owner/*: '$entry'" >&2; exit 2 ;;
+            *) echo "github-relays-caddyfile.sh: allowlist entry needs owner/repo or owner/*: '$entry'" >&2; exit 2 ;;
         esac
         owner="${entry%%/*}"
         repo="${entry#*/}"
@@ -97,34 +103,41 @@ validate_repo_slug() {
     arity 3
     local value="$1" kind="$2" entry="$3"
     case "$value" in
-        ''|*[!A-Za-z0-9._-]*) echo "github-relay-caddyfile.sh: bad $kind in '$entry'" >&2; exit 2 ;;
+        ''|*[!A-Za-z0-9._-]*) echo "github-relays-caddyfile.sh: bad $kind in '$entry'" >&2; exit 2 ;;
     esac
 }
 
-# emit_caddyfile -- assemble the Caddyfile from the fragments and fill every slot except
-# @@CHOPI_AUTH@@, which is deliberately left for the caller's in-memory credential fill, so this
-# generator never handles the token itself. $1 is the allowlist regex alternation; when it is
-# empty the credentialed fragment is dropped entirely, so no push route exists at all.
+# emit_caddyfile -- assemble the Caddyfile from the fragments and fill every slot except the
+# caller-filled ones: @@CHOPI_AUTH@@ / @@CHOPI_API_AUTH@@ (in-memory credential fills, so this
+# generator never handles the token itself) and @@CHOPI_GH_SOCK@@ (the API-relay socket path: the caller
+# knows it; this generator may run under an already-repointed TMPDIR, where re-deriving it gives a
+# different path). $1 is the allowlist regex alternation; when it is empty the credentialed
+# fragments are dropped entirely, so no push route and no authed API route exist at all.
 emit_caddyfile() {
     arity 1
     local allowlist_regex="$1"
 
-    local head allowed pub
-    head="$(cat "$CHOPI_DIR/.internal/github-relay-head.caddy")"
-    allowed="$(cat "$CHOPI_DIR/.internal/github-relay-allowed.caddy")"
-    pub="$(cat "$CHOPI_DIR/.internal/github-relay-pub.caddy")"
+    local fragments=(github-relay-head)
+    [ -n "$allowlist_regex" ] && fragments+=(github-relay-allowed)
+    fragments+=(github-relay-pub github-api-relay-head)
+    [ -n "$allowlist_regex" ] && fragments+=(github-api-relay-allowed)
+    fragments+=(github-api-relay-pub)
+    [ -n "$allowlist_regex" ] && fragments+=(github-api-relay-uploads)
+    fragments+=(github-api-relay-tail)
 
+    local name paths=()
+    for name in "${fragments[@]}"; do
+        paths+=("$CHOPI_DIR/.internal/$name.caddy")
+    done
     local text
-    text="$head"$'\n'
-    [ -n "$allowlist_regex" ] && text="$text$allowed"$'\n'
-    text="$text$pub"
+    text="$(cat "${paths[@]}")"
 
     local deny_fetch deny_push auth_msg deny_auth_fetch deny_auth_push
     deny_fetch="$(deny_pkt git-upload-pack \
         "chopi: repo not found, or private and missing from chopi's config/github-allowlist")"
     deny_push="$(deny_pkt git-receive-pack \
         "chopi: push denied, repo is not in chopi's config/github-allowlist")"
-    auth_msg="chopi: GitHub rejected the relay credential; refresh the host's GitHub token (gh auth login / GH_TOKEN)"
+    auth_msg="chopi: GitHub rejected the relay credential; refresh the host's GitHub token outside the sandbox (gh auth login / GH_TOKEN)"
     deny_auth_fetch="$(deny_pkt git-upload-pack "$auth_msg")"
     deny_auth_push="$(deny_pkt git-receive-pack "$auth_msg")"
 

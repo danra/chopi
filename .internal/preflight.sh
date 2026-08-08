@@ -6,7 +6,8 @@
 # only learns the dir the command will actually run in partway through setup:
 #   * preflight_initial          -- runnable up front: the workspace doesn't overlap chopi's
 #                                   own dir (a confined command must not reach the policy
-#                                   that confines it), both local proxies are up, and the
+#                                   that confines it), the proxy-side services (both loopback
+#                                   ports and the GitHub API relay socket) are up, and the
 #                                   safehouse CLI is on PATH.
 #   * preflight_config_placement -- deferred until chopi has resolved the workspace (the
 #                                   --worktree target), since that is the dir a custom
@@ -72,6 +73,13 @@ preflight_initial() {
 
     check_listener "$GITHUB_RELAY_PORT" "no GitHub relay" \
         "It runs alongside the outgoing proxy; (re)start both in a separate terminal:  chopi-proxy" || return 1
+
+    if ! sock_has_listener "$GH_RELAY_SOCK"; then
+        echo "error: no GitHub API relay listening at $GH_RELAY_SOCK" >&2
+        echo "Start chopi-proxy in this same environment first (a proxy started under a" >&2
+        echo "different TMPDIR binds a different socket path)." >&2
+        return 1
+    fi
 
     # Agent Safehouse builds the sandbox policy and execs the command inside it, so
     # it's a per-run dependency. Fail fast with a pointer rather than a bare

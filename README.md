@@ -239,9 +239,9 @@ therefore split across cooperating layers:
 
 | Layer | Tool | Enforces |
 |-------|------|----------|
-| Sandbox | [`safehouse`](https://github.com/eugene1g/agent-safehouse) (wraps `sandbox-exec`) | Filesystem and preset features; the only outgoing network permitted is to the local proxies at `127.0.0.1:4760` (smokescreen) and `:4761` (the GitHub relay). |
+| Sandbox | [`safehouse`](https://github.com/eugene1g/agent-safehouse) (wraps `sandbox-exec`) | Filesystem and preset features; the only outgoing network permitted is to the local proxies at `127.0.0.1:4760` (smokescreen), `:4761` (the GitHub relay), and the relay's unix socket for the `gh` REST API. |
 | Domain-level proxy | [`smokescreen`](https://github.com/stripe/smokescreen) (CONNECT proxy) | Of the traffic that reaches it, only connections to allowed hosts are forwarded; everything else is refused and logged. |
-| GitHub repo-level proxy | [`caddy`](https://caddyserver.com) (reverse proxy) | `github.com` git is reached *only* through this relay, which scopes it to a repo allowlist: fetching a **public** repo is unrestricted, but reading a **private** repo and **any push** are limited to allowlisted repos. |
+| GitHub repo-level proxy | [`caddy`](https://caddyserver.com) (reverse proxy) | `github.com` git and the REST API are reached *only* through this relay, which scopes them to a repo allowlist: fetching/reading a **public** repo is unrestricted, but reading a **private** repo, **any push**, and **any authenticated API access** are limited to allowlisted repos. |
 
 **The sandbox** makes the proxies the *only* way to communicate over the network.
 
@@ -251,10 +251,11 @@ innocent domains that can still be abused by an attacker for exfiltration! (e.g.
 pastebin.com)
 
 **The repo-level proxy** exists to prevent a misbehaving agent pushing stolen code to
-*any* repo on GitHub (possibly using an attacker-provided token). Currently, this
-protection layer only supports GitHub; other repo-hosting domains can be allowlisted by
-domain, but be aware of the exfiltration risk. `gh` and GitHub's API are still
-unsupported.
+*any* repo on GitHub (possibly using an attacker-provided token). It covers both git and
+the REST API, and keeps the host's GitHub token out of the sandbox: the relay attaches
+it only to requests for allowlisted repos. Currently, this protection layer only supports
+GitHub; other repo-hosting domains can be allowlisted by domain, but be aware of the
+exfiltration risk.
 
 The sandboxed agent must route its traffic through the proxy, i.e., respect
 `HTTP_PROXY`/`HTTPS_PROXY`). The sandbox blocks all other outgoing traffic, so an agent that
@@ -267,9 +268,11 @@ Network path of the sandboxed command:
 
 ```
 <cmd>
-  │  Seatbelt allows outgoing connections ONLY to 127.0.0.1:{4760,4761}
+  │  Seatbelt allows outgoing connections ONLY to 127.0.0.1:{4760,4761} + the GitHub API relay socket
   ├─ github.com (git) ─── 4761 ────▶ caddy relay ─(repo allowlisted?)─▶ GitHub
   │                                   └─ public fetch: any repo · private fetch or push: allowlisted only
+  ├─ gh REST API ──── unix socket ─▶ caddy relay ─(repo allowlisted?)─▶ GitHub API
+  │                                   └─ read: any public repo · authed access: allowlisted only
   └─ everything else ──── 4760 ────▶ smokescreen ─(host allowed?)─▶ api.anthropic.com / ...
                                           └────(not allowed)────▶ refused + logged
 ```
@@ -282,6 +285,11 @@ Network path of the sandboxed command:
   `deny(known)` line if they match the known denylist); if the host should be allowed,
   add it to `config/proxy-rules.yaml`. The proxy hot-reloads the rules, so you don't
   need to restart it.
+- **A `gh` subcommand fails with `not an allowed API operation`, `none of the git
+  remotes ... correspond to the GH_HOST environment variable`, or `unable to expand
+  placeholder in path`** -- Use REST forms naming the repo explicitly (`-R OWNER/REPO`,
+  literal slugs in `gh api repos/OWNER/REPO/...`), or run the command outside the
+  sandbox.
 - **A non-network sandbox denial** -- See Agent Safehouse's
 - [Debugging Sandbox Denials](https://agent-safehouse.dev/docs/debugging.html)
   to analyze, and amend `config/sandbox.sh` (or another `safehouse` persistent
@@ -301,6 +309,20 @@ The proxy is an in-repo Go wrapper, `.internal/proxy/`, that embeds smokescreen 
 library and hot-reloads the rules file (the standalone smokescreen binary only reads
 its rules at startup). `install.sh` and `make build` compile it to
 `.internal/proxy/chopi-smokescreen`.
+
+### The GitHub relays
+
+Both GitHub relays live in one Caddy config: a TCP listener on `127.0.0.1:4761` for git
+smart-HTTP, and a loopback unix socket for the `gh` REST API. `chopi` points `gh` at the
+socket with `GH_HOST=github.localhost` (which makes `gh` speak plaintext `http`, so still
+no CA) plus `http_unix_socket` in a throwaway config dir. The host-side token is injected
+only for allowlisted `/repos/{owner}/{repo}` requests; other repos are reached anonymously
+(public read only). GraphQL (`/graphql`) and account-level endpoints (gists, keys,
+`/user`) can't be scoped by URL path, so they are denied. Downloads that the API answers
+with a redirect to GitHub's signed storage (Actions logs and artifacts, release assets)
+are followed through the relay anonymously. Release-asset uploads (`gh release create` /
+`gh release upload`) go to `uploads.github.com`, which the relay serves with the same
+allowlist scoping.
 
 ### Tests
 

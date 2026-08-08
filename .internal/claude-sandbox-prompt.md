@@ -8,9 +8,10 @@ configuration paths below are relative to. Four things are confined:
   of a git worktree -- plus whatever the user allowed explicitly.
 - **Worktrees.** Sibling worktrees of the same repo, and other repos, are unreadable. This
   is deliberate: it keeps a session from picking up context outside its assigned task.
-- **Network.** The only reachable addresses are two loopback proxies. Everything else is
-  blocked at the kernel level, so a request that ignores the proxies gets no network at all
-  rather than a direct connection.
+- **Network.** The only reachable addresses are two loopback proxies, plus a loopback unix
+  socket `gh` is preconfigured with for the GitHub REST API. Everything else is blocked at
+  the kernel level, so a request that ignores the proxies gets no network at all rather
+  than a direct connection.
 - **Git internals.** `.git` is readable, and git's data paths (objects, refs, index, rebase
   state) are writable, but `config`, `hooks`, and the rest are read-only, so nothing you
   write can later execute unsandboxed during a git operation. Committing, amending,
@@ -51,7 +52,12 @@ the user to restart the wrong thing wastes a cycle.
 | A network call hangs or fails with no proxy error | Something bypassed the proxy environment variables | Use a client that honors `HTTP_PROXY`/`HTTPS_PROXY`. Nothing can be granted for this. |
 | `chopi: push denied, repo is not in chopi's config/github-allowlist` | The repo is not allowlisted for push | User adds `owner/repo` (or `owner/*`) to `config/github-allowlist`. **Needs a `chopi-proxy` restart:** the allowlist is compiled in when the proxy starts. |
 | `chopi: repo not found, or private and missing from ...` | Private repo fetch, same allowlist | Same as above. Public repo fetch needs no entry. |
-| `gh` commands, or anything hitting `api.github.com` | Only git over the relay is supported for GitHub | Not available. Use plain git, or ask the user to run `gh` outside the sandbox. |
+| `gh api` fails: `unable to expand placeholder in path` | `{owner}`/`{repo}`/`{branch}` placeholders are filled from the git-remote resolution below, which cannot work here | Write literal slugs in the path: `gh api repos/OWNER/REPO/...`. |
+| gh: `none of the git remotes configured for this repository correspond to the GH_HOST environment variable` | gh resolves the target repo from the git remotes, which chopi rewrites to the loopback relay, so none can ever match -- by design | Nothing to grant, and the error's own advice leads to other denials: do not unset `GH_HOST` (gh's relay transport needs it) or add a remote (a denied config write). Pass `-R OWNER/REPO` instead; REST-backed subcommands then work, GraphQL-backed ones get the deny below. |
+| `gh pr` / `gh issue` / `gh repo view` / `gh release view` (on draft releases) and similar fail: `chopi GitHub relay: not an allowed API operation` | GraphQL and account-level endpoints name their target in the request body, not the URL, so the relay cannot scope them to the repo allowlist -- denied by design | Not available in-session. Use the REST form (`gh api repos/OWNER/REPO/...`) when one exists, or ask the user to run the command outside the sandbox. |
+| `gh` REST reads 404 on a non-allowlisted private repo, or writes are unauthorized | The GitHub token is injected only for allowlisted repos; other repos are reached anonymously | Same allowlist and restart as above. Public-repo reads need no entry. |
+| `gh` REST reads 404 (`Not Found`) on an **allowlisted** private repo | GitHub hides repos the credential cannot see: the host's token does not cover this one (fine-grained PATs are repo-scoped) | User grants the repo to the host's token, outside the sandbox. Widening the existing token applies immediately; a replacement token **needs a `chopi-proxy` restart:** the credential is read when the proxy starts. |
+| Anything hitting `api.github.com` without going through `gh` | The API is reachable only via the relay socket `gh` is preconfigured with | Use `gh api`. Direct hits are quietly denied; nothing to grant for other clients. |
 | Background tasks fail to start | The daemon needs a unix socket the policy denies; the default config also turns them off (`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`) | Run the command in the foreground. |
 
 ## Branch bookkeeping and the read-only config

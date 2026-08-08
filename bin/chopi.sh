@@ -229,14 +229,36 @@ main() {
     } > "$wrapper_profile"
     local wrapper_flags=(--append-profile "$wrapper_profile")
 
+    # Point gh at the API relay socket, via a throwaway config dir of our own that leaves the
+    # user's real gh config untouched.
+    local gh_config_dir gh_env_text
+    gh_config_dir="$(mktemp -d "$TMPDIR/chopi-gh-config.XXXXXX")" \
+        || { echo "chopi: could not create a temp dir for the gh relay config" >&2; return 1; }
+    gh_env_text="$(github_relay_gh_env "$gh_config_dir")" \
+        || { echo "chopi: could not write the gh relay config" >&2; return 1; }
+    local gh_env=()
+    readarray -t gh_env <<< "$gh_env_text"
+
+    # Open a Seatbelt network hole to the GitHub API relay socket.
+    local gh_sock gh_relay_profile
+    gh_sock="$(realpath "$GH_RELAY_SOCK")" \
+        || { echo "chopi: cannot resolve the GitHub API relay socket path '$GH_RELAY_SOCK'" >&2; return 1; }
+    gh_relay_profile="$(mktemp "$TMPDIR/chopi-gh-relay-net.XXXXXX")" \
+        || { echo "chopi: could not create a temp file for the GitHub API relay network profile" >&2; return 1; }
+    {
+        echo ";; chopi: re-open the GitHub API relay's unix socket (network.sb denies unix sockets)."
+        rule 'allow network-outbound' literal "$gh_sock"
+    } > "$gh_relay_profile"
+
     local proxy="http://127.0.0.1:$PROXY_PORT"
 
     if [ -n "$worktree_dir" ]; then
         cd "$worktree_dir" || { echo "chopi: cannot enter worktree '$worktree_dir'" >&2; return 1; }
     fi
 
-    # chopi's outgoing-pinning network profile is always appended last, so its
-    # (deny network*) lands after safehouse's own profile and pins outgoing to the proxy.
+    # chopi's network profiles are always appended last so that (deny network*) lands after
+    # safehouse's own profile, pinning outgoing traffic to the subsequent holes allowed for the proxy
+    # and the GitHub relay servers.
     #
     # errexit off around safehouse so a non-zero exit from the sandboxed command is captured
     # and propagated (so `chopi cmd && next` short-circuits) instead of aborting here.
@@ -249,6 +271,7 @@ main() {
         "${protection_flags[@]}" \
         "${wrapper_flags[@]}" \
         --append-profile "$CHOPI_DIR/.internal/network.sb" \
+        --append-profile "$gh_relay_profile" \
         -- \
         "${CHOPI_EXTRA_ENV[@]+"${CHOPI_EXTRA_ENV[@]}"}" \
         "${queue_env[@]+"${queue_env[@]}"}" \
@@ -258,6 +281,7 @@ main() {
         NODE_USE_ENV_PROXY=1 \
         NO_PROXY="127.0.0.1"  no_proxy="127.0.0.1" \
         GIT_TERMINAL_PROMPT=0 \
+        "${gh_env[@]}" \
         "${wrapper_cmd[@]}" \
         "${cmd_argv[@]}"
     { local rc=$?; set +x; } 2>/dev/null

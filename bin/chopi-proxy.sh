@@ -210,7 +210,7 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 # Render the GitHub relay config.
 CADDY_LOG="$TMPDIR/caddy.log"
-CADDYFILE_TEXT="$("$CHOPI_DIR/.internal/github-relay-caddyfile.sh" "$GITHUB_ALLOWLIST")" \
+CADDYFILE_TEXT="$("$CHOPI_DIR/.internal/github-relays-caddyfile.sh" "$GITHUB_ALLOWLIST")" \
     || { echo "error: could not render the GitHub relay config from $GITHUB_ALLOWLIST" >&2; exit 1; }
 if [[ "$CADDYFILE_TEXT" == *@@CHOPI_AUTH@@* ]]; then
     gh_token="$(resolve_gh_token)"
@@ -221,15 +221,18 @@ if [[ "$CADDYFILE_TEXT" == *@@CHOPI_AUTH@@* ]]; then
         exit 1
     fi
     gh_auth="$(gh_basic_auth_header "$gh_token")"
+    gh_api_auth="$(gh_bearer_auth_header "$gh_token")"
     gh_token=""
     CADDYFILE_TEXT="${CADDYFILE_TEXT//@@CHOPI_AUTH@@/$gh_auth}"
+    CADDYFILE_TEXT="${CADDYFILE_TEXT//@@CHOPI_API_AUTH@@/$gh_api_auth}"
     gh_auth=""
+    gh_api_auth=""
 else
     # No credential slot: the GitHub allowlist is empty, so the relay proxies anonymous public fetch
     # only.
     note_marker="NOTE"
     [ -t 2 ] && note_marker=$'\033[33mNOTE\033[0m'
-    echo "[$SCRIPT_NAME] $note_marker: the GitHub allowlist is empty; only public fetch is enabled until you add allowed repos." >&2
+    echo "[$SCRIPT_NAME] $note_marker: the GitHub allowlist is empty; only public fetch and anonymous public API reads are enabled until you add allowed repos." >&2
 fi
 
 # Strip any GitHub token the user exported into our environment to avoid passing it down to more processes
@@ -237,18 +240,21 @@ fi
 unset GH_TOKEN GITHUB_TOKEN
 
 if ! start_github_relay "$CADDYFILE_TEXT" "$CADDY_LOG"; then
-    echo "error: the GitHub relay did not come up on 127.0.0.1:$GITHUB_RELAY_PORT. Its log:" >&2
-    sed 's/^/  /' "$CADDY_LOG" >&2
-    kill "$CADDY_PID" 2>/dev/null || true
+    echo "error: the GitHub relay did not come up on 127.0.0.1:$GITHUB_RELAY_PORT." >&2
+    if [ -f "$CADDY_LOG" ]; then
+        echo "Its log:" >&2
+        sed 's/^/  /' "$CADDY_LOG" >&2
+    fi
+    kill "${CADDY_PID:-}" 2>/dev/null || true
     exit 1
 fi
 CADDYFILE_TEXT=""
 
 # Tie Caddy's lifetime to smokescreen's.
-start_relay_reaper $$ "$CADDY_PID" "$TMPDIR"
+start_relay_reaper $$ "$CADDY_PID" "$TMPDIR" "$GH_RELAY_SOCK"
 
 # Start smokescreen
-echo "[$SCRIPT_NAME] GitHub relay on 127.0.0.1:$GITHUB_RELAY_PORT" >&2
+echo "[$SCRIPT_NAME] GitHub relay on 127.0.0.1:$GITHUB_RELAY_PORT, GitHub API relay on $GH_RELAY_SOCK" >&2
 echo "[$SCRIPT_NAME]   relay log: $CADDY_LOG" >&2
 echo "[$SCRIPT_NAME] starting outgoing proxy on 127.0.0.1:$PROXY_PORT (Ctrl-C to stop)" >&2
 exec "$SMOKESCREEN_BIN" --config-file ./.internal/smokescreen-config.yaml \

@@ -25,10 +25,18 @@ trap 'rm -rf "$WORK"' EXIT
 # empty one (anonymous routes only).
 printf 'owner/repo\n' > "$WORK/allow-populated"
 : > "$WORK/allow-empty"
-"$CHOPI_DIR/.internal/github-relay-caddyfile.sh" "$WORK/allow-populated" > "$WORK/github-populated"
-"$CHOPI_DIR/.internal/github-relay-caddyfile.sh" "$WORK/allow-empty" > "$WORK/github-empty"
+"$CHOPI_DIR/.internal/github-relays-caddyfile.sh" "$WORK/allow-populated" > "$WORK/github-populated"
+"$CHOPI_DIR/.internal/github-relays-caddyfile.sh" "$WORK/allow-empty" > "$WORK/github-empty"
+
+# Fill the socket-path slot the way chopi-proxy does before piping to caddy, so the config checked
+# here is the one caddy is handed in production. The path is TMPDIR-derived, so fill with one
+# holding whitespace, which a TMPDIR may legally hold.
+sock="$WORK/tmp dir/chopi-gh-relay.sock"
 
 for cf in github-populated github-empty; do
+    text="$(cat "$WORK/$cf")"
+    printf '%s\n' "${text//@@CHOPI_GH_SOCK@@/$sock}" > "$WORK/$cf"
+
     if ! caddy validate --adapter caddyfile --config "$WORK/$cf" > "$WORK/log" 2>&1; then
         echo "caddy validate failed on the $cf render:" >&2
         cat "$WORK/log" >&2
@@ -39,14 +47,26 @@ for cf in github-populated github-empty; do
         grep '^[+-]' "$WORK/log" >&2 || cat "$WORK/log" >&2
         exit 1
     fi
-    # The relay must listen on loopback only. A site-address host only MATCHES requests, it
-    # never binds: a site without an explicit bind gets Caddy's default wildcard listener.
+    # The relay must listen on the loopback port and the filled socket path, and nowhere else:
+    # a site-address host only MATCHES requests, it never binds (a site without an explicit bind
+    # gets Caddy's default wildcard listener), and whitespace in an unquoted bind token splits it
+    # into bogus listeners that caddy accepts at validate time and fails to bind at run time.
     caddy adapt --adapter caddyfile --config "$WORK/$cf" > "$WORK/json" 2>/dev/null
-    if grep -qE '":[0-9]+"|"0\.0\.0\.0:' "$WORK/json"; then
-        echo "the $cf render listens on a non-loopback interface:" >&2
+    if ! grep -qF "\"unix/$sock\"" "$WORK/json"; then
+        echo "the $cf render does not listen on the filled API socket path:" >&2
         grep -oE '"listen":\[[^]]*\]' "$WORK/json" >&2
         exit 1
     fi
+    listeners="$(grep -oE '"listen":\[[^]]*\]' "$WORK/json" | grep -oE '"[^"]*"' | grep -v '^"listen"$' | tr -d '"')"
+    while IFS= read -r addr; do
+        case "$addr" in
+            "127.0.0.1:$GITHUB_RELAY_PORT" | "unix/$sock") ;;
+            *)
+                echo "the $cf render binds an unexpected listener '$addr':" >&2
+                grep -oE '"listen":\[[^]]*\]' "$WORK/json" >&2
+                exit 1 ;;
+        esac
+    done <<< "$listeners"
 done
 
 echo "caddy relay configs: valid"

@@ -1,0 +1,61 @@
+# GitHub API relay tail fragment: the API socket's catch-all site, always emitted last.
+
+# Anonymous passthrough to the signed-storage host {args[0]}: wipe all inbound headers,
+# re-add only what a download needs, no credential. The upstream is scheme-less because
+# Caddy rejects placeholders in upstream addresses that carry a scheme (the Actions blob
+# lane passes a runtime capture); transport http + tls + tls_server_name supply TLS with
+# per-request SNI.
+(storageproxy) {
+	reverse_proxy {args[0]}:443 {
+		transport http {
+			tls
+			tls_server_name {args[0]}
+		}
+		header_up -*
+		header_up Host {args[0]}
+		header_up Accept {http.request.header.Accept}
+		header_up User-Agent {http.request.header.User-Agent}
+		flush_interval -1
+	}
+}
+
+http:// {
+	bind "unix/@@CHOPI_GH_SOCK@@"
+
+	# The signed-storage hosts, GET-only, one matcher + handle pair per host: a matcher ANDs
+	# its conditions, so alternative hosts cannot share one. codeload.github.com (repo
+	# tarball/zipball) is deliberately NOT here: its URLs name owner/repo, so it would need
+	# allowlist-scoping like the git routes rather than this anonymous lane; not worth it.
+
+	# Actions per-job logs and artifacts
+	@actions_blobs {
+		method GET
+		header_regexp blobhost Host ^(productionresultssa[0-9]+\.blob\.core\.windows\.net)$
+	}
+	handle @actions_blobs {
+		import storageproxy {re.blobhost.1}
+	}
+
+	# Actions whole-run log archives
+	@run_logs {
+		method GET
+		header Host results-receiver.actions.githubusercontent.com
+	}
+	handle @run_logs {
+		import storageproxy results-receiver.actions.githubusercontent.com
+	}
+
+	# Release assets
+	@release_assets {
+		method GET
+		header Host release-assets.githubusercontent.com
+	}
+	handle @release_assets {
+		import storageproxy release-assets.githubusercontent.com
+	}
+
+	handle {
+		header Content-Type application/json
+		respond `{"message":"chopi GitHub relay: unsupported host {host}"}` 421
+	}
+}
