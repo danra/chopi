@@ -11,7 +11,7 @@
 #   1b. a gzipped fetch is decoded by GitHub
 #   1c. fetch of a private/nonexistent repo fails with an informative error message
 #   2. push to a non-allowlisted repo fails with an informative error message
-#   2b. non-git requests still fail closed (403)
+#   2b. non-git requests still fail closed (403), with a deny message git displays
 #   3. (opt) push/fetch authorized for allowlisted repo
 #   3b. (opt) git-lfs push/fetch round-trips through the relay (the real blob survives)
 #   4. a credential GitHub rejects fails with an informative error message
@@ -111,9 +111,20 @@ else
     bad "non-allowlisted push shows the wrong error:"; sed 's/^/      /' "$WORK/e2"
 fi
 
-# 2b. non-git requests still fail closed
+# 2b. non-git requests still fail closed -- and readably: git relays a text/plain error body
+#     as a "remote:" line, so the deny's usefulness rides on its content type and body.
 code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$git_url/torvalds/linux/git-receive-pack")"
 assert_eq "$code" "403" "non-git operation refused (bare receive-pack POST)"
+curl -s -D "$WORK/deny-h" -o "$WORK/deny-b" -X POST "$git_url/torvalds/linux/git-receive-pack"
+assert_contains "$(cat "$WORK/deny-h")" 'Content-Type: text/plain' "git deny rides the text/plain remote-message channel"
+assert_contains "$(cat "$WORK/deny-b")" 'chopi GitHub relay: not an allowed git operation' "git deny body names the refusal"
+if git ls-remote "$git_url/a/b/c" >/dev/null 2>"$WORK/e2b"; then
+    bad "out-of-contract ls-remote unexpectedly succeeded"
+elif grep -q 'remote: chopi GitHub relay: not an allowed git operation' "$WORK/e2b"; then
+    ok "catch-all deny is displayed by git as a remote: line"
+else
+    bad "catch-all deny not surfaced by git:"; sed 's/^/      /' "$WORK/e2b"
+fi
 
 # 3. optional: push/fetch authorized for allowlisted repo
 if [ -n "${ALLOW_REPO:-}" ] && [ -n "$TOKEN" ]; then
