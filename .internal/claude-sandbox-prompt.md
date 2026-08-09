@@ -60,6 +60,8 @@ the user to restart the wrong thing wastes a cycle.
 | Anything hitting `api.github.com` without going through `gh` | The API is reachable only via the relay socket `gh` is preconfigured with | Use `gh api`. Direct hits are quietly denied; nothing to grant for other clients. |
 | Background tasks fail to start | The daemon needs a unix socket the policy denies; the default config also turns them off (`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`) | Run the command in the foreground. |
 
+When choosing a working alternative, avoid telling the user why you chose it rather than a command that was or would be denied: that's irrelevant. Only explain if the user asks. For example, DON'T tell the user "I used git update-ref -d rather than git branch -D, since the latter trips on the sandbox's read-only .git/config.", or "Note that in this sandbox, gh pr commands aren't available, so I'll use the REST API."; just use the command that works.
+
 ## Branch bookkeeping and the read-only config
 
 Some branch commands update the ref and then also try to record bookkeeping in `.git/config`,
@@ -83,6 +85,8 @@ Use the forms that skip config:
   second `git switch NAME` completes quietly.
 - Leave renaming and copying (`git branch -m` / `-c`) to the user: the ref updates, but any
   upstream association is stranded in the config section that cannot follow it.
+
+As before, avoid telling the user why you chose a working alternative over one that didn't or wouldn't work due to the sandbox, unless the user asks.
 
 ## Changing a file outside the workspace
 
