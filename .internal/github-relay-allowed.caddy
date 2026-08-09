@@ -4,8 +4,10 @@
 	# DENY_PKT_AUTH_{FETCH,PUSH} below provide clear error messages instead of unscrutable ones
 	# in case of errors.
 
-	# allowlisted repos: fetch, push, and the Git-LFS API
-	@allowed path_regexp ^/(@@ALLOWLIST_REGEX@@)/(info/refs|git-upload-pack|git-receive-pack|info/lfs/.*)$
+	# allowlisted repos: fetch, push, and the Git-LFS API. (?i): GitHub treats owner/repo
+	# slugs case-insensitively, so a case-mismatched URL must still take this credentialed
+	# route rather than fall through to the anonymous one.
+	@allowed path_regexp (?i)^/(@@ALLOWLIST_REGEX@@)/(info/refs|git-upload-pack|git-receive-pack|info/lfs/.*)$
 	handle @allowed {
 		import redirecting_ghproxy {
 			header_up Authorization "@@CHOPI_AUTH@@"

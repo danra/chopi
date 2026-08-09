@@ -19,9 +19,19 @@ render() { printf '%s\n' "$@" > "$WORK/allow"; "$RENDER" "$WORK/allow"; }
 # extract_re FILE MATCHER -- the regex from a "@MATCHER path_regexp <re>" line
 extract_re() { arity 2; grep -E "@$2 path_regexp " "$1" | sed -E 's/.*path_regexp //'; }
 
-# assert_match RE PATH DESC / assert_no_match -- does PATH match RE (as grep -E would)?
-assert_match()    { arity 3; if printf '%s\n' "$2" | grep -qE "$1"; then ok "$3"; else bad "$3"; fi; }
-assert_no_match() { arity 3; if printf '%s\n' "$2" | grep -qE "$1"; then bad "$3"; else ok "$3"; fi; }
+# re_match RE PATH -- does PATH match RE? Models Caddy's Go regexps with grep -E; a leading
+# (?i) -- Go's whole-pattern case-insensitivity -- maps to grep -i.
+re_match() {
+    arity 2
+    local re="$1" path="$2"
+    local grep_flags=-qE
+    case "$re" in
+        "(?i)"*) re="${re#"(?i)"}"; grep_flags=-qiE ;;
+    esac
+    printf '%s\n' "$path" | grep "$grep_flags" "$re"
+}
+assert_match()    { arity 3; if re_match "$1" "$2"; then ok "$3"; else bad "$3"; fi; }
+assert_no_match() { arity 3; if re_match "$1" "$2"; then bad "$3"; else ok "$3"; fi; }
 
 header "github-relay-caddyfile"
 
