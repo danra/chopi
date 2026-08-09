@@ -113,27 +113,29 @@ else
 fi
 
 # Rules that allow GitHub's own domains defeat the GitHub repos allowlist: a sandboxed
-# command could push data to ANY repo directly, skipping the relay. The expected case is
-# a rules file copied from a template predating the relay, so refuse with migration
-# directions.
+# command could push data to ANY repo directly, skipping the relays. The expected case is
+# a rules file copied from a template predating the relays, so refuse with migration
+# directions. The override's name marks the relays' coverage; it rotates when coverage
+# grows, so an override set for an already-closed gap doesn't silently carry over.
 github_exfil_domains="$(exfiltration_prone_github_allowed_domains "$RULES")"
 if [ -n "$github_exfil_domains" ]; then
     exfil_list="${github_exfil_domains//$'\n'/, }"
-    if [ -n "${CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS:-}" ]; then
+    if [ -n "${CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY:-}" ]; then
         echo "[$SCRIPT_NAME] warning: the proxy rules allow $exfil_list -- a sandboxed command can push data" >&2
-        echo "              to any GitHub repo. Continuing anyway (CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS is set)." >&2
+        echo "              to any GitHub repo. Continuing anyway (CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY is set)." >&2
     else
         echo "error: refusing to run, proxy rules allow $exfil_list" >&2
         echo >&2
         echo "A sandboxed command could push stolen data to ANY GitHub repo." >&2
-        echo "github.com git now goes through a dedicated relay which limits" >&2
-        echo "push and private-repo access to the repos in config/github-allowlist." >&2
+        echo "github.com git and gh's api.github.com REST calls now go through" >&2
+        echo "dedicated relays which limit push and private-repo access to the" >&2
+        echo "repos in config/github-allowlist." >&2
         echo >&2
         echo "To migrate, overwrite your proxy rules with the current template:" >&2
         echo "    cp \"$CHOPI_DIR/config/templates/proxy-rules.template.yaml\" \"$RULES\"" >&2
         echo "or move the domains from allowed_domains to global_deny_list in $RULES." >&2
         echo >&2
-        echo "To run anyway, set CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS=1." >&2
+        echo "To run anyway, set CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1." >&2
         exit 1
     fi
 fi

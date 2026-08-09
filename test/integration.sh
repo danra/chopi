@@ -221,23 +221,24 @@ if ! wait_for_exit "$exfil_pid"; then
 else
     assert_nonzero  "$WAIT_FOR_EXIT_RC" "chopi-proxy refuses rules that allow github.com and api.github.com"
     assert_contains "$(cat "$exfil_log")" "github.com, api.github.com"  "  -> the refusal names the domains"
+    assert_contains "$(cat "$exfil_log")" "dedicated relays"            "  -> and says both git and the API are relayed"
     assert_contains "$(cat "$exfil_log")" "proxy-rules.template.yaml"   "  -> and directs to the current template"
     assert_contains "$(cat "$exfil_log")" "global_deny_list"            "  -> or to moving the domains to the denylist"
-    assert_contains "$(cat "$exfil_log")" "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS" "  -> and names the override"
+    assert_contains "$(cat "$exfil_log")" "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY" "  -> and names the override"
     assert_no_listeners "starting anything"
 fi
 
-# The override: the same rules only warn with CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS=1, and
-# the proxy comes up.
+# The override: the same rules only warn with CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1,
+# and the proxy comes up.
 override_log="$base/exfil-override.log"
-CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS=1 "$repo/bin/chopi-proxy.sh" --rules "$exfil_rules" --github-allowlist "$exfil_github_allow" > "$override_log" 2>&1 &
+CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1 "$repo/bin/chopi-proxy.sh" --rules "$exfil_rules" --github-allowlist "$exfil_github_allow" > "$override_log" 2>&1 &
 override_pid=$!
 if wait_for_listener "$PROXY_PORT" "$override_pid"; then
-    ok "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS=1 lets the proxy start"
-    assert_contains "$(cat "$override_log")" "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS is set" \
+    ok "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1 lets the proxy start"
+    assert_contains "$(cat "$override_log")" "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY is set" \
         "  -> with the refusal downgraded to a warning"
 else
-    bad "the proxy did not come up with CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS=1"
+    bad "the proxy did not come up with CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1"
     sed 's/^/  /' "$override_log" >&2 || true
 fi
 kill "$override_pid" 2>/dev/null || true
