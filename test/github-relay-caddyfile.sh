@@ -43,6 +43,8 @@ assert_match    "$git_re" '/soundradix/anything/git-upload-pack'  "wildcard: fet
 assert_match    "$git_re" '/soundradix/anything/info/refs'        "wildcard: ref discovery allowed"
 assert_match    "$git_re" '/acme/tool/git-receive-pack'           "exact: push allowed"
 assert_match    "$git_re" '/acme/tool.git/git-receive-pack'       "exact: .git suffix allowed"
+assert_match    "$git_re" '/Acme/Tool/git-receive-pack'           "exact: case-mismatched slug allowed (GitHub slugs are case-insensitive)"
+assert_match    "$git_re" '/SOUNDRADIX/anything/info/refs'        "wildcard: case-mismatched owner allowed"
 assert_match    "$git_re" '/soundradix/anything/info/lfs/objects/batch' "wildcard: Git-LFS API allowed"
 assert_match    "$git_re" '/acme/tool.git/info/lfs/locks'               "exact: Git-LFS locks API allowed"
 assert_no_match "$git_re" '/evil/repo/git-receive-pack'           "non-allowlisted push refused"
