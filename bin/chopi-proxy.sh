@@ -180,6 +180,12 @@ done
 # - Allowed connections and the known noise are dropped
 # - Every other line passes through. notify_deny pops the macOS banner on each DENY.
 format_smokescreen_log() {
+    # This runs in a process substitution, which inherits the launching shell's job table
+    # (the caddy pipeline, the reaper). Those are not this shell's children, so their
+    # entries stay "running" forever, and once the pid counter wraps, a per-line fork
+    # landing on a recycled pid from one of them makes bash print a "forked pid N appears
+    # in running job 0" warning into the log. Drop the inherited entries.
+    disown -a
     local is_interactive=false
     [ -t 1 ] && is_interactive=true
     classify_log "$is_interactive" "$SCRIPT_NAME" notify_deny "$VERBOSE"
