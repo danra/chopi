@@ -118,6 +118,7 @@ validate_write_target() {
     fi
     if is_path_within "$workspace" "$path"; then
         echo "$prog: safe write target contains the workspace $path" >&2
+        echo "$prog: set CHOPI_ALLOW_SAFE_WRITE_TARGET=1 to continue anyway, leaving that target unenforced" >&2
         return 1
     fi
     if overlapping_dirs "$path" "$CHOPI_PATCH_QUEUE_ROOT"; then
@@ -165,6 +166,15 @@ validate_write_targets() {
         if is_item_in_list "$path" "${paths[@]+"${paths[@]}"}"; then
             echo "$prog: two safe write targets resolve to the same path: $path" >&2
             ok=""; continue
+        fi
+
+        # Launching chopi inside a safe write target is normally refused (below): the
+        # target's write-deny would cover every file the session writes. The override
+        # admits the launch by leaving the containing target unenforced for this run.
+        if [ -n "${CHOPI_ALLOW_SAFE_WRITE_TARGET:-}" ] && is_path_within "$workspace" "$path"; then
+            echo "$prog: warning: safe write target contains the workspace $path;" >&2
+            echo "$prog: not enforcing it for this run (CHOPI_ALLOW_SAFE_WRITE_TARGET is set)" >&2
+            continue
         fi
 
         validate_write_target "$path" "$workspace" "$prog" || { ok=""; continue; }

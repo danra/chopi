@@ -89,6 +89,7 @@ main() {
     local CHOPI_SAFEHOUSE_FLAGS=()
     local CHOPI_EXTRA_ENV=()
     local CHOPI_GIT_CONFIG=()
+    # shellcheck disable=SC2034 # consumed by validate_write_targets
     local CHOPI_SAFE_WRITE_TARGETS=()
     if [ ! -r "$config" ]; then
         if [ -n "$config_given" ]; then
@@ -139,7 +140,9 @@ main() {
         return 1
     fi
     local queue_flags=() queue_env=() queue_dir=""
-    if [ "${#CHOPI_SAFE_WRITE_TARGETS[@]}" -gt 0 ]; then
+    # Gated on the enforced targets, not the config: under CHOPI_ALLOW_SAFE_WRITE_TARGET
+    # a configured target can drop out, and all dropping out leaves no queue to set up.
+    if [ "${#CHOPI_WRITE_TARGET_PATHS[@]}" -gt 0 ]; then
         queue_dir="$(create_patch_queue "$run_dir")" \
             || { echo "chopi: refusing to run" >&2; return 1; }
         local queue_profile

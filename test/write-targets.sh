@@ -22,6 +22,9 @@ HOME="$TMPDIR/home"; export HOME
 mkdir -p "$HOME"
 CHOPI_PATCH_QUEUE_ROOT="$HOME/.chopi/patch-queue"
 
+# The dev environment may set the override; the refusal tests need it off.
+unset CHOPI_ALLOW_SAFE_WRITE_TARGET
+
 # A git worktree root to stand in for the workspace, with a target dir in it and one outside.
 work="$TMPDIR/work"
 make_repo "$work"
@@ -126,6 +129,21 @@ refuses "  -> and so is the git dir itself, reached relatively" "has a .git comp
 # the command legitimately writes, leaving a session that can't work.
 refuses "the workspace itself is refused as a target" "contains the workspace" .
 refuses "  -> and so is a directory enclosing it" "contains the workspace" "$TMPDIR"
+
+# CHOPI_ALLOW_SAFE_WRITE_TARGET admits launching chopi inside a safe write target,
+# leaving the containing target unenforced for the run instead of refusing.
+CHOPI_SAFE_WRITE_TARGETS=("$TMPDIR" "$guidelines")
+CHOPI_ALLOW_SAFE_WRITE_TARGET=1 validate_write_targets "$work" chopi 2>"$TMPDIR/warn.err"; st=$?
+out="$(cat "$TMPDIR/warn.err")"
+assert_zero     "$st"                  "CHOPI_ALLOW_SAFE_WRITE_TARGET admits a target containing the workspace"
+assert_contains "$out" "warning:"      "  -> downgraded to a warning"
+assert_contains "$out" "not enforcing" "  -> that says the target is not enforced"
+assert_eq "${CHOPI_WRITE_TARGET_PATHS[*]-}" "$guidelines" "  -> and the other targets stay enforced"
+
+CHOPI_SAFE_WRITE_TARGETS=(.)
+CHOPI_ALLOW_SAFE_WRITE_TARGET=1 validate_write_targets "$work" chopi 2>/dev/null; st=$?
+assert_zero "$st"                             "  -> a config naming only the workspace validates too"
+assert_eq "${#CHOPI_WRITE_TARGET_PATHS[@]}" 0 "  -> enforcing nothing"
 
 # A single file in the workspace is a valid safe write target too
 printf 'x\n' > "$work/CLAUDE.md"
