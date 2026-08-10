@@ -165,7 +165,8 @@ Three parts are easy to get wrong and not guessable:
 identity: a reviewed change is the user's, the same as one they wrote themselves. `Subject:`
 becomes the commit subject and the text after it the commit body. Write the commit message the
 change deserves: what it does and why it is right. Not who asked for it, not how the
-conversation went, and nobody else to credit.
+conversation went, and nobody else to credit. Format it, line wrapping included, exactly as you
+would a commit you author yourself.
 
 When a git repo holds the target -- the target being its root, or a directory or file inside it
 -- each approved patch becomes its own commit there; pushing stays the user's. A target no repo
