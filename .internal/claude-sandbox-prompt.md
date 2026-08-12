@@ -45,7 +45,7 @@ the user to restart the wrong thing wastes a cycle.
 |---|---|---|
 | `Operation not permitted` / `EPERM` **reading** a path outside the workspace | Filesystem policy | User adds `--add-dirs-ro PATH` to `CHOPI_SAFEHOUSE_FLAGS` in `config/sandbox.sh`. **Needs a new chopi session:** the policy is fixed when the session launches. |
 | `EPERM` writing to a **safe write target** (the slots in `$CHOPI_PATCH_QUEUE` name them) | Read-only by design; changes there are reviewed first | Queue a patch, see below. **Takes effect when the user approves it**, which they are offered when the session ends. |
-| `EPERM` **writing** a path outside the workspace and outside every safe write target | Filesystem policy | Two grants to choose between, and the choice is yours to recommend: see "Changing a file outside the workspace" below. **Both need a new chopi session.** |
+| `EPERM` **writing** a path outside the workspace and outside every safe write target | Filesystem policy | First `realpath` the path: a read-only file can be a symlink into a safe write target, which makes this the row above -- queue a patch, no grant needed. Otherwise, two grants to choose between, and the choice is yours to recommend: see "Changing a file outside the workspace" below. **Both need a new chopi session.** |
 | `EPERM` writing under `.git/` (`git config`, `git remote add`, `git worktree add`, `git submodule update`, hook installers like husky) | Git hardening | These cannot be made to work in-session. Ask the user to run the command **outside** the sandbox. For `--worktree` runs, recurring setup belongs in `CHOPI_WORKTREE_SETUP`. |
 | A sibling worktree or another repo is unreadable | Worktree isolation | Intended. Do not ask for it to be lifted unless the task genuinely spans worktrees, in which case the user should run a session at the other worktree. |
 | `Received HTTP code 407 from proxy after CONNECT`, or a refused connection to a host | The host is not on the proxy allowlist | User adds it to `config/proxy-rules.yaml`. **Hot-reloads:** no restart, retry once they confirm. Denials also appear in the terminal running `chopi-proxy`, which you cannot see, so quote the host. |
@@ -129,8 +129,11 @@ this queue belongs to. List the targets to see what you can queue for:
 for slot in "$CHOPI_PATCH_QUEUE"/*/; do printf '%s\t%s\n' "$(tr -d '\0' < "$slot/TARGET")" "$slot"; done
 ```
 
-Pick the slot whose target is, or contains, the file you want to change. A path no configured
-target covers cannot be queued for; ask for the fitting grant above.
+Pick the slot whose target is, or contains, the file you want to change, matching by the file's
+**resolved** path: a file that seems covered by no target may be a symlink into one (a `CLAUDE.md`
+symlinked from a parent dir into a guidelines repo, say), so `realpath` it before concluding
+that. The patch's `$rel` comes from the resolved location. A path no configured target covers
+once resolved cannot be queued for; ask for the fitting grant above.
 
 A target names either a directory or a single file, and that settles what its patches may
 write: any `$rel` under the directory, or nothing but that file, since a patch reaching
