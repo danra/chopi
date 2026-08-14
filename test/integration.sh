@@ -61,8 +61,7 @@ fi
 # ---------------------------------------------------------------------------
 vartmp="$(cd /var/tmp && pwd -P)" || { echo "error: cannot resolve /var/tmp" >&2; exit 1; }
 base="$(mktemp -d "$vartmp/chopi-itest.XXXXXX")" || { echo "error: mktemp failed" >&2; exit 1; }
-marker_file=""
-trap 'if [ -n "${proxy_pid:-}" ]; then kill "$proxy_pid" 2>/dev/null || true; wait "$proxy_pid" 2>/dev/null || true; fi; rm -rf "$base" "$TMPDIR" ${marker_file:+"$marker_file"}' EXIT
+trap 'if [ -n "${proxy_pid:-}" ]; then kill "$proxy_pid" 2>/dev/null || true; wait "$proxy_pid" 2>/dev/null || true; fi; rm -rf "$base" "$TMPDIR"' EXIT
 
 ws="$base/workspace"            # the sandbox workspace (read/write granted, as the workdir)
 outside="$base/outside"         # sibling of the workspace -> reliably denied
@@ -73,7 +72,15 @@ cfg="$base/config/sandbox.sh"   # minimal sandbox config, OUTSIDE the workspace
 rules="$base/config/itest-rules.yaml"
 proxy_log="$base/proxy.log"
 alerter_log="$base/alerter-calls.log"
-mkdir -p "$ws" "$outside" "$alerter_stub" "$claudebin" "$codexbin" "$base/config"
+mkdir -p "$ws" "$outside" "$alerter_stub" "$claudebin" "$codexbin" "$base/config" "$base/home"
+
+# Fixture HOME under $base, automatically cleaned-up and avoids dirtying actual ~
+# Belongs in /var/tmp for the same reason $base does; under $TMPDIR, safehouse's blanket
+# /var/folders grant would make that file readable to any command, agent profile or not.
+HOME="$base/home"; export HOME
+# A commit identity, the one thing the fixture takes away from the developer's global git config
+printf '[user]\n\tname = t\n\temail = t@t.t\n' > "$HOME/.gitconfig"
+
 make_repo "$ws"     # chopi only runs at a git worktree root
 
 # A workspace file to read back, and an out-of-bounds secret that must stay unreadable.
@@ -593,7 +600,7 @@ assert_eq "$err" ""                                     "a no-op run leaves stde
 # sandboxed command through the in-sandbox wrapper (which is argv[0]), so it must present the
 # wrapper under the real command's basename to get the needed grants. Test via safehouse's
 # `claude` profile, the only one which grants read on ~/.claude.json.*.
-marker_file="$HOME/.claude.json.chopi-itest.$$"      # created here, removed by the EXIT trap
+marker_file="$HOME/.claude.json.chopi-itest"
 printf 'CLAUDE_PROFILE_MARKER\n' > "$marker_file"
 
 out="$(chopi_wrap claude "$marker_file" 2>/dev/null)"
