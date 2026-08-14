@@ -6,7 +6,6 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 . "$repo/.internal/util.sh"
-. "$repo/.internal/write-targets.sh"
 . "$repo/test/lib.sh"
 
 header "test/write-targets.sh -- unit tests for the patch queue's config and grants"
@@ -17,10 +16,10 @@ TMPDIR="$(cd "$TMPDIR" && pwd -P)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
 # The queue root is $HOME-derived, so point HOME into the temp dir: the tests must never
-# touch the developer's real ~/.chopi.
+# touch the developer's real ~/.chopi. The lib under test is sourced after, for the same reason.
 HOME="$TMPDIR/home"; export HOME
 mkdir -p "$HOME"
-CHOPI_PATCH_QUEUE_ROOT="$HOME/.chopi/patch-queue"
+. "$repo/.internal/write-targets.sh"
 
 # The dev environment may set the override; the refusal tests need it off.
 unset CHOPI_ALLOW_SAFE_WRITE_TARGET
