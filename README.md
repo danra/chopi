@@ -200,9 +200,9 @@ CHOPI_SAFE_WRITE_TARGETS=(
 ```
 
 Each named target is denied write, granted read-only access, and gets a slot in the workspace's
-queue under `~/.chopi/patch-queue`, where the command drops a `git format-patch`-shaped patch
-instead of writing directly. Agents running under chopi need to be instructed on safe write
-targets; chopi currently provides such instructions out-of-the box for Claude Code (see
+queue under `~/.chopi/patch-queue`, where the command queues a patch using
+`.internal/chopi-queue-patch.sh`. Agents still need to be instructed on safe write targets; chopi
+currently provides such instructions out-of-the box for Claude Code (see
 [Claude Code Integration](#claude-code-integration) above).
 
 When the command exits, `chopi` offers to review all patches queued in the workspace. You can also

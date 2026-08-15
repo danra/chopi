@@ -303,11 +303,11 @@ echo "the recipe the sandbox document ships"
 reset_fixture
 recipe="$(awk '/^```sh$/ { in_block = 1; next } /^```$/ { in_block = 0 } in_block' \
     "$repo/.internal/claude-sandbox-prompt.md")"
-assert_contains "$recipe" 'CHOPI_PATCH_QUEUE' "the extracted recipe has the queue"
+assert_contains "$recipe" 'chopi-queue-patch' "the extracted recipe queues through chopi-queue-patch"
 
 # Pin the edit instruction in the recipe so we test the same thing we tell the agent to do
 # shellcheck disable=SC2016
-edit='printf "%s\\n" "$added" >> "$work/b/$rel"'
+edit='printf "%s\\n" "$added" >> "$TMPDIR/draft"'
 runnable="$(printf '%s\n' "$recipe" | sed "s|^# edit .*|$edit|")"
 if [ "$runnable" != "$recipe" ]; then
     ok "  -> with an edit step this suite can stand in for"
@@ -316,50 +316,26 @@ else
 fi
 
 # Run it in a subshell, from the workspace, where the sandboxed command runs.
-# shellcheck disable=SC2034,SC2030  # the eval'd recipe reads these, and each run sets its own
+# shellcheck disable=SC2034  # the eval'd recipe reads these
 (
     export CHOPI_PATCH_QUEUE="$queue"
     cd "$work"
-    rel=Guidelines.md slug=byrecipe
-    summary="A rule built by the documented recipe"
-    why="Because the recipe has to keep producing something appliable."
+    file="$target/Guidelines.md"
+    subject="A rule built by the documented recipe"
+    body="Because the recipe has to keep producing something appliable."
     added="Follow the recipe."
     eval "$runnable"
 ) >/dev/null 2>&1
-assert_present "$slot/byrecipe.patch" "running it queues a patch"
-assert_eq "$(head -1 "$slot/byrecipe.patch")" "From: t <t@t.t>" \
+collect_pending_patches "$slot"
+recipe_patch="${PENDING_PATCHES[0]-/dev/null}"
+assert_eq "${#PENDING_PATCHES[@]}" 1 "running it queues a patch"
+assert_eq "$(head -1 "$recipe_patch")" "From: t <t@t.t>" \
     "  -> crediting the git ident the workspace resolves, time fields stripped"
 
 out="$(run_review a)"
 assert_eq "$(target_log)" "A rule built by the documented recipe" "  -> which chopi-review applies as a commit"
 assert_eq "$(git -C "$target" log --format='%an' -1)" "t" "  -> authored as the recipe's From: header credits"
 assert_contains "$(cat "$target/Guidelines.md")" "Follow the recipe." "  -> landing the change"
-
-# The same recipe against a single-file target. $rel is left unset, since deriving it from the
-# target is what the recipe has to do here.
-write_config "$TMPDIR/file-recipe.sh" RECIPE.md
-reset_fixture
-printf '# Rules\n' > "$work/RECIPE.md"
-git -C "$work" add RECIPE.md
-git -C "$work" commit -qm "add RECIPE.md"
-file_queue="$(build_queue "$work" "$TMPDIR/file-recipe.sh")"
-# shellcheck disable=SC2034,SC2031  # as above
-(
-    export CHOPI_PATCH_QUEUE="$file_queue"
-    cd "$work"
-    slug=byrecipe
-    summary="A rule the recipe built for a file target"
-    why="Because a file target goes through the same recipe."
-    added="Follow the recipe here too."
-    eval "$runnable"
-) >/dev/null 2>&1
-file_slot="$file_queue/$(path_id "$work/RECIPE.md")"
-assert_present "$file_slot/byrecipe.patch" "the same recipe queues a patch for a single-file target"
-
-review_with "$TMPDIR/file-recipe.sh" a >/dev/null
-assert_eq "$(git -C "$work" log --format='%s' -1)" "A rule the recipe built for a file target" \
-    "  -> which chopi-review applies as a commit"
-assert_contains "$(cat "$work/RECIPE.md")" "Follow the recipe here too." "  -> landing the change"
 
 
 # ---------------------------------------------------------------------------

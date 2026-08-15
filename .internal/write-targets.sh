@@ -346,7 +346,8 @@ verified_record() {
 queue_workspace() { arity 1; verified_record "$1" WORKSPACE; }
 slot_target()     { arity 1; verified_record "$1" TARGET; }
 
-# Seatbelt profile making the queue readable, slots writable except for TARGETs
+# Seatbelt profile making the queue readable, slots writable except for TARGETs, and the
+# in-session queueing helper script
 write_patch_queue_profile() {
     arity 2
     local profile_path="$1" queue_dir="$2"
@@ -386,6 +387,11 @@ write_patch_queue_profile() {
             parents+=("$(dirname "$path")")
         done
         pin_ancestries / ${parents[@]+"${parents[@]}"}
+
+        echo ";; chopi: chopi-queue-patch.sh, so the session can author and queue patches with it"
+        rule 'allow file-read* process-exec' literal "$CHOPI_DIR/.internal/chopi-queue-patch.sh"
+        echo ";; chopi: the lib it sources beyond the wrapper's"
+        rule 'allow file-read*' literal "$CHOPI_DIR/.internal/write-targets.sh"
     } > "$profile_path"
 }
 

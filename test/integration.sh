@@ -78,6 +78,8 @@ mkdir -p "$ws" "$outside" "$alerter_stub" "$claudebin" "$codexbin" "$base/config
 # Belongs in /var/tmp for the same reason $base does; under $TMPDIR, safehouse's blanket
 # /var/folders grant would make that file readable to any command, agent profile or not.
 HOME="$base/home"; export HOME
+# Sourced here, not with the libs above: it derives the patch queue root from $HOME.
+. "$repo/.internal/write-targets.sh"
 # A commit identity, the one thing the fixture takes away from the developer's global git config
 printf '[user]\n\tname = t\n\temail = t@t.t\n' > "$HOME/.gitconfig"
 
@@ -610,6 +612,46 @@ assert_contains "$out" "READ_OK"                   "  -> and the profile's ~/.cl
 out="$(chopi_wrap /bin/sh -c "$read_probe" sh "$marker_file" 2>/dev/null)"
 assert_not_contains "$out" "CLAUDE_PROFILE_MARKER" "a non-agent basename (sh) selects no profile, so the same file stays unreadable"
 assert_contains     "$out" "READ_FAIL"             "  -> and that read is denied"
+
+
+# ---------------------------------------------------------------------------
+echo "safe write targets: authoring and queueing a patch from inside the sandbox"
+# ---------------------------------------------------------------------------
+swt_repo="$base/swt_repo"
+make_repo "$swt_repo"
+swt_target="$base/swt_guidelines"
+mkdir -p "$swt_target"
+printf '# Guidelines\nBe kind.\n' > "$swt_target/Guidelines.md"
+
+cfg_swt="$base/config/sandbox-swt.sh"
+cat > "$cfg_swt" <<EOF
+CHOPI_SAFEHOUSE_FLAGS=()
+CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
+CHOPI_SAFE_WRITE_TARGETS=( "$swt_target" )
+EOF
+
+swt_repo_real="$(realpath "$swt_repo")"
+swt_queue="$CHOPI_PATCH_QUEUE_ROOT/$(path_id "$swt_repo_real")"
+swt_slot="$swt_queue/$(path_id "$swt_target")"
+
+# This run's stderr goes into $out rather than the suite's terminal: the run leaves a patch
+# queued, and chopi's end-of-run review offer prompts for it whenever stderr is a terminal,
+# which would block the suite.
+# shellcheck disable=SC2016 # $CHOPI_DIR, $TMPDIR, $CHOPI_SAFE_WRITE_TARGETS and $1 expand in the sandboxed shell
+out="$( ( cd "$swt_repo" && "$repo/bin/chopi" --config "$cfg_swt" -- /bin/sh -ec '
+    echo "TARGETS[$CHOPI_SAFE_WRITE_TARGETS]"
+    cp "$1/Guidelines.md" "$TMPDIR/draft"
+    printf "Greet warmly.\n" >> "$TMPDIR/draft"
+    "$CHOPI_DIR/.internal/chopi-queue-patch.sh" -s "Add a greeting rule" -m "Queued by the integration test." \
+        "$1/Guidelines.md" "$TMPDIR/draft" && echo QUEUE_OK
+    printf x 2>/dev/null >> "$1/Guidelines.md" && echo DIRECT_WRITE_OK || echo DIRECT_WRITE_FAIL
+' sh "$swt_target" ) 2>&1 )"
+assert_contains "$out" "TARGETS[$swt_target]" "the session is told the configured targets"
+assert_contains "$out" "QUEUE_OK"          "chopi-queue-patch runs in-sandbox and queues a change to a file the target covers"
+assert_contains "$out" "DIRECT_WRITE_FAIL" "  -> while writing the target directly stays denied"
+swt_patch="$swt_slot/add-a-greeting-rule.patch"
+assert_present "$swt_patch" "the patch landed in the target's slot"
+assert_contains "$(cat "$swt_patch" 2>/dev/null)" '+Greet warmly.' "  -> proposing the draft's addition"
 
 
 # ---------------------------------------------------------------------------

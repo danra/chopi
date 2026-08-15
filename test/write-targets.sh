@@ -395,7 +395,13 @@ assert_contains "$profile" '(allow file-read* (subpath "'"$guidelines"'"))' \
 assert_contains "$profile" '(deny file-write* (subpath "'"$guidelines"'"))' "  -> and is denied write outright"
 assert_contains "$profile" '(deny file-write* (subpath "'"$work/docs"'"))' \
     "  -> including a target inside the workspace, which the workspace grant would otherwise cover"
-assert_not_contains "$profile" "$CHOPI_DIR" "nothing in chopi's own directory is granted"
+
+assert_contains "$profile" '(allow file-read* process-exec (literal "'"$CHOPI_DIR"'/.internal/chopi-queue-patch.sh"))' \
+    "chopi-queue-patch.sh is granted, so the session can author and queue patches with it"
+assert_contains "$profile" '(allow file-read* (literal "'"$CHOPI_DIR"'/.internal/write-targets.sh"))' \
+    "  -> and the lib it sources beyond those the wrapper profile grants"
+assert_not_contains "$profile" "$CHOPI_DIR/config" \
+    "nothing of chopi's configuration is granted"
 assert_not_contains "$profile" '(deny file-write* (subpath "'"$work"'"))' \
     "the workspace is never write-denied as a whole, which would deny the session itself"
 

@@ -125,61 +125,26 @@ in guidelines: you propose it, the user decides.
 
 A target can be outside your workspace, where you have no write access at all, or inside it,
 covering files the user wants reviewed: writing a target directly is denied wherever it sits,
-even where the workspace around it is writable. Queue a patch either way.
-
-`$CHOPI_PATCH_QUEUE` holds one subdirectory, a **slot**, per configured target, so you can only
-ever queue against a target the user nominated: the queue is readable throughout but writable
-only inside a slot, and making one of your own is denied. A slot is named by a digest of its
-target's path rather than by anything readable; the path itself is in the `TARGET` file inside
-it, NUL-terminated so a path holding a newline comes back whole. `WORKSPACE` names the workspace
-this queue belongs to. List the targets to see what you can queue for:
+even where the workspace around it is writable. Queue a patch either way, with
+`chopi-queue-patch.sh` (`--help` has the full usage):
 
 ```sh
-for slot in "$CHOPI_PATCH_QUEUE"/*/; do printf '%s\t%s\n' "$(tr -d '\0' < "$slot/TARGET")" "$slot"; done
+cp "$file" "$TMPDIR/draft"  # $file: the file to change; skip the cp for one not there yet
+# edit "$TMPDIR/draft" with your normal tools, then:
+"$CHOPI_DIR/.internal/chopi-queue-patch.sh" -s "$subject" -m "$body" "$file" "$TMPDIR/draft"
 ```
 
-Pick the slot whose target is, or contains, the file you want to change, matching by the file's
-**resolved** path: a file that seems covered by no target may be a symlink into one (a `CLAUDE.md`
-symlinked from a parent dir into a guidelines repo, say), so `realpath` it before concluding
-that. The patch's `$rel` comes from the resolved location. A path no configured target covers
-once resolved cannot be queued for; ask for the fitting grant above.
+A target names either a directory or a single file, and that settles what can be queued for it:
+a change to any file under the directory, existing or new, or to that single file alone. Name
+the file you want changed and let the script resolve it: a symlink into a target (a `CLAUDE.md`
+symlinked from a parent dir into a guidelines repo, say) queues for where it points. A file no
+target covers once resolved is refused -- then ask for the fitting grant above.
 
-A target names either a directory or a single file, and that settles what its patches may
-write: any `$rel` under the directory, or nothing but that file, since a patch reaching
-anywhere else is refused. One recipe covers both -- you pick `$rel` under a directory target,
-and a file target fills it in:
-
-```sh
-target="$(tr -d '\0' < "$slot/TARGET")"
-root="$target"
-if [ -f "$target" ]; then root="$(dirname "$target")"; rel="$(basename "$target")"; fi
-work="$TMPDIR/patch"; mkdir -p "$work/a/$(dirname "$rel")" "$work/b/$(dirname "$rel")"
-cp "$root/$rel" "$work/a/$rel"; cp "$root/$rel" "$work/b/$rel"
-# edit "$work/b/$rel" with your normal tools, then:
-( cd "$work" && git diff --no-index --no-prefix -- "a/$rel" "b/$rel" ) > "$work/body.diff"
-git -C "$root" apply --check -p1 "$work/body.diff"   # must pass before you queue it
-author="$(git var GIT_AUTHOR_IDENT)"
-{ printf 'From: %s\n' "${author% * *}"
-  printf 'Subject: [PATCH] %s\n\n' "$summary"
-  printf '%s\n\n' "$why"
-  printf -- '---\n'; cat "$work/body.diff"; } > "$slot/$slug.patch"
-```
-
-Three parts are easy to get wrong and not guessable:
-
-- `--no-prefix` is required. Without it the diff reads as a rename of `a/...` to `b/...` and
-  will not apply.
-- `apply --check` against the real target before queueing, so a patch that cannot apply never
-  reaches the user.
-- `git diff --no-index` exits non-zero when the files differ, which is the case you want. Don't
-  run the recipe under `set -e`, or it will abort on the diff that succeeded.
-
-`From:` becomes the commit's author, which is why the recipe resolves it to the user's own
-identity: a reviewed change is the user's, the same as one they wrote themselves. `Subject:`
-becomes the commit subject and the text after it the commit body. Write the commit message the
-change deserves: what it does and why it is right. Not who asked for it, not how the
-conversation went, and nobody else to credit. Format it, line wrapping included, exactly as you
-would a commit you author yourself.
+The subject and body become the message of a commit authored as the user: a reviewed change is
+the user's, the same as one they wrote themselves. Write the commit message the change
+deserves: what it does and why it is right. Not who asked for it, not how the conversation
+went, and nobody else to credit. Format it, line wrapping included, exactly as you would a
+commit you author yourself.
 
 When a git repo holds the target -- the target being its root, or a directory or file inside it
 -- each approved patch becomes its own commit there; pushing stays the user's. A target no repo
@@ -191,9 +156,9 @@ Say what you queued and why, and show the diff in the patch (just the diff, no n
 patch headers etc.).
 
 When everything goes smoothly, avoid providing verbose details on the actions you performed,
-e.g., looking up a safe write target slot in `$CHOPI_PATCH_QUEUE` for a path, checking that a
-patch applies cleanly, etc. Only go into such details in case something doesn't work, either due
-to an error or because the user needs to modify some configuration.
+e.g., copying the file aside, editing the draft, the queueing command's output, etc. Only go into
+such details in case something doesn't work, either due to an error or because the user needs
+to modify some configuration.
 
 ## Landmines
 

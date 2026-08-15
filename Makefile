@@ -22,6 +22,7 @@ SHELL_SOURCES = \
 	.internal/claude-context-reads.sh \
 	.internal/claude-context-check.sh \
 	.internal/write-targets.sh \
+	.internal/chopi-queue-patch.sh \
 	.internal/worktree.sh \
 	.internal/preflight.sh \
 	config/templates/sandbox.template.sh \
@@ -44,6 +45,7 @@ SHELL_SOURCES = \
 	test/claude-context-reads.sh \
 	test/claude-context-check.sh \
 	test/write-targets.sh \
+	test/chopi-queue-patch.sh \
 	test/chopi-review.sh \
 	test/integration.sh
 
@@ -70,6 +72,7 @@ test:
 	@./test/claude-context-reads.sh
 	@./test/claude-context-check.sh
 	@./test/write-targets.sh
+	@./test/chopi-queue-patch.sh
 	@./test/chopi-review.sh
 	@./test/integration.sh
 
