@@ -101,7 +101,7 @@ refuses "  -> including two spellings that resolve to the same directory" \
 
 nl_dir="$TMPDIR/holds"$'\n'"newline"
 mkdir -p "$nl_dir"
-accepts "a path holding a newline is accepted" "$nl_dir"
+refuses "a path holding a newline is refused" "newline" "$nl_dir"
 
 # A '..' spelling is refused: what it names shifts with the workspace (from a linked
 # worktree it reaches into the containing repo's .worktrees), so the user can't have vetted it.
@@ -445,13 +445,11 @@ echo "paths holding a newline"
 # Robust to newlines in the path of the workspace
 nl_work="$TMPDIR/nl"$'\n'"work"
 mkdir -p "$nl_work"
-CHOPI_SAFE_WRITE_TARGETS=("$nl_dir")
+CHOPI_SAFE_WRITE_TARGETS=("$guidelines")
 validate_write_targets "$nl_work" chopi
 nl_queue="$(create_patch_queue "$nl_work")"
 assert_eq "$(queue_workspace "$nl_queue")" "$nl_work" \
     "a workspace holding a newline records and reads back whole"
-assert_eq "$(slot_target "$nl_queue/$(path_id "$nl_dir")")" "$nl_dir" \
-    "  -> and so does the target of a slot in it"
 
 
 # ---------------------------------------------------------------------------

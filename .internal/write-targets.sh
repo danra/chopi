@@ -112,6 +112,11 @@ validate_write_target() {
         echo "$prog: safe write target is not a directory or regular file $path" >&2
         return 1
     fi
+    case "$path" in
+        *$'\n'*)
+            echo "$prog: safe write target has a newline in its path: $path" >&2
+            return 1 ;;
+    esac
     if overlaps_chopi_dir "$path"; then
         echo "$prog: safe write target overlaps chopi's directory $path" >&2
         return 1
