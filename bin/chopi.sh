@@ -151,7 +151,9 @@ main() {
         write_patch_queue_profile "$queue_profile" "$queue_dir" \
             || { echo "chopi: could not write the patch-queue profile" >&2; return 1; }
         queue_flags=(--append-profile "$queue_profile")
-        queue_env=(CHOPI_PATCH_QUEUE="$queue_dir")
+        local targets
+        targets="$(printf '%s\n' "${CHOPI_WRITE_TARGET_PATHS[@]}")"
+        queue_env=(CHOPI_PATCH_QUEUE="$queue_dir" CHOPI_SAFE_WRITE_TARGETS="$targets")
     fi
 
     local context_flags=()
