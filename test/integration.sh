@@ -68,11 +68,12 @@ ws="$base/workspace"            # the sandbox workspace (read/write granted, as 
 outside="$base/outside"         # sibling of the workspace -> reliably denied
 alerter_stub="$base/bin"        # a recording `alerter` shim on the proxy's PATH
 claudebin="$base/claudebin"     # a stand-in `claude` for the Claude-context cases
+codexbin="$base/codexbin"       # a stand-in `codex` for checking Chopi's argv
 cfg="$base/config/sandbox.sh"   # minimal sandbox config, OUTSIDE the workspace
 rules="$base/config/itest-rules.yaml"
 proxy_log="$base/proxy.log"
 alerter_log="$base/alerter-calls.log"
-mkdir -p "$ws" "$outside" "$alerter_stub" "$claudebin" "$base/config"
+mkdir -p "$ws" "$outside" "$alerter_stub" "$claudebin" "$codexbin" "$base/config"
 make_repo "$ws"     # chopi only runs at a git worktree root
 
 # A workspace file to read back, and an out-of-bounds secret that must stay unreadable.
@@ -91,10 +92,17 @@ exec /bin/sh "$@"
 EOF
 chmod +x "$claude_shim"
 
+codex_shim="$codexbin/codex"
+cat > "$codex_shim" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@"
+EOF
+chmod +x "$codex_shim"
+
 # Minimal config: no dir grants beyond the stub agent's (so denials are clean), PATH of
 # system binaries only
 cat > "$cfg" <<EOF
-CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$claudebin" )
+CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$claudebin:$codexbin" )
 CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
 EOF
 
@@ -278,6 +286,7 @@ chopi_claude_in() {
     ( cd "$dir" && "$repo/bin/chopi" --config "$conf" -- "$claude_shim" "$@" )
 }
 chopi_claude() { chopi_claude_in "$ws" "$cfg" "$@"; }
+chopi_codex() { chopi_t "$codex_shim" "$@"; }
 
 # Run curl INSIDE the sandbox and echo its HTTP status code ("000" when the connection is
 # blocked/refused before any response).
@@ -344,6 +353,14 @@ assert_absent "$outside/evil.txt" "write OUTSIDE the workspace is denied (no fil
 out="$(chopi_t /bin/sh -c "cat '$repo/.internal/preflight.sh' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_not_contains "$out" "preflight"             "read of chopi's OWN dir is denied (config stays out of reach)"
 assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
+
+
+# ---------------------------------------------------------------------------
+echo "Codex uses Chopi as its external sandbox"
+# ---------------------------------------------------------------------------
+out="$(chopi_codex exec --json 2>/dev/null)"
+assert_eq "$out" $'--sandbox\ndanger-full-access\nexec\n--json' \
+    "Codex disables its nested sandbox before its subcommand"
 
 
 # ---------------------------------------------------------------------------

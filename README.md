@@ -174,6 +174,13 @@ configuration.
 When running `claude`, `chopi` appends [context](.internal/claude-sandbox-prompt.md) to the
 system prompt describing the sandbox, what it restricts, and how to guide the user.
 
+### Codex Integration
+
+When running `codex`, `chopi` passes `--sandbox danger-full-access` to Codex. macOS Seatbelt
+sandboxes cannot be nested, so Codex's own sandbox would otherwise make built-in tools such as
+`apply_patch` fail with `sandbox_apply: Operation not permitted`. Chopi remains the outer filesystem
+and network sandbox; Codex's approval policy remains unchanged.
+
 ### Safe write targets
 
 Sometimes a change should be read before it lands, for example:
