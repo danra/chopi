@@ -221,9 +221,9 @@ main() {
         || { echo "chopi: could not create a temp file for the in-sandbox wrapper profile" >&2; return 1; }
     {
         echo ";; chopi: the in-sandbox wrapper itself."
-        rule 'allow file-read* process-exec*' literal "$wrapper_path"
+        rule 'allow file-read* process-exec' literal "$wrapper_path"
         echo ";; chopi: the in-sandbox teardown cleanup and the libs it and the wrapper source."
-        rule 'allow file-read* process-exec*' literal "$cleanup_script_path"
+        rule 'allow file-read* process-exec' literal "$cleanup_script_path"
         local lib
         for lib in "${CHOPI_IN_SANDBOX_LIBS[@]}"; do
             rule 'allow file-read*' literal "$CHOPI_DIR/.internal/$lib"
