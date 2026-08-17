@@ -277,6 +277,7 @@ main() {
         "${context_flags[@]+"${context_flags[@]}"}" \
         "${protection_flags[@]}" \
         "${wrapper_flags[@]}" \
+        --append-profile "$CHOPI_DIR/.internal/multiprocessing.sb" \
         --append-profile "$CHOPI_DIR/.internal/network.sb" \
         --append-profile "$gh_relay_profile" \
         -- \

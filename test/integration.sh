@@ -308,6 +308,9 @@ echo "positive control + exit-code propagation"
 out="$(chopi_t /bin/sh -c 'echo OK' 2>/dev/null)"
 assert_eq "$out" "OK" "a command actually runs under the minimal sandbox config"
 
+out="$(chopi_t /usr/bin/python3 -c 'import multiprocessing; multiprocessing.Semaphore(); print("OK")')"
+assert_eq "$out" "OK" "Python multiprocessing can create its POSIX semaphore under the default sandbox"
+
 chopi_t /bin/sh -c 'exit 7' >/dev/null 2>&1; rc=$?
 assert_eq "$rc" "7" "chopi propagates the sandboxed command's exit code"
 
