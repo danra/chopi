@@ -139,7 +139,7 @@ main() {
         echo "chopi: refusing to run" >&2
         return 1
     fi
-    local queue_flags=() queue_env=() queue_dir=""
+    local queue_flags=() queue_env=() queue_dir="" targets=""
     # Gated on the enforced targets, not the config: under CHOPI_ALLOW_SAFE_WRITE_TARGET
     # a configured target can drop out, and all dropping out leaves no queue to set up.
     if [ "${#CHOPI_WRITE_TARGET_PATHS[@]}" -gt 0 ]; then
@@ -151,7 +151,6 @@ main() {
         write_patch_queue_profile "$queue_profile" "$queue_dir" \
             || { echo "chopi: could not write the patch-queue profile" >&2; return 1; }
         queue_flags=(--append-profile "$queue_profile")
-        local targets
         targets="$(printf '%s\n' "${CHOPI_WRITE_TARGET_PATHS[@]}")"
         queue_env=(CHOPI_PATCH_QUEUE="$queue_dir" CHOPI_SAFE_WRITE_TARGETS="$targets")
     fi
@@ -166,7 +165,7 @@ main() {
             || { echo "chopi: could not write the claude-context-reads profile" >&2; return 1; }
         context_flags=(--append-profile "$claude_context_profile")
 
-        claude_argv_with_chopi_prompt "$run_dir" "$@" || return 1
+        claude_argv_with_chopi_prompt "$run_dir" "$targets" "$@" || return 1
         cmd_argv=("${CLAUDE_ARGV_WITH_CHOPI_PROMPT[@]}")
     elif [ "$(basename -- "$1")" = codex ]; then
         # Chopi is Codex's external sandbox. Asking Codex to install another macOS

@@ -6,8 +6,9 @@ configuration paths below are relative to. Four things are confined:
 
 - **Filesystem.** Read/write is limited to the workspace -- the current dir, always the root
   of a git worktree -- plus whatever the user allowed explicitly.
-- **Worktrees.** Other worktrees of the same repo, and other repos, are unreadable. This
-  is deliberate: it keeps a session from picking up context outside its assigned task.
+- **Worktrees.** Other worktrees of the same repo, and other repos, are unreadable, except
+  the safe write targets listed just below. This is deliberate: it keeps a session from
+  picking up context outside its assigned task.
 - **Network.** The only reachable addresses are two loopback proxies, plus a loopback unix
   socket `gh` is preconfigured with for the GitHub REST API. Everything else is blocked at
   the kernel level, so a request that ignores the proxies gets no network at all rather
@@ -21,6 +22,8 @@ configuration paths below are relative to. Four things are confined:
   write can later execute unsandboxed during a git operation. Committing, amending,
   rebasing and cherry-picking all work in-session. Pushing to the current branch also works
   for allowlisted GitHub repos (see below).
+
+@@SAFE_WRITE_TARGETS@@
 
 ## The rule
 
@@ -100,7 +103,10 @@ As before, avoid telling the user why you chose a working alternative over one t
 
 ## Changing a file outside the workspace
 
-There are two ways the user can allow it, and which one you ask for matters:
+Before telling the user a path can't be changed from here, check it against the safe write
+targets listed at the top (`$CHOPI_SAFE_WRITE_TARGETS` carries the same list): one they cover
+takes no grant, only a queued patch, see below. For any other path there are two ways the user
+can allow it, and which one you ask for matters:
 
 - **`--add-dirs PATH` in `CHOPI_SAFEHOUSE_FLAGS`.** Direct, unreviewed writes. Right for
   machinery: caches, build outputs, tool state, anything where the user reading every change

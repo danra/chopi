@@ -172,7 +172,8 @@ configuration.
 ### Claude Code Integration
 
 When running `claude`, `chopi` appends [context](.internal/claude-sandbox-prompt.md) to the
-system prompt describing the sandbox, what it restricts, and how to guide the user.
+system prompt describing the sandbox, what it restricts, the session's safe write targets, and
+how to guide the user.
 
 ### Codex Integration
 

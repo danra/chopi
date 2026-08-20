@@ -379,7 +379,7 @@ echo "chopi's addition to claude's system prompt"
 # shellcheck disable=SC2016 # the variable expands in the sandboxed shell, not here
 probe_prompt='printf %s "${CHOPI_ITEST_PROMPT:-NO_PROMPT}"'
 out="$(chopi_claude -c "$probe_prompt" 2>/dev/null)"
-assert_eq "$out" "$(cat "$CHOPI_CLAUDE_PROMPT_FILE")" "claude's system prompt carries chopi's sandbox document"
+assert_eq "$out" "$(chopi_prompt_document "")" "claude's system prompt carries chopi's sandbox document"
 
 out="$(chopi_t /bin/sh -c "$probe_prompt" 2>/dev/null)"
 assert_eq "$out" "NO_PROMPT"                       "  -> and only for claude: no other command gets it"
@@ -625,7 +625,7 @@ printf '# Guidelines\nBe kind.\n' > "$swt_target/Guidelines.md"
 
 cfg_swt="$base/config/sandbox-swt.sh"
 cat > "$cfg_swt" <<EOF
-CHOPI_SAFEHOUSE_FLAGS=()
+CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$claudebin" )
 CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
 CHOPI_SAFE_WRITE_TARGETS=( "$swt_target" )
 EOF
@@ -633,6 +633,9 @@ EOF
 swt_repo_real="$(realpath "$swt_repo")"
 swt_queue="$CHOPI_PATCH_QUEUE_ROOT/$(path_id "$swt_repo_real")"
 swt_slot="$swt_queue/$(path_id "$swt_target")"
+
+out="$(chopi_claude_in "$swt_repo" "$cfg_swt" -c "$probe_prompt" 2>/dev/null)"
+assert_contains "$out" '- `'"$swt_target"'`' "claude's system prompt lists the session's safe write targets"
 
 # This run's stderr goes into $out rather than the suite's terminal: the run leaves a patch
 # queued, and chopi's end-of-run review offer prompts for it whenever stderr is a terminal,
