@@ -79,6 +79,24 @@ strip_comment_and_trim() {
     trim "${1%%#*}"
 }
 
+# Print TEXT with every occurrence of each SLOT replaced by the VALUE following it. Callers
+# assemble a text from a varying set of fragments, so a SLOT it doesn't hold is no error.
+#
+# usage: fill_slots TEXT [SLOT VALUE...]
+fill_slots() {
+    local text="$1"; shift
+    if [ $(($# % 2)) -ne 0 ]; then
+        printf 'BUG: fill_slots called with a slot missing its value\n' >&2
+        exit 2
+    fi
+    local slot value
+    while [ "$#" -gt 0 ]; do
+        slot="$1" value="$2"; shift 2
+        text="${text//$slot/$value}"
+    done
+    printf '%s\n' "$text"
+}
+
 # Get the next keystroke for a prompt, as soon as it is pressed rather than waiting for a return
 prompt_read_key() {
     arity 0

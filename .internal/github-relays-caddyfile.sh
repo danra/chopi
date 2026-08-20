@@ -141,13 +141,13 @@ emit_caddyfile() {
     deny_auth_fetch="$(deny_pkt git-upload-pack "$auth_msg")"
     deny_auth_push="$(deny_pkt git-receive-pack "$auth_msg")"
 
-    text="${text//@@GITPORT@@/$GITHUB_RELAY_PORT}"
-    text="${text//@@ALLOWLIST_REGEX@@/$allowlist_regex}"
-    text="${text//@@DENY_PKT_FETCH@@/$deny_fetch}"
-    text="${text//@@DENY_PKT_PUSH@@/$deny_push}"
-    text="${text//@@DENY_PKT_AUTH_FETCH@@/$deny_auth_fetch}"
-    text="${text//@@DENY_PKT_AUTH_PUSH@@/$deny_auth_push}"
-    printf '%s\n' "$text"
+    fill_slots "$text" \
+        @@GITPORT@@ "$GITHUB_RELAY_PORT" \
+        @@ALLOWLIST_REGEX@@ "$allowlist_regex" \
+        @@DENY_PKT_FETCH@@ "$deny_fetch" \
+        @@DENY_PKT_PUSH@@ "$deny_push" \
+        @@DENY_PKT_AUTH_FETCH@@ "$deny_auth_fetch" \
+        @@DENY_PKT_AUTH_PUSH@@ "$deny_auth_push"
 }
 
 main "$@"
