@@ -137,6 +137,8 @@ even where the workspace around it is writable. Queue a patch either way, with
 ```sh
 cp "$file" "$TMPDIR/draft"  # $file: the file to change; skip the cp for one not there yet
 # edit "$TMPDIR/draft" with your normal tools, then:
+body="Break the body's lines yourself, typing the newlines into the argument,
+the way you would wrap a commit message you author yourself."
 "$CHOPI_DIR/.internal/chopi-queue-patch.sh" -s "$subject" -m "$body" "$file" "$TMPDIR/draft"
 ```
 
@@ -149,8 +151,9 @@ target covers once resolved is refused -- then ask for the fitting grant above.
 The subject and body become the message of a commit authored as the user: a reviewed change is
 the user's, the same as one they wrote themselves. Write the commit message the change
 deserves: what it does and why it is right. Not who asked for it, not how the conversation
-went, and nobody else to credit. Format it, line wrapping included, exactly as you would a
-commit you author yourself.
+went, and nobody else to credit. Nothing between the argument and the commit reformats the
+message, so a paragraph handed over as one line lands in the user's repo as one long line:
+break the body's lines yourself, wrapping it as you would a commit you author yourself.
 
 When a git repo holds the target -- the target being its root, or a directory or file inside it
 -- each approved patch becomes its own commit there; pushing stays the user's. A target no repo
