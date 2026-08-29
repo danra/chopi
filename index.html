@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chopi 🐶 — macOS sandbox for running code agents</title>
+<meta name="description" content="Chopi is an open-source macOS sandbox for running code agents like Claude Code and Codex: safehouse confines the process, a smokescreen proxy filters network access, and a caddy relay protects GitHub access.">
+<meta property="og:title" content="Chopi 🐶">
+<meta property="og:description" content="An open-source macOS sandbox for running code agents like Claude Code and Codex. Native Seatbelt sandboxing plus cooperating proxies — no containers, no VMs.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐶</text></svg>">
+<style>
+  :root {
+    --bg: #0c0f14;
+    --bg-raise: #12161d;
+    --bg-card: #151a23;
+    --border: #262d39;
+    --text: #d7dde6;
+    --text-dim: #8b95a5;
+    --accent: #f2b13d;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre { font-family: var(--mono); }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 24px; }
+
+  /* Header */
+  header {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(12,15,20,.85);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+  }
+  header .wrap {
+    display: flex; align-items: center; justify-content: space-between;
+    height: 56px;
+  }
+  .brand { font-weight: 700; font-size: 1.05rem; color: var(--text); }
+  .brand:hover { text-decoration: none; }
+  nav a { color: var(--text-dim); margin-left: 22px; font-size: .92rem; }
+  nav a:hover { color: var(--text); text-decoration: none; }
+  nav a.gh { color: var(--accent); }
+
+  /* Hero */
+  .hero { padding: 72px 0 56px; text-align: center; }
+  .hero h1 {
+    font-size: clamp(1.4rem, 3.6vw, 2.05rem);
+    line-height: 1.35;
+    letter-spacing: -.015em;
+    font-weight: 650;
+    max-width: 760px; margin: 0 auto 14px;
+  }
+  .hero h1 .hl { color: var(--accent); }
+  .hero p.sub {
+    max-width: 620px; margin: 0 auto 40px;
+    color: var(--text-dim); font-size: 1.05rem;
+  }
+
+  /* Nested layers diagram */
+  .nest {
+    text-align: left; max-width: 760px; margin: 0 auto;
+    border: 1px solid var(--border); border-radius: 12px;
+    padding: 18px 20px 20px;
+    background: var(--bg-raise);
+  }
+  .nest .nest { margin-top: 14px; background: #171d28; }
+  .nest .nest .nest { background: #1d2432; }
+  .nest-title { font-weight: 650; font-size: 1rem; }
+  .nest-title .nest-tool { font-family: var(--mono); font-size: .9em; }
+  .nest > p { color: var(--text-dim); font-size: .92rem; margin-top: 4px; }
+
+  .cta { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-top: 40px; }
+  .btn {
+    display: inline-block; padding: 11px 22px; border-radius: 8px;
+    font-weight: 600; font-size: .95rem;
+  }
+  .btn.primary { background: var(--accent); color: #16130a; }
+  .btn.primary:hover { background: #ffc554; text-decoration: none; }
+  .btn.ghost { border: 1px solid var(--border); color: var(--text); }
+  .btn.ghost:hover { border-color: var(--text-dim); text-decoration: none; }
+  .platform-note { margin-top: 16px; color: var(--text-dim); font-size: .85rem; }
+
+  /* Sections */
+  section { padding: 64px 0; }
+  section + section, .hero + section { border-top: 1px solid var(--border); }
+  h2 { font-size: 1.6rem; letter-spacing: -.01em; margin-bottom: 10px; }
+  .section-lead { color: var(--text-dim); max-width: 640px; margin-bottom: 32px; }
+
+  /* Feature grid */
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 20px;
+  }
+  .card h3 { font-size: 1rem; margin-bottom: 8px; }
+  .card h3 .ico { margin-right: 8px; }
+  .card p { color: var(--text-dim); font-size: .9rem; }
+  .card code, .step code {
+    font-size: .82em; background: var(--bg-raise);
+    border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px;
+    color: var(--text);
+  }
+
+  /* Install */
+  .install pre {
+    background: var(--bg-raise); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px 20px; overflow-x: auto;
+    font-size: .88rem; line-height: 1.9;
+  }
+  .install pre .c { color: #5b6572; }
+  .install pre .p { color: var(--accent); user-select: none; }
+  .step { margin-bottom: 26px; }
+  .step h3 { font-size: 1.02rem; margin-bottom: 10px; }
+  .step h3 .n {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 24px; height: 24px; margin-right: 10px;
+    border-radius: 50%; background: var(--accent); color: #16130a;
+    font-size: .8rem; font-weight: 700;
+  }
+  .step p { color: var(--text-dim); font-size: .92rem; margin-top: 8px; }
+
+  /* Footer */
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 36px 0 48px; color: var(--text-dim); font-size: .88rem;
+  }
+  footer .wrap { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <a class="brand" href="#">Chopi 🐶</a>
+    <nav>
+      <a href="#features">Features</a>
+      <a href="#install">Install</a>
+      <a class="gh" href="https://github.com/danra/chopi">GitHub&nbsp;↗</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="hero wrap">
+    <h1>Chopi is an open-source <span class="hl">macOS sandbox</span> for running
+    code agents like Claude&nbsp;Code and Codex.</h1>
+    <p class="sub">No containers, no VMs — your real machine, your real tools,
+    with the exits guarded.</p>
+
+    <div class="nest">
+      <div class="nest-title">It sandboxes the process using
+        <a class="nest-tool" href="https://agent-safehouse.dev/">Agent&nbsp;Safehouse&nbsp;↗</a></div>
+      <p>Filesystem access confined to your workspace, plus exactly the paths you
+      grant — and the only network exit is the local proxies below.</p>
+
+      <div class="nest">
+        <div class="nest-title">It filters network access using a
+          <a class="nest-tool" href="https://github.com/stripe/smokescreen">Smokescreen&nbsp;↗</a> proxy</div>
+        <p>Only allowlisted hosts get through; every other connection is refused,
+        logged, and raised as a macOS notification.</p>
+
+        <div class="nest">
+          <div class="nest-title">It protects GitHub access using a
+            <a class="nest-tool" href="https://caddyserver.com">Caddy&nbsp;↗</a> relay</div>
+          <p>A relay scopes pushes, private repos, and API access to a repo
+          allowlist. Your GitHub token never enters the sandbox.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="cta">
+      <a class="btn primary" href="#install">Get started</a>
+      <a class="btn ghost" href="https://github.com/danra/chopi">View on GitHub</a>
+    </div>
+    <p class="platform-note">Open source · macOS · AGPL-3.0</p>
+  </div>
+
+  <section id="features">
+    <div class="wrap">
+      <h2>Guardrails, not a cage</h2>
+      <p class="section-lead">
+        Agents are most useful when they can run with minimal approvals. Inside the
+        fence they work at full speed; a few extra guardrails cover what the layers
+        above don't.
+      </p>
+      <div class="grid">
+        <div class="card">
+          <h3><span class="ico">🔒</span>Hardened git internals</h3>
+          <p>Git's data paths stay writable, but <code>config</code>, <code>hooks</code>,
+          and friends are read-only — a sandboxed command can't plant code that would
+          later run <em>unsandboxed</em> on a git operation.</p>
+        </div>
+        <div class="card">
+          <h3><span class="ico">📝</span>Safe write targets</h3>
+          <p>Some files deserve review before they change — shared guidelines, a
+          <code>CLAUDE.md</code>. Name them and the agent proposes patches instead of
+          writing; you review each diff and apply it as your own commit.</p>
+        </div>
+        <div class="card">
+          <h3><span class="ico">🌳</span>Worktree sessions</h3>
+          <p><code>chopi --worktree NAME</code> spins up a linked worktree on its own
+          branch and runs the agent there — parallel tasks, each isolated in its own
+          workspace, resumable later.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="install" class="install">
+    <div class="wrap">
+      <h2>Get started</h2>
+      <p class="section-lead">Two terminals: one for the proxy, one for the agent.</p>
+
+      <div class="step">
+        <h3><span class="n">1</span>Install</h3>
+        <pre><span class="p">$</span> git clone https://github.com/danra/chopi
+<span class="p">$</span> cd chopi &amp;&amp; ./install.sh</pre>
+        <p>Then review the configuration: allowed hosts in
+        <code>config/proxy-rules.yaml</code>, pushable repos in
+        <code>config/github-allowlist</code>, and sandbox policy in
+        <code>config/sandbox.sh</code>.</p>
+      </div>
+
+      <div class="step">
+        <h3><span class="n">2</span>Start the proxy</h3>
+        <pre><span class="p">$</span> chopi-proxy    <span class="c"># leave it running; all sessions share it</span></pre>
+        <p>It runs in the foreground so refused connections are always visible.</p>
+      </div>
+
+      <div class="step">
+        <h3><span class="n">3</span>Run your agent</h3>
+        <pre><span class="p">$</span> cd ~/path/to/your/repo
+<span class="p">$</span> chopi claude                    <span class="c"># or codex, or any command</span>
+<span class="p">$</span> chopi --worktree fix-123 claude <span class="c"># or in a fresh worktree + branch</span></pre>
+        <p>Running <code>claude</code>? Chopi teaches it about the sandbox via the
+        system prompt, so the agent explains denials and guides you to the right
+        one-line config fix instead of fighting the fence.</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div>Chopi 🐶 · AGPL-3.0</div>
+    <div>
+      <a href="https://github.com/danra/chopi">GitHub</a> ·
+      built on <a href="https://agent-safehouse.dev/">Agent Safehouse</a>,
+      <a href="https://github.com/stripe/smokescreen">Smokescreen</a> &amp;
+      <a href="https://caddyserver.com">Caddy</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
