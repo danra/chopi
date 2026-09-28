@@ -64,11 +64,11 @@
   .hero h1 .hl { color: var(--accent); }
 
   /* System map: a box inside another box runs inside it */
-  .map { text-align: left; }
+  .map { text-align: left; --pad: 18px; --gap: 84px; }
   .nest {
     position: relative;
     border: 1px solid var(--border); border-radius: 12px;
-    padding: 16px 18px 18px;
+    padding: 16px var(--pad) 18px;
     background: var(--bg-raise);
   }
   .nest .nest { background: #171d28; }
@@ -78,7 +78,7 @@
   .nest-head p { color: var(--text-dim); font-size: .9rem; }
   .mac-grid {
     display: grid; grid-template-columns: minmax(0, 6fr) minmax(0, 5fr);
-    column-gap: 84px; margin-top: 14px;
+    column-gap: var(--gap); margin-top: 14px;
   }
   .side { display: flex; flex-direction: column; justify-content: space-between; gap: 16px; }
   .access { list-style: none; margin-top: 12px; font-size: .9rem; }
@@ -92,11 +92,15 @@
     border: 1px solid var(--border); border-radius: 4px; padding: 0 5px;
   }
   .wire {
-    position: absolute; right: 100%; top: 50%; width: 84px;
+    position: absolute; top: 50%;
     transform: translateY(-100%); padding-bottom: 2px;
     border-bottom: 1px solid var(--text-dim);
     color: var(--text-dim); font-size: .75rem; text-align: center;
   }
+  .wire.into { right: 100%; width: var(--gap); }
+  /* Leaves a box nested one level inside the left column: crosses the column
+     box's padding, both boxes' borders, and the gap */
+  .wire.out { left: 100%; width: calc(var(--pad) + 2px + var(--gap)); }
   .wire::after {
     content: ""; position: absolute; right: 0; bottom: -5px;
     border-left: 7px solid var(--text-dim);
@@ -195,6 +199,7 @@
               final word on network access.</div>
             </div>
             <div class="nest">
+              <span class="wire out">network</span>
               <div class="nest-head has-tip" tabindex="0">
                 <div class="nest-title">Your agent</div>
                 <p>claude, codex, or any command</p>
@@ -232,7 +237,6 @@
           </div>
           <div class="side">
             <div class="nest">
-              <span class="wire">network</span>
               <div class="nest-head has-tip" tabindex="0">
                 <div class="nest-title">chopi-proxy</div>
                 <p>outside the sandbox, shared by all sessions</p>
@@ -261,7 +265,7 @@
               </div>
             </div>
             <div class="nest">
-              <span class="wire">patches</span>
+              <span class="wire into">patches</span>
               <div class="nest-head has-tip" tabindex="0">
                 <div class="nest-title">Patch review</div>
                 <p>you approve each change before it lands</p>
