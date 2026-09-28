@@ -43,14 +43,14 @@
   }
   header .wrap {
     display: flex; align-items: center; justify-content: space-between;
-    height: 56px;
+    height: 52px;
   }
   .brand { font-weight: 700; font-size: 1.05rem; color: var(--text); }
   .brand:hover { text-decoration: none; }
   nav a { color: var(--text-dim); margin-left: 22px; font-size: .92rem; }
   nav a:hover { color: var(--text); text-decoration: none; }
   nav a.gh { color: var(--accent); }
-  nav a.gh svg { vertical-align: middle; }
+  nav a.gh, nav a.gh svg { display: block; }
 
   /* Hero */
   .hero { padding: 35px 0 56px; text-align: center; }
