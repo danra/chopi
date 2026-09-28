@@ -64,11 +64,11 @@
   .hero h1 .hl { color: var(--accent); }
 
   /* System map: a box inside another box runs inside it */
-  .map { text-align: left; --pad: 18px; --gap: 84px; }
+  .map { text-align: left; --pad: 18px; --gap: 84px; --flow: 40px; }
   .nest {
     position: relative;
     border: 1px solid var(--border); border-radius: 12px;
-    padding: 16px var(--pad) 18px;
+    padding: 16px var(--pad) var(--pad);
     background: var(--bg-raise);
   }
   .nest .nest { background: #171d28; }
@@ -82,15 +82,13 @@
       "policy  policy"
       "cfg     ."
       "sandbox proxy"
-      "patches proxy"
       "review  proxy";
     column-gap: var(--gap); margin-top: 14px;
   }
   .policy { grid-area: policy; }
   .flow-cfg { grid-area: cfg; }
   .sandbox { grid-area: sandbox; }
-  .flow-patches { grid-area: patches; }
-  .review { grid-area: review; align-self: start; }
+  .review { grid-area: review; align-self: start; margin-top: var(--flow); }
   .proxy { grid-area: proxy; align-self: start; }
   .policy-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 24px; }
   .access-group { margin-top: 14px; color: var(--text-dim); font-size: .8rem; font-weight: 600; }
@@ -119,9 +117,15 @@
     border-top: 4.5px solid transparent; border-bottom: 4.5px solid transparent;
   }
   .flow {
-    position: relative; height: 40px; margin-left: 50%;
+    position: relative; height: var(--flow); margin-left: 50%;
     border-left: 1px solid var(--text-dim);
     color: var(--text-dim); font-size: .75rem;
+  }
+  /* Leaves a box nested one level inside the left column through its bottom:
+     crosses the column box's padding, both boxes' borders, and the flow gap */
+  .flow.out {
+    position: absolute; top: 100%; left: 50%; margin-left: 0;
+    height: calc(var(--pad) + 2px + var(--flow));
   }
   .flow span { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); }
   .flow::after {
@@ -132,7 +136,7 @@
   @media (max-width: 760px) {
     .mac-grid {
       grid-template-columns: minmax(0, 1fr);
-      grid-template-areas: "policy" "cfg" "sandbox" "patches" "review" "proxy";
+      grid-template-areas: "policy" "cfg" "sandbox" "review" "proxy";
     }
     .policy-cols { grid-template-columns: minmax(0, 1fr); }
     .proxy { margin-top: 16px; }
@@ -270,6 +274,7 @@
             </div>
             <div class="nest">
               <span class="wire">network</span>
+              <div class="flow out"><span>patches</span></div>
               <div class="nest-head has-tip" tabindex="0">
                 <div class="nest-title">Your agent</div>
                 <p>claude, codex, or any command</p>
@@ -279,7 +284,6 @@
               </div>
             </div>
           </div>
-          <div class="flow flow-patches"><span>patches</span></div>
           <div class="nest review">
             <div class="nest-head has-tip" tabindex="0">
               <div class="nest-title">Patch review</div>
