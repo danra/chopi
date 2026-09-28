@@ -13,7 +13,6 @@
   :root {
     --bg: #0c0f14;
     --bg-raise: #12161d;
-    --bg-card: #151a23;
     --border: #262d39;
     --text: #d7dde6;
     --text-dim: #8b95a5;
@@ -64,18 +63,60 @@
   }
   .hero h1 .hl { color: var(--accent); }
 
-  /* Nested layers diagram */
+  /* System map: a box inside another box runs inside it */
+  .map { text-align: left; }
   .nest {
-    text-align: left; max-width: 760px; margin: 0 auto;
+    position: relative;
     border: 1px solid var(--border); border-radius: 12px;
-    padding: 18px 20px 20px;
+    padding: 16px 18px 18px;
     background: var(--bg-raise);
   }
-  .nest .nest { margin-top: 14px; background: #171d28; }
-  .nest .nest .nest { background: #1d2432; }
+  .nest .nest { background: #171d28; }
+  .nest .nest .nest { margin-top: 12px; background: #1d2432; }
   .nest-title { font-weight: 650; font-size: 1rem; }
-  .nest-title .nest-tool { font-family: var(--mono); font-size: .9em; }
-  .nest > p { color: var(--text-dim); font-size: .92rem; margin-top: 4px; }
+  .nest-tool { font-family: var(--mono); font-size: .9em; }
+  .nest-head p { color: var(--text-dim); font-size: .9rem; }
+  .mac-grid {
+    display: grid; grid-template-columns: minmax(0, 6fr) minmax(0, 5fr);
+    column-gap: 84px; margin-top: 14px;
+  }
+  .side { display: flex; flex-direction: column; justify-content: space-between; gap: 16px; }
+  .access { list-style: none; margin-top: 12px; font-size: .9rem; }
+  .access li {
+    display: grid; grid-template-columns: 9.5em minmax(0, 1fr); gap: 10px;
+    padding: 7px 8px; margin: 0 -8px; border-top: 1px solid var(--border);
+  }
+  .access .v { color: var(--text-dim); }
+  .cfg {
+    font-size: .78rem; white-space: nowrap; color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px; padding: 0 5px;
+  }
+  .wire {
+    position: absolute; right: 100%; top: 50%; width: 84px;
+    transform: translateY(-100%); padding-bottom: 2px;
+    border-bottom: 1px solid var(--text-dim);
+    color: var(--text-dim); font-size: .75rem; text-align: center;
+  }
+  .wire::after {
+    content: ""; position: absolute; right: 0; bottom: -5px;
+    border-left: 7px solid var(--text-dim);
+    border-top: 4.5px solid transparent; border-bottom: 4.5px solid transparent;
+  }
+  @media (max-width: 760px) {
+    .mac-grid { grid-template-columns: minmax(0, 1fr); row-gap: 16px; }
+    .wire { display: none; }
+  }
+  .has-tip { position: relative; cursor: help; outline: none; }
+  .nest-head.has-tip { margin: -6px -8px; padding: 6px 8px; border-radius: 6px; }
+  .has-tip:hover, .has-tip:focus { background: rgba(255,255,255,.04); }
+  .tip {
+    display: none; position: absolute; z-index: 5; left: 0; right: 0; top: calc(100% + 4px);
+    padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--bg); color: var(--text); font-size: .85rem; line-height: 1.5;
+    pointer-events: none;
+  }
+  .has-tip:hover > .tip, .has-tip:focus > .tip { display: block; }
+  .map-hint { margin-top: 12px; color: var(--text-dim); font-size: .85rem; text-align: center; }
 
   .cta { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-top: 40px; }
   .btn {
@@ -91,17 +132,7 @@
   h2 { font-size: 1.6rem; letter-spacing: -.01em; margin-bottom: 10px; }
   .section-lead { color: var(--text-dim); max-width: 640px; margin-bottom: 32px; }
 
-  /* Feature grid */
-  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
-  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
-  .card {
-    background: var(--bg-card); border: 1px solid var(--border);
-    border-radius: 10px; padding: 20px;
-  }
-  .card h3 { font-size: 1rem; margin-bottom: 8px; }
-  .card h3 .ico { margin-right: 8px; }
-  .card p { color: var(--text-dim); font-size: .9rem; }
-  .card code, .step code {
+  .step code {
     font-size: .82em; background: var(--bg-raise);
     border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px;
     color: var(--text);
@@ -149,62 +180,106 @@
     <h1>Chopi 🐶<br>
     A <span class="hl">macOS filesystem and network sandbox</span> to unleash
     your agents.</h1>
-    <div class="nest">
-      <div class="nest-title">It sandboxes the process using
-        <a class="nest-tool" href="https://agent-safehouse.dev/" target="_blank">Agent&nbsp;Safehouse</a></div>
-      <p>Filesystem access confined to your workspace, plus exactly the paths you
-      grant — and the only network exit is the local proxies below.</p>
-
+    <div class="map">
       <div class="nest">
-        <div class="nest-title">It filters network access using a
-          <a class="nest-tool" href="https://github.com/stripe/smokescreen" target="_blank">Smokescreen</a> proxy</div>
-        <p>Only allowlisted hosts get through; every other connection is refused,
-        logged, and raised as a macOS notification.</p>
-
-        <div class="nest">
-          <div class="nest-title">It protects GitHub access using a
-            <a class="nest-tool" href="https://caddyserver.com" target="_blank">Caddy</a> relay</div>
-          <p>A relay scopes pushes, private repos, and API access to a repo
-          allowlist. Your GitHub token never enters the sandbox.</p>
+        <div class="nest-head">
+          <div class="nest-title">Your Mac</div>
+          <p>No VM, no container: the agent runs with your real tools.</p>
+        </div>
+        <div class="mac-grid">
+          <div class="nest">
+            <div class="nest-head has-tip" tabindex="0">
+              <div class="nest-title">Seatbelt sandbox</div>
+              <p>policy built with <a class="nest-tool" href="https://agent-safehouse.dev/" target="_blank">Agent&nbsp;Safehouse</a></p>
+              <div class="tip">Chopi appends its own network rules last, so they have the
+              final word on network access.</div>
+            </div>
+            <div class="nest">
+              <div class="nest-head has-tip" tabindex="0">
+                <div class="nest-title">Your agent</div>
+                <p>claude, codex, or any command</p>
+                <div class="tip">It and every process it starts stay confined. Claude Code
+                also gets the sandbox described in its system prompt, so it explains
+                denials and points you to the config change that fixes them.</div>
+              </div>
+            </div>
+            <ul class="access">
+              <li class="has-tip" tabindex="0"><span>Workspace</span><span class="v">read/write</span>
+                <div class="tip">The root of the git worktree the session runs in. Chopi
+                refuses to run anywhere else, so its git protections always apply.</div></li>
+              <li class="has-tip" tabindex="0"><span>Git internals</span><span class="v">config &amp; hooks read-only</span>
+                <div class="tip">Only git's data (objects, refs, the index) is writable, so
+                nothing the agent writes can later run unsandboxed during a git
+                operation. A rebase or cherry-pick left in progress is aborted when the
+                session ends.</div></li>
+              <li class="has-tip" tabindex="0"><span>Other worktrees</span><span class="v">hidden</span>
+                <div class="tip">A session sees only its own worktree's files, so the agent
+                can't pick up context from another task. <code>chopi --worktree NAME</code>
+                starts a session in a new worktree on its own branch.</div></li>
+              <li class="has-tip" tabindex="0"><span>Paths you grant</span><span class="v">read/write or read-only <code class="cfg">sandbox.sh</code></span>
+                <div class="tip">Caches, build outputs, other apps: add them with
+                safehouse's <code>--add-dirs</code> and <code>--add-dirs-ro</code>, or
+                enable presets such as <code>xcode</code>.</div></li>
+              <li class="has-tip" tabindex="0"><span>Safe write targets</span><span class="v">edits become patches <code class="cfg">sandbox.sh</code></span>
+                <div class="tip">Files you want to read before they change, like shared
+                guidelines or a CLAUDE.md. The agent can read them, and queues a patch
+                instead of writing.</div></li>
+              <li class="has-tip" tabindex="0"><span>Network</span><span class="v">chopi-proxy only</span>
+                <div class="tip">Seatbelt can filter by IP and port but not by hostname, so
+                it allows only the local proxies. A tool that ignores
+                <code>HTTP_PROXY</code> gets no network at all.</div></li>
+            </ul>
+          </div>
+          <div class="side">
+            <div class="nest">
+              <span class="wire">network</span>
+              <div class="nest-head has-tip" tabindex="0">
+                <div class="nest-title">chopi-proxy</div>
+                <p>outside the sandbox, shared by all sessions</p>
+                <div class="tip">Runs in the foreground in its own terminal, so refused
+                connections are always in view. Chopi won't start a session without
+                it.</div>
+              </div>
+              <div class="nest">
+                <div class="nest-head has-tip" tabindex="0">
+                  <div class="nest-title"><a class="nest-tool" href="https://github.com/stripe/smokescreen" target="_blank">Smokescreen</a> proxy</div>
+                  <p>→ allowed hosts only <code class="cfg">proxy-rules.yaml</code></p>
+                  <div class="tip">Every other connection is refused and logged, and
+                  unexpected ones raise a macOS notification. Rule edits apply
+                  immediately.</div>
+                </div>
+              </div>
+              <div class="nest">
+                <div class="nest-head has-tip" tabindex="0">
+                  <div class="nest-title"><a class="nest-tool" href="https://caddyserver.com" target="_blank">Caddy</a> relay</div>
+                  <p>→ GitHub, per allowlisted repo <code class="cfg">github-allowlist</code></p>
+                  <div class="tip">All github.com git and REST API traffic goes through it.
+                  Public repos are readable freely; private repos, pushes and
+                  authenticated API calls work only for allowlisted repos. The relay adds
+                  your GitHub token itself, so the token never enters the sandbox.</div>
+                </div>
+              </div>
+            </div>
+            <div class="nest">
+              <span class="wire">patches</span>
+              <div class="nest-head has-tip" tabindex="0">
+                <div class="nest-title">Patch review</div>
+                <p>you approve each change before it lands</p>
+                <div class="tip">Chopi offers the review when the session ends, and
+                <code>chopi-review</code> runs it any time.</div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
+      <p class="map-hint">Hover or tap an element for details. Tags name the config file
+      that controls it.</p>
     </div>
 
     <div class="cta">
       <a class="btn primary" href="#install">Get started</a>
     </div>
   </div>
-
-  <section>
-    <div class="wrap">
-      <h2>Guardrails, not a cage</h2>
-      <p class="section-lead">
-        Agents are most useful when they can run with minimal approvals. Inside the
-        fence they work at full speed; a few extra guardrails cover what the layers
-        above don't.
-      </p>
-      <div class="grid">
-        <div class="card">
-          <h3><span class="ico">🔒</span>Hardened git internals</h3>
-          <p>Git's data paths stay writable, but <code>config</code>, <code>hooks</code>,
-          and friends are read-only — a sandboxed command can't plant code that would
-          later run <em>unsandboxed</em> on a git operation.</p>
-        </div>
-        <div class="card">
-          <h3><span class="ico">📝</span>Safe write targets</h3>
-          <p>Some files deserve review before they change — shared guidelines, a
-          <code>CLAUDE.md</code>. Name them and the agent proposes patches instead of
-          writing; you review each diff and apply it as your own commit.</p>
-        </div>
-        <div class="card">
-          <h3><span class="ico">🌳</span>Worktree sessions</h3>
-          <p><code>chopi --worktree NAME</code> spins up a linked worktree on its own
-          branch and runs the agent there — parallel tasks, each isolated in its own
-          workspace, resumable later.</p>
-        </div>
-      </div>
-    </div>
-  </section>
 
   <section id="install" class="install">
     <div class="wrap">
