@@ -154,14 +154,6 @@
   .has-tip:hover > .tip, .has-tip:focus > .tip { display: block; }
   .map-hint { margin-top: 12px; color: var(--text-dim); font-size: .85rem; text-align: center; }
 
-  .cta { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-top: 40px; }
-  .btn {
-    display: inline-block; padding: 11px 22px; border-radius: 8px;
-    font-weight: 600; font-size: .95rem;
-  }
-  .btn.primary { background: var(--accent); color: #16130a; }
-  .btn.primary:hover { background: #ffc554; text-decoration: none; }
-
   /* Sections */
   section { padding: 64px 0; }
   section + section, .hero + section { border-top: 1px solid var(--border); }
@@ -325,13 +317,9 @@
       <p class="map-hint">Hover or tap an element for details. Tags name the config file
       that controls it.</p>
     </div>
-
-    <div class="cta">
-      <a class="btn primary" href="#install">Get started</a>
-    </div>
   </div>
 
-  <section id="install" class="install">
+  <section class="install">
     <div class="wrap">
       <h2>Get started</h2>
       <p class="section-lead">Two terminals: one for the proxy, one for the agent.</p>
