@@ -81,7 +81,8 @@
     column-gap: var(--gap); margin-top: 14px;
   }
   .side { display: flex; flex-direction: column; justify-content: space-between; gap: 16px; }
-  .access { list-style: none; margin-top: 12px; font-size: .9rem; }
+  .access-group { margin-top: 14px; color: var(--text-dim); font-size: .8rem; font-weight: 600; }
+  .access { list-style: none; margin-top: 4px; font-size: .9rem; }
   .access li {
     display: grid; grid-template-columns: 9.5em minmax(0, 1fr); gap: 10px;
     padding: 7px 8px; margin: 0 -8px; border-top: 1px solid var(--border);
@@ -194,7 +195,7 @@
           <div class="nest">
             <div class="nest-head has-tip" tabindex="0">
               <div class="nest-title">Seatbelt sandbox</div>
-              <p>policy built with <a class="nest-tool" href="https://agent-safehouse.dev/" target="_blank">Agent&nbsp;Safehouse</a></p>
+              <p>macOS enforces every rule below</p>
               <div class="tip">Chopi appends its own network rules last, so they have the
               final word on network access.</div>
             </div>
@@ -208,10 +209,18 @@
                 denials and points you to the config change that fixes them.</div>
               </div>
             </div>
+            <p class="access-group"><a class="nest-tool" href="https://agent-safehouse.dev/" target="_blank">Agent&nbsp;Safehouse</a> base</p>
             <ul class="access">
               <li class="has-tip" tabindex="0"><span>Workspace</span><span class="v">read/write</span>
                 <div class="tip">The root of the git worktree the session runs in. Chopi
                 refuses to run anywhere else, so its git protections always apply.</div></li>
+              <li class="has-tip" tabindex="0"><span>Paths you grant</span><span class="v">read/write or read-only <code class="cfg">sandbox.sh</code></span>
+                <div class="tip">Caches, build outputs, other apps: add them with
+                safehouse's <code>--add-dirs</code> and <code>--add-dirs-ro</code>, or
+                enable presets such as <code>xcode</code>.</div></li>
+            </ul>
+            <p class="access-group">Added by chopi</p>
+            <ul class="access">
               <li class="has-tip" tabindex="0"><span>Git internals</span><span class="v">config &amp; hooks read-only</span>
                 <div class="tip">Only git's data (objects, refs, the index) is writable, so
                 nothing the agent writes can later run unsandboxed during a git
@@ -221,10 +230,6 @@
                 <div class="tip">A session sees only its own worktree's files, so the agent
                 can't pick up context from another task. <code>chopi --worktree NAME</code>
                 starts a session in a new worktree on its own branch.</div></li>
-              <li class="has-tip" tabindex="0"><span>Paths you grant</span><span class="v">read/write or read-only <code class="cfg">sandbox.sh</code></span>
-                <div class="tip">Caches, build outputs, other apps: add them with
-                safehouse's <code>--add-dirs</code> and <code>--add-dirs-ro</code>, or
-                enable presets such as <code>xcode</code>.</div></li>
               <li class="has-tip" tabindex="0"><span>Safe write targets</span><span class="v">edits become patches <code class="cfg">sandbox.sh</code></span>
                 <div class="tip">Files you want to read before they change, like shared
                 guidelines or a CLAUDE.md. The agent can read them, and queues a patch
