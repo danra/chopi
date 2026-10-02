@@ -164,6 +164,19 @@
   }
   .has-tip:has(.q:hover, .q:focus) > .tip { display: block; }
   .map-hint { margin-top: 12px; color: var(--text-dim); font-size: .85rem; text-align: center; }
+  .mac-head { display: flex; justify-content: space-between; gap: 16px; }
+  .toggle {
+    flex: none; padding: 0 18px 0 14px; border: 1px solid var(--accent); border-radius: 999px;
+    background: none; color: var(--accent); font: 600 .95rem/1.6 var(--sans);
+    cursor: pointer;
+  }
+  .toggle:hover { background: rgba(242,177,61,.1); }
+  .toggle .q {
+    width: 18px; height: 18px; margin-right: 7px; font-size: .75rem;
+    border-color: currentColor; color: inherit; cursor: inherit;
+  }
+  .show-tips .toggle { background: var(--accent); color: #16130a; }
+  .map:not(.show-tips) :is(.has-tip .q, .tips-hint, .toggle .on), .show-tips .toggle .off { display: none; }
 
   /* Sections */
   section { padding: 64px 0; }
@@ -221,9 +234,12 @@
     your agents.</h1>
     <div class="map">
       <div class="nest">
-        <div class="nest-head">
-          <div class="nest-title">Your Mac</div>
-          <p>No VM, no container: the agent runs with your real tools.</p>
+        <div class="nest-head mac-head">
+          <div>
+            <div class="nest-title">Your Mac</div>
+            <p>No VM, no container: the agent runs with your real tools.</p>
+          </div>
+          <button class="toggle" type="button" onclick="this.closest('.map').classList.toggle('show-tips')"><span class="q">?</span><span class="off">Show</span><span class="on">Hide</span> details</button>
         </div>
         <div class="mac-grid">
           <div class="nest policy">
@@ -325,7 +341,7 @@
           </div>
         </div>
       </div>
-      <p class="map-hint">Hover or tap a question mark for details. Tags name the config file
+      <p class="map-hint"><span class="tips-hint">Hover or tap a question mark for details. </span>Tags name the config file
       that controls it.</p>
     </div>
   </div>
