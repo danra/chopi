@@ -69,10 +69,10 @@
     position: relative;
     border: 1px solid var(--border); border-radius: 12px;
     padding: 16px var(--pad) var(--pad);
-    background: var(--bg-raise);
+    --nest-bg: var(--bg-raise); background: var(--nest-bg);
   }
-  .nest .nest { background: #171d28; }
-  .nest .nest .nest { margin-top: 12px; background: #1d2432; }
+  .nest .nest { --nest-bg: #171d28; }
+  .nest .nest .nest { margin-top: 12px; --nest-bg: #1d2432; }
   .nest-title { font-weight: 650; font-size: 1rem; }
   .nest-tool { font-family: var(--mono); font-size: .9em; }
   .nest-head p { color: var(--text-dim); font-size: .9rem; }
@@ -176,7 +176,13 @@
     border-color: currentColor; color: inherit; cursor: inherit;
   }
   .show-tips .toggle { background: var(--accent); color: #16130a; }
-  .map:not(.show-tips) :is(.has-tip .q, .tips-hint, .toggle .on), .show-tips .toggle .off { display: none; }
+  .map:not(.show-tips) :is(.tips-hint, .toggle .on), .show-tips .toggle .off { display: none; }
+  .has-tip .q { transition: visibility .15s; }
+  .map:not(.show-tips) .has-tip .q { visibility: hidden; }
+  /* The name's fill covers the ? while details are hidden, and drops for the hover tint */
+  .has-tip .name { display: inline-block; background: var(--nest-bg); transition: transform .15s linear; }
+  .has-tip:has(.q:hover, .q:focus) .name { background: none; }
+  .map:not(.show-tips) .has-tip .name { transform: translateX(-19px); }
 
   /* Sections */
   section { padding: 64px 0; }
@@ -244,7 +250,7 @@
         <div class="mac-grid">
           <div class="nest policy">
             <div class="nest-head has-tip">
-              <div class="nest-title"><span class="q" tabindex="0">?</span>Seatbelt policy</div>
+              <div class="nest-title"><span class="q" tabindex="0">?</span><span class="name">Seatbelt policy</span></div>
               <div class="tip">Chopi appends its own network rules last, so they have the
               final word on network access.</div>
             </div>
@@ -252,10 +258,10 @@
               <div>
                 <p class="access-group"><a class="nest-tool" href="https://agent-safehouse.dev/" target="_blank">Agent&nbsp;Safehouse</a> base</p>
                 <ul class="access">
-                  <li class="has-tip"><span><span class="q" tabindex="0">?</span>Workspace</span><span class="v">read/write</span>
+                  <li class="has-tip"><span><span class="q" tabindex="0">?</span><span class="name">Workspace</span></span><span class="v">read/write</span>
                     <div class="tip">The root of the git worktree the session runs in. Chopi
                     refuses to run anywhere else, so its git protections always apply.</div></li>
-                  <li class="has-tip"><span><span class="q" tabindex="0">?</span>Paths you grant</span><span class="v">read/write or read-only <code class="cfg">sandbox.sh</code></span>
+                  <li class="has-tip"><span><span class="q" tabindex="0">?</span><span class="name">Paths you grant</span></span><span class="v">read/write or read-only <code class="cfg">sandbox.sh</code></span>
                     <div class="tip">Caches, build outputs, other apps: add them with
                     safehouse's <code>--add-dirs</code> and <code>--add-dirs-ro</code>, or
                     enable presets such as <code>xcode</code>.</div></li>
@@ -264,20 +270,20 @@
               <div>
                 <p class="access-group">Added by chopi</p>
                 <ul class="access">
-                  <li class="has-tip"><span><span class="q" tabindex="0">?</span>Git internals</span><span class="v">config &amp; hooks read-only</span>
+                  <li class="has-tip"><span><span class="q" tabindex="0">?</span><span class="name">Git internals</span></span><span class="v">config &amp; hooks read-only</span>
                     <div class="tip">Only git's data (objects, refs, the index) is writable, so
                     nothing the agent writes can later run unsandboxed during a git
                     operation. A rebase or cherry-pick left in progress is aborted when the
                     session ends.</div></li>
-                  <li class="has-tip"><span><span class="q" tabindex="0">?</span>Other worktrees</span><span class="v">hidden</span>
+                  <li class="has-tip"><span><span class="q" tabindex="0">?</span><span class="name">Other worktrees</span></span><span class="v">hidden</span>
                     <div class="tip">A session sees only its own worktree's files, so the agent
                     can't pick up context from another task. <code>chopi --worktree NAME</code>
                     starts a session in a new worktree on its own branch.</div></li>
-                  <li class="has-tip"><span><span class="q" tabindex="0">?</span>Safe write targets</span><span class="v">edits become patches <code class="cfg">sandbox.sh</code></span>
+                  <li class="has-tip"><span><span class="q" tabindex="0">?</span><span class="name">Safe write targets</span></span><span class="v">edits become patches <code class="cfg">sandbox.sh</code></span>
                     <div class="tip">Files you want to read before they change, like shared
                     guidelines or a CLAUDE.md. The agent can read them, and queues a patch
                     instead of writing.</div></li>
-                  <li class="has-tip"><span><span class="q" tabindex="0">?</span>Network</span><span class="v">chopi-proxy only</span>
+                  <li class="has-tip"><span><span class="q" tabindex="0">?</span><span class="name">Network</span></span><span class="v">chopi-proxy only</span>
                     <div class="tip">Seatbelt can filter by IP and port but not by hostname, so
                     it allows only the local proxies. A tool that ignores
                     <code>HTTP_PROXY</code> gets no network at all.</div></li>
@@ -295,7 +301,7 @@
               <span class="wire">network</span>
               <div class="flow out"><span>patches</span></div>
               <div class="nest-head has-tip">
-                <div class="nest-title"><span class="q" tabindex="0">?</span>Your agent</div>
+                <div class="nest-title"><span class="q" tabindex="0">?</span><span class="name">Your agent</span></div>
                 <p>claude, codex, or any command</p>
                 <div class="tip">It and every process it starts stay confined. Claude Code
                 also gets the sandbox described in its system prompt, so it explains
@@ -305,7 +311,7 @@
           </div>
           <div class="nest review">
             <div class="nest-head has-tip">
-              <div class="nest-title"><span class="q" tabindex="0">?</span>Patch review</div>
+              <div class="nest-title"><span class="q" tabindex="0">?</span><span class="name">Patch review</span></div>
               <p>you approve each change before it lands</p>
               <div class="tip">Chopi offers the review when the session ends, and
               <code>chopi-review</code> runs it any time.</div>
@@ -313,7 +319,7 @@
           </div>
           <div class="nest proxy">
             <div class="nest-head has-tip">
-              <div class="nest-title"><span class="q" tabindex="0">?</span>chopi-proxy</div>
+              <div class="nest-title"><span class="q" tabindex="0">?</span><span class="name">chopi-proxy</span></div>
               <p>outside the sandbox, shared by all sessions</p>
               <div class="tip">Runs in the foreground in its own terminal, so refused
               connections are always in view. Chopi won't start a session without
@@ -321,7 +327,7 @@
             </div>
             <div class="nest">
               <div class="nest-head has-tip">
-                <div class="nest-title"><span class="q" tabindex="0">?</span><a class="nest-tool" href="https://github.com/stripe/smokescreen" target="_blank">Smokescreen</a> proxy</div>
+                <div class="nest-title"><span class="q" tabindex="0">?</span><span class="name"><a class="nest-tool" href="https://github.com/stripe/smokescreen" target="_blank">Smokescreen</a> proxy</span></div>
                 <p>→ allowed hosts only <code class="cfg">proxy-rules.yaml</code></p>
                 <div class="tip">Every other connection is refused and logged, and
                 unexpected ones raise a macOS notification. Rule edits apply
@@ -330,7 +336,7 @@
             </div>
             <div class="nest">
               <div class="nest-head has-tip">
-                <div class="nest-title"><span class="q" tabindex="0">?</span><a class="nest-tool" href="https://caddyserver.com" target="_blank">Caddy</a> relay</div>
+                <div class="nest-title"><span class="q" tabindex="0">?</span><span class="name"><a class="nest-tool" href="https://caddyserver.com" target="_blank">Caddy</a> relay</span></div>
                 <p>→ GitHub, per allowlisted repo <code class="cfg">github-allowlist</code></p>
                 <div class="tip">All github.com git and REST API traffic goes through it.
                 Public repos are readable freely; private repos, pushes and
