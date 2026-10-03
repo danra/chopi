@@ -144,7 +144,7 @@
   }
   .has-tip { position: relative; }
   .nest-head.has-tip { margin: -6px -8px; padding: 6px 8px; border-radius: 6px; }
-  .has-tip:has(.q:hover, .q:focus) { background: rgba(255,255,255,.04); }
+  .has-tip:has(.q:hover, .q:focus-visible) { background: rgba(255,255,255,.04); }
   /* Keeps the ? on the name's line */
   .access li > :first-child { white-space: nowrap; }
   .q {
@@ -155,13 +155,13 @@
     color: var(--text-dim); font-size: .65rem; font-weight: 700; line-height: 1;
     cursor: default; outline: none;
   }
-  .q:hover, .q:focus { border-color: var(--text); color: var(--text); }
+  .q:hover, .q:focus-visible { border-color: var(--text); color: var(--text); }
   .tip {
     display: none; position: absolute; z-index: 5; left: 0; right: 0; top: calc(100% + 4px);
     padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
     background: var(--bg); color: var(--text); font-size: .85rem; line-height: 1.5;
   }
-  .has-tip:has(.q:hover, .q:focus) > .tip { display: block; }
+  .has-tip:has(.q:hover, .q:focus-visible) > .tip { display: block; }
   .mac-head { display: flex; justify-content: space-between; gap: 16px; }
   .toggle {
     flex: none; padding: 0 18px 0 14px; border: 1px solid var(--accent); border-radius: 999px;
@@ -179,7 +179,7 @@
   .map:not(.show-tips) .has-tip .q { visibility: hidden; }
   /* The name's fill covers the ? while details are hidden, and drops for the hover tint */
   .has-tip .name { display: inline-block; background: var(--nest-bg); transition: transform .15s linear; }
-  .has-tip:has(.q:hover, .q:focus) .name { background: none; }
+  .has-tip:has(.q:hover, .q:focus-visible) .name { background: none; }
   .map:not(.show-tips) .has-tip .name { transform: translateX(-19px); }
 
   /* Sections */
