@@ -162,7 +162,6 @@
     background: var(--bg); color: var(--text); font-size: .85rem; line-height: 1.5;
   }
   .has-tip:has(.q:hover, .q:focus) > .tip { display: block; }
-  .map-hint { margin-top: 12px; color: var(--text-dim); font-size: .85rem; text-align: center; }
   .mac-head { display: flex; justify-content: space-between; gap: 16px; }
   .toggle {
     flex: none; padding: 0 18px 0 14px; border: 1px solid var(--accent); border-radius: 999px;
@@ -175,7 +174,7 @@
     border-color: currentColor; color: inherit; cursor: inherit;
   }
   .show-tips .toggle { background: var(--accent); color: #16130a; }
-  .map:not(.show-tips) :is(.tips-hint, .toggle .on), .show-tips .toggle .off { display: none; }
+  .map:not(.show-tips) .toggle .on, .show-tips .toggle .off { display: none; }
   .has-tip .q { transition: visibility .15s; }
   .map:not(.show-tips) .has-tip .q { visibility: hidden; }
   /* The name's fill covers the ? while details are hidden, and drops for the hover tint */
@@ -346,8 +345,6 @@
           </div>
         </div>
       </div>
-      <p class="map-hint"><span class="tips-hint">Hover or tap a question mark for details. </span>Tags name the config file
-      that controls it.</p>
     </div>
   </div>
 
