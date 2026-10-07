@@ -170,7 +170,9 @@ main() {
     elif [ "$(basename -- "$1")" = codex ]; then
         # Chopi is Codex's external sandbox. Asking Codex to install another macOS
         # Seatbelt policy would make built-in tools such as apply_patch fail with EPERM.
-        cmd_argv=("$1" --sandbox danger-full-access "${@:2}")
+        # Its shared app-server daemon can't start sandboxed: recording the daemon's pid
+        # runs ps, which is denied.
+        cmd_argv=("$1" --sandbox danger-full-access --no-daemon "${@:2}")
     fi
 
     # Build chopi's git protection profiles and append them in the order

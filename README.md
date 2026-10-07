@@ -182,6 +182,11 @@ sandboxes cannot be nested, so Codex's own sandbox would otherwise make built-in
 `apply_patch` fail with `sandbox_apply: Operation not permitted`. Chopi remains the outer filesystem
 and network sandbox; Codex's approval policy remains unchanged.
 
+`chopi` also passes `--no-daemon`, so Codex runs without its shared background app-server, which
+can't start in the sandbox. This needs a Codex recent enough to have the flag, and leaves the
+commands that work with the daemon, such as `codex agents` and `codex remote-control`, unusable
+under `chopi`.
+
 ### Safe write targets
 
 Sometimes a change should be read before it lands, for example:
