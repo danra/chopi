@@ -368,8 +368,8 @@ assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
 echo "Codex uses Chopi as its external sandbox"
 # ---------------------------------------------------------------------------
 out="$(chopi_codex exec --json 2>/dev/null)"
-assert_eq "$out" $'--sandbox\ndanger-full-access\nexec\n--json' \
-    "Codex disables its nested sandbox before its subcommand"
+assert_eq "$out" $'--sandbox\ndanger-full-access\n--no-daemon\nexec\n--json' \
+    "Codex disables its nested sandbox and shared daemon before its subcommand"
 
 
 # ---------------------------------------------------------------------------
