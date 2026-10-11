@@ -80,6 +80,19 @@ accepts() {
     fi
 }
 
+# A target dropped from enforcement: admitted with a warning, the other targets still enforced.
+# stderr goes through a file, since a subshell would lose CHOPI_WRITE_TARGET_PATHS.
+admits_unenforced() {
+    local desc="$1" kept="$2"; shift 2
+    CHOPI_SAFE_WRITE_TARGETS=("$@")
+    validate_write_targets "$work" chopi 2>"$TMPDIR/warn.err"; st=$?
+    out="$(<"$TMPDIR/warn.err")"
+    assert_zero     "$st"                  "$desc"
+    assert_contains "$out" "warning:"      "  -> with a warning"
+    assert_contains "$out" "not enforcing" "  -> that says the target is not enforced"
+    assert_eq "${CHOPI_WRITE_TARGET_PATHS[*]-}" "$kept" "  -> and the other targets stay enforced"
+}
+
 refuses() {
     local desc="$1" reason="$2"; shift 2
     CHOPI_SAFE_WRITE_TARGETS=("$@")
@@ -124,25 +137,24 @@ accepts "a target inside the workspace is accepted" "$work/sub"
 # ...but not git internals
 refuses "a target inside the git dir is refused" "has a .git component" "$work/.git/hooks"
 refuses "  -> and so is the git dir itself, reached relatively" "has a .git component" .git
-# ...and not the workspace itself or any parent folder: that deny would cover every file
-# the command legitimately writes, leaving a session that can't work.
-refuses "the workspace itself is refused as a target" "contains the workspace" .
-refuses "  -> and so is a directory enclosing it" "contains the workspace" "$TMPDIR"
+# ...and not a parent folder of the workspace: that deny would cover every file the command
+# legitimately writes, leaving a session that can't work.
+refuses "a directory enclosing the workspace is refused as a target" "contains the workspace" "$TMPDIR"
+
+# The workspace itself is admitted, unenforced: launching in exactly a target is deliberate
+# work on it, which git already reviews.
+admits_unenforced "a target that is exactly the workspace is admitted" "$guidelines" . "$guidelines"
+
+CHOPI_SAFE_WRITE_TARGETS=("$work")
+validate_write_targets "$work" chopi 2>/dev/null; st=$?
+assert_zero "$st"                             "  -> named absolutely too"
+assert_eq "${#CHOPI_WRITE_TARGET_PATHS[@]}" 0 "  -> enforcing nothing"
 
 # CHOPI_ALLOW_SAFE_WRITE_TARGET admits launching chopi inside a safe write target,
 # leaving the containing target unenforced for the run instead of refusing.
-CHOPI_SAFE_WRITE_TARGETS=("$TMPDIR" "$guidelines")
-CHOPI_ALLOW_SAFE_WRITE_TARGET=1 validate_write_targets "$work" chopi 2>"$TMPDIR/warn.err"; st=$?
-out="$(cat "$TMPDIR/warn.err")"
-assert_zero     "$st"                  "CHOPI_ALLOW_SAFE_WRITE_TARGET admits a target containing the workspace"
-assert_contains "$out" "warning:"      "  -> downgraded to a warning"
-assert_contains "$out" "not enforcing" "  -> that says the target is not enforced"
-assert_eq "${CHOPI_WRITE_TARGET_PATHS[*]-}" "$guidelines" "  -> and the other targets stay enforced"
-
-CHOPI_SAFE_WRITE_TARGETS=(.)
-CHOPI_ALLOW_SAFE_WRITE_TARGET=1 validate_write_targets "$work" chopi 2>/dev/null; st=$?
-assert_zero "$st"                             "  -> a config naming only the workspace validates too"
-assert_eq "${#CHOPI_WRITE_TARGET_PATHS[@]}" 0 "  -> enforcing nothing"
+CHOPI_ALLOW_SAFE_WRITE_TARGET=1 admits_unenforced \
+    "CHOPI_ALLOW_SAFE_WRITE_TARGET admits a target containing the workspace" \
+    "$guidelines" "$TMPDIR" "$guidelines"
 
 # A single file in the workspace is a valid safe write target too
 printf 'x\n' > "$work/CLAUDE.md"

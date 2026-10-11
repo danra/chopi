@@ -121,11 +121,6 @@ validate_write_target() {
         echo "$prog: safe write target overlaps chopi's directory $path" >&2
         return 1
     fi
-    if is_path_within "$workspace" "$path"; then
-        echo "$prog: safe write target contains the workspace $path" >&2
-        echo "$prog: set CHOPI_ALLOW_SAFE_WRITE_TARGET=1 to continue anyway, leaving that target unenforced" >&2
-        return 1
-    fi
     if overlapping_dirs "$path" "$CHOPI_PATCH_QUEUE_ROOT"; then
         echo "$prog: safe write target overlaps the patch queue: $path" >&2
         return 1
@@ -173,12 +168,23 @@ validate_write_targets() {
             ok=""; continue
         fi
 
-        # Launching chopi inside a safe write target is normally refused (below): the
-        # target's write-deny would cover every file the session writes. The override
-        # admits the launch by leaving the containing target unenforced for this run.
-        if [ -n "${CHOPI_ALLOW_SAFE_WRITE_TARGET:-}" ] && is_path_within "$workspace" "$path"; then
-            echo "$prog: warning: safe write target contains the workspace $path;" >&2
-            echo "$prog: not enforcing it for this run (CHOPI_ALLOW_SAFE_WRITE_TARGET is set)" >&2
+        # Launching chopi inside a safe write target: its write-deny would cover every file the
+        # session writes, so the target is either left unenforced for this run or refused. A
+        # target that is exactly the workspace reads as deliberate work on the target itself,
+        # where git already gives the review step. One that merely contains the workspace is
+        # more likely a mistake, and only the override admits it.
+        if is_path_within "$workspace" "$path"; then
+            if [ "$path" = "$workspace" ]; then
+                echo "$prog: warning: the workspace is the safe write target $path;" >&2
+                echo "$prog: not enforcing it for this run" >&2
+            elif [ -n "${CHOPI_ALLOW_SAFE_WRITE_TARGET:-}" ]; then
+                echo "$prog: warning: safe write target contains the workspace $path;" >&2
+                echo "$prog: not enforcing it for this run (CHOPI_ALLOW_SAFE_WRITE_TARGET is set)" >&2
+            else
+                echo "$prog: safe write target contains the workspace $path" >&2
+                echo "$prog: set CHOPI_ALLOW_SAFE_WRITE_TARGET=1 to continue anyway, leaving that target unenforced" >&2
+                ok=""
+            fi
             continue
         fi
 

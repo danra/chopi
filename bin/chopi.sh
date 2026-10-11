@@ -140,8 +140,9 @@ main() {
         return 1
     fi
     local queue_flags=() queue_env=() queue_dir="" targets=""
-    # Gated on the enforced targets, not the config: under CHOPI_ALLOW_SAFE_WRITE_TARGET
-    # a configured target can drop out, and all dropping out leaves no queue to set up.
+    # Gated on the enforced targets, not the config: a target that is the workspace, or
+    # contains it under CHOPI_ALLOW_SAFE_WRITE_TARGET, drops out, and all dropping out
+    # leaves no queue to set up.
     if [ "${#CHOPI_WRITE_TARGET_PATHS[@]}" -gt 0 ]; then
         queue_dir="$(create_patch_queue "$run_dir")" \
             || { echo "chopi: refusing to run" >&2; return 1; }
