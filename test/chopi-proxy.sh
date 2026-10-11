@@ -12,7 +12,7 @@ BEL="$(printf '\007')"   # U+0007 BEL: format-deny.jq prefixes an interactive DE
 ESC="$(printf '\033')"   # U+001B ANSI escape: introduces the DENY color code
 set +euo pipefail
 
-header "test/chopi-proxy.sh -- unit tests for bin/chopi-proxy.sh's log logic + proxy-port invariant + github migration refusal + relay reaper"
+header "test/chopi-proxy.sh -- unit tests for bin/chopi-proxy.sh's log logic + proxy-port invariant + github migration refusal + relay reaper + listener ownership"
 
 # Exported so the scripts under test leave their temporaries here too.
 TMPDIR="$(mktemp -d)"; export TMPDIR
@@ -443,6 +443,31 @@ assert_absent "$reaper_tmpdir" "the proxy's temp dir is removed"
 assert_absent "$reaper_sock"   "the GitHub API relay socket is removed"
 
 kill "$fake_main" "$fake_caddy" "$reaper" 2>/dev/null   # strays, if any assertion failed
+
+
+# ---------------------------------------------------------------------------
+echo "listener ownership (a server's port taken by another process is not the server up)"
+# ---------------------------------------------------------------------------
+# Another process can take a port between chopi-proxy's busy-port check and Caddy's bind, and
+# Caddy then dies on it: its port answering must not count as Caddy up. Stand-ins: `nc -lk`
+# for the other process (-k: it keeps listening past wait_for_listener's probes), `sleep` for
+# the server that never got the port, and an exited `true` for one already dead of it.
+own_port=4769
+if port_has_listener "$own_port"; then
+    echo "  SKIP: port $own_port is already in use"
+else
+    nc -lk 127.0.0.1 "$own_port" & listener=$!
+    nc -lk ::1 "$own_port" & other_addr=$!
+    sleep 30 & server=$!
+    true & dead=$!; wait "$dead"
+    wait_for_listener "$own_port" "$listener"
+    assert_eq "$?" 0 "the port's own listener -> up, a listener on another address notwithstanding"
+    wait_for_listener "$own_port" "$server" 2>/dev/null
+    assert_eq "$?" 2 "a port held by another process -> reported as such, not as the server up"
+    wait_for_listener "$own_port" "$dead" 2>/dev/null
+    assert_eq "$?" 2 "  -> even once the server died of it"
+    kill "$listener" "$other_addr" "$server" 2>/dev/null
+fi
 
 
 # ---------------------------------------------------------------------------

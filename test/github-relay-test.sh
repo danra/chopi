@@ -396,6 +396,24 @@ else
     bad "double-start: the winner's API socket no longer answers"
 fi
 
+# 4l'. another process holds the relay port (the caddy above stands in for any): the socket
+#      check passes (its own path, here), so caddy launches and dies on the busy port -- or
+#      shares it, if it binds with SO_REUSEPORT. The other listener must not pass for ours.
+( GH_RELAY_SOCK="$WORK/caddy-loser-port.sock"
+  start_github_relay "$caddy_cfg" "$WORK/caddy-loser-port.log"; rc=$?
+  kill "$CADDY_PID" 2>/dev/null
+  exit "$rc" ) 2>"$WORK/e4l2"
+assert_eq "$?" 2 "port taken: start_github_relay reports a foreign listener"
+assert_contains "$(cat "$WORK/e4l2")" "another process is listening on 127.0.0.1:$GITHUB_RELAY_PORT" \
+    "  -> naming the taken port"
+for _ in {1..20}; do
+    owners="$(port_listener_pids "$GITHUB_RELAY_PORT")"
+    [ "$owners" = "$CADDY_PID" ] && break
+    sleep 0.1
+done
+assert_eq "$owners" "$CADDY_PID" \
+    "port taken: the other process is again the port's only listener"
+
 # 4m. optional: a release with an asset. gh creates the release via the REST route, then POSTs
 #     the asset to uploads.github.com -- the upload_url host in the API's release response --
 #     over the same socket, so the relay must serve that Host authed too. A draft release keeps
