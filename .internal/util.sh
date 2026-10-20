@@ -39,6 +39,11 @@ CHOPI_IN_SANDBOX_LIBS=(git-layout.sh util.sh claude-common.sh claude-context-che
 
 if command -v shopt >/dev/null 2>&1; then shopt -s expand_aliases; fi
 
+# Keep ${var//pattern/replacement} replacements literal, as in macOS's bash 3.2: bash 5.2 expands
+# an unquoted & in the replacement to the matched text, so a value holding one (a path, a token)
+# would come out mangled. Older bashes lack the option.
+shopt -u patsub_replacement 2>/dev/null || true
+
 # arity -- verify expected number of positional args.
 _arity() {
     local got="$1" want="$2"   # got is the CALLER's $#, supplied by the alias
@@ -92,7 +97,10 @@ fill_slots() {
     local slot value
     while [ "$#" -gt 0 ]; do
         slot="$1" value="$2"; shift 2
-        text="${text//$slot/$value}"
+        # Both taken literally: the quoted slot can't match as a glob pattern, and with
+        # patsub_replacement off (see above), an & in the value stays an &. Quoting the value
+        # instead isn't portable: bash 3.2 keeps the quotes in the result.
+        text="${text//"$slot"/$value}"
     done
     printf '%s\n' "$text"
 }
