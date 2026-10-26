@@ -57,8 +57,8 @@ if ! command -v gh >/dev/null 2>&1; then
     exit 0
 fi
 
-# The test's caddy must own the relay port itself: wait_for_listener cannot tell a foreign
-# listener (a running chopi-proxy) from ours, and the probes would quietly test that instead.
+# The test's caddy must own the relay port itself: with a running chopi-proxy holding it,
+# start_github_relay would rightly refuse, leaving nothing to test.
 if busy_port="$(first_listening_port "$GITHUB_RELAY_PORT")"; then
     echo "  SKIP: port $busy_port is already in use -- stop your running chopi-proxy first"
     exit 0
@@ -375,10 +375,10 @@ fi
 # 4l. concurrent double-start: two chopi-proxys can both pass the busy-port check before either
 #     binds, so this is the losing proxy's exact code path. It must fail without touching the
 #     winner's live API socket -- unlinking it leaves the surviving proxy holding the port while
-#     gh can no longer reach the relay. This test only pins the behavior when a one of two racing
-#     proxies successfully bound the port before the second one tries to do so: as long as
+#     gh can no longer reach the relay. This test only pins the behavior when one of two racing
+#     proxies successfully bound the socket before the second one checks it: as long as
 #     start_github_relay is not atomic (it currently isn't), there is still a very short window
-#     where both proxies bind concurrently and the race can trigger.
+#     where both pass the socket check and the loser's caddy unlinks the winner's socket.
 if ( start_github_relay "$caddy_cfg" "$WORK/caddy-loser.log" ) 2>"$WORK/e4l"; then
     bad "double-start: the losing start_github_relay unexpectedly reported success"
 else
@@ -395,6 +395,24 @@ if [ "$code" != "000" ]; then
 else
     bad "double-start: the winner's API socket no longer answers"
 fi
+
+# 4l'. another process holds the relay port (the caddy above stands in for any): the socket
+#      check passes (its own path, here), so caddy launches and dies on the busy port -- or
+#      shares it, if it binds with SO_REUSEPORT. The other listener must not pass for ours.
+( GH_RELAY_SOCK="$WORK/caddy-loser-port.sock"
+  start_github_relay "$caddy_cfg" "$WORK/caddy-loser-port.log"; rc=$?
+  kill "$CADDY_PID" 2>/dev/null
+  exit "$rc" ) 2>"$WORK/e4l2"
+assert_eq "$?" 2 "port taken: start_github_relay reports a foreign listener"
+assert_contains "$(cat "$WORK/e4l2")" "another process is listening on 127.0.0.1:$GITHUB_RELAY_PORT" \
+    "  -> naming the taken port"
+for _ in {1..20}; do
+    owners="$(port_listener_pids "$GITHUB_RELAY_PORT")"
+    [ "$owners" = "$CADDY_PID" ] && break
+    sleep 0.1
+done
+assert_eq "$owners" "$CADDY_PID" \
+    "port taken: the other process is again the port's only listener"
 
 # 4m. optional: a release with an asset. gh creates the release via the REST route, then POSTs
 #     the asset to uploads.github.com -- the upload_url host in the API's release response --
