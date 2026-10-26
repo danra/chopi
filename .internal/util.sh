@@ -396,6 +396,14 @@ first_listening_port() {
     return 1
 }
 
+# Print the pids of the processes listening on TCP 127.0.0.1:PORT, one per line. Listeners on other
+# addresses of the port (::1, a LAN address) aren't listed: they don't take 127.0.0.1's connections.
+# Nor, though they may answer there, are ones on the wildcard address or another user's.
+port_listener_pids() {
+    arity 1
+    lsof -nP -t -iTCP@127.0.0.1:"$1" -sTCP:LISTEN 2>/dev/null
+}
+
 # Poll for a listener on 127.0.0.1:PORT (~5s, 50 x 0.1s), bailing early if process PID exits first
 # (e.g. a server that dies on a bad config). Returns 0 once the port accepts a connection, 1 on
 # timeout or if the process is already gone.
