@@ -57,8 +57,8 @@ if ! command -v gh >/dev/null 2>&1; then
     exit 0
 fi
 
-# The test's caddy must own the relay port itself: wait_for_listener cannot tell a foreign
-# listener (a running chopi-proxy) from ours, and the probes would quietly test that instead.
+# The test's caddy must own the relay port itself: with a running chopi-proxy holding it,
+# start_github_relay would rightly refuse, leaving nothing to test.
 if busy_port="$(first_listening_port "$GITHUB_RELAY_PORT")"; then
     echo "  SKIP: port $busy_port is already in use -- stop your running chopi-proxy first"
     exit 0
@@ -375,10 +375,10 @@ fi
 # 4l. concurrent double-start: two chopi-proxys can both pass the busy-port check before either
 #     binds, so this is the losing proxy's exact code path. It must fail without touching the
 #     winner's live API socket -- unlinking it leaves the surviving proxy holding the port while
-#     gh can no longer reach the relay. This test only pins the behavior when a one of two racing
-#     proxies successfully bound the port before the second one tries to do so: as long as
+#     gh can no longer reach the relay. This test only pins the behavior when one of two racing
+#     proxies successfully bound the socket before the second one checks it: as long as
 #     start_github_relay is not atomic (it currently isn't), there is still a very short window
-#     where both proxies bind concurrently and the race can trigger.
+#     where both pass the socket check and the loser's caddy unlinks the winner's socket.
 if ( start_github_relay "$caddy_cfg" "$WORK/caddy-loser.log" ) 2>"$WORK/e4l"; then
     bad "double-start: the losing start_github_relay unexpectedly reported success"
 else

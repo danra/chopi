@@ -404,14 +404,28 @@ port_listener_pids() {
     lsof -nP -t -iTCP@127.0.0.1:"$1" -sTCP:LISTEN 2>/dev/null
 }
 
-# Poll for a listener on 127.0.0.1:PORT (~5s, 50 x 0.1s), bailing early if process PID exits first
-# (e.g. a server that dies on a bad config). Returns 0 once the port accepts a connection, 1 on
-# timeout or if the process is already gone.
+# Poll for process PID to be the only listener on 127.0.0.1:PORT (~5s, 50 x 0.1s): a port that
+# merely answers may be another process's, one that took it before PID's bind (or shares it, via
+# SO_REUSEPORT). Returns 0 once PID is, 2 at once, saying so, if another process listens on the
+# port -- even after PID died of it -- and 1 on timeout or if PID exits while the port is free (e.g.
+# a server that dies on a bad config). PID must be the binding process itself, not a parent or
+# wrapper, and must not share its listening socket with children, which lsof would list too: the
+# servers waited on, Caddy and smokescreen, are single-process Go servers that don't. This guards
+# against a race at server start, not against impersonation (see check_listener in preflight.sh for
+# why that can't be proven).
 wait_for_listener() {
     arity 2
-    local port="$1" pid="$2" _
+    local port="$1" pid="$2" owners _
     for _ in {1..50}; do
-        port_has_listener "$port" && return 0
+        if port_has_listener "$port"; then
+            owners="$(port_listener_pids "$port")"
+            [ "$owners" = "$pid" ] && return 0
+            # Taken, even if PID already died of it (a server losing its port does, within lsof's
+            # run) -- unless lsof lists nobody and PID died: that was PID's listener, gone with it.
+            [ -z "$owners" ] && ! kill -0 "$pid" 2>/dev/null && return 1
+            echo "error: another process is listening on 127.0.0.1:$port" >&2
+            return 2
+        fi
         kill -0 "$pid" 2>/dev/null || return 1
         sleep 0.1
     done

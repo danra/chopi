@@ -265,6 +265,8 @@ start_relay_reaper $$ "$CADDY_PID" "$TMPDIR" "$GH_RELAY_SOCK"
 echo "[$SCRIPT_NAME] GitHub relay on 127.0.0.1:$GITHUB_RELAY_PORT, GitHub API relay on $GH_RELAY_SOCK" >&2
 echo "[$SCRIPT_NAME]   relay log: $CADDY_LOG" >&2
 echo "[$SCRIPT_NAME] starting outgoing proxy on 127.0.0.1:$PROXY_PORT (Ctrl-C to stop)" >&2
+# exec keeps our pid for smokescreen: callers waiting on its port (test/integration.sh) pass
+# wait_for_listener this script's pid as the listener's own.
 exec "$SMOKESCREEN_BIN" --config-file ./.internal/smokescreen-config.yaml \
               --listen-ip 127.0.0.1 --listen-port "$PROXY_PORT" \
               --egress-acl-file "$RULES" \
