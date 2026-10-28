@@ -172,8 +172,7 @@ format_smokescreen_log() {
     # A formatter that fails takes the rest of the log with it, while the proxy keeps serving: the
     # log says so where it ends, rather than just going quiet.
     trap 'report_formatter_failure $?' EXIT
-    # Not interactive: the log is a file, where the bell and colors would be noise.
-    classify_log false "$SCRIPT_NAME" notify_deny notify_reload_failed "$VERBOSE"
+    classify_log "$SCRIPT_NAME" notify_deny notify_reload_failed "$VERBOSE"
 }
 
 report_formatter_failure() {
