@@ -33,10 +33,11 @@ Before first use, review the configuration.
 
 To add or remove allowed domains, edit `config/proxy-rules.yaml`. You can also modify the list
 of known denied domains that don't generate alerts -- important for keeping blocked telemetry,
-auto-updates etc. from spamming you with notifications. You can add and remove domains while
-the proxy is running and they'll take effect immediately.
+auto-updates etc. from spamming you with notifications. You can add and remove domains during
+a `chopi` session and they'll take effect immediately.
 
-To set the GitHub repos allowlist, edit `config/github-allowlist`.
+To set the GitHub repos allowlist, edit `config/github-allowlist`. Changes take effect on the
+next `chopi` session.
 
 To configure the sandbox policy, edit the first two settings in `config/sandbox.sh` (other
 settings can be reviewed later):
@@ -67,21 +68,7 @@ configuration.
 
 ## Usage
 
-1. **Start the outgoing proxy** in its own terminal and leave it running:
-
-   ```sh
-   chopi-proxy
-   ```
-
-   All `chopi` sessions share this one proxy. It runs in the foreground so you
-   can watch refused connections. Each denial also pops a macOS notification
-   naming the host. (If the banners don't appear, allow notifications for your
-   terminal in System Settings -> Notifications.) Hosts matching the known denylist
-   are the exception: their denials log a single quiet `deny(known)` line per
-   proxy run, with no notification.
-
-2. **Run your command** under the sandbox from another terminal, at the root of
-   the repo you're working on:
+1. **Run your command** under the sandbox, at the root of the repo you're working on:
 
    ```sh
    cd ~/path/to/your/repo
@@ -92,9 +79,17 @@ configuration.
    runs the command there. The workspace must be the root of a git worktree,
    where `chopi`'s git protections apply; running anywhere else (a subdir, or a
    non-git directory) is refused, so you can't accidentally run "naked" without
-   them. This does *not* start the proxy; it fails fast if the
-   proxy isn't already up. This is intentional: this way, denials are always clearly
-   visible in the separate terminal dedicated to running the proxy in the foreground.
+   them.
+
+   Each `chopi` session starts its own outgoing proxy and stops it when the
+   command exits. Each refused connection pops a macOS notification naming the
+   host; click it to open the session's proxy log. (If the banners don't appear,
+   allow notifications for your terminal in System Settings -> Notifications.)
+   Hosts matching the known denylist are the exception: their denials log a
+   single quiet `deny(known)` line per session, with no notification. The logs
+   are kept under `~/Library/Logs/chopi` for two weeks; `chopi --verbose`
+   prints the session's log path, and also has the log include smokescreen's
+   raw output.
 
    To run a sandboxed command in a separate git worktree instead of the repo root, you
    can either `cd` to an existing worktree and launch `chopi` as usual, or add and setup
@@ -220,9 +215,13 @@ applied without you approving it, and `chopi-review` runs only out-of-sandbox.
 
 ### Advanced
 
-To run the proxy against a different rules file, pass `chopi-proxy --rules FILE`. Keep
-that file **outside** of any workspace you sandbox with chopi: a sandboxed command that 
-can write its own allowlist can modify its own limits.
+To run the proxy against a different rules file or GitHub allowlist, set `CHOPI_PROXY_RULES` or
+`CHOPI_GITHUB_ALLOWLIST` in the sandbox config to its absolute path. `chopi` refuses a file, or a
+default one symlinked elsewhere, that the sandboxed command could write or replace, checked from
+inside the sandbox: one in the workspace, a path the sandbox config grants, or one safehouse grants
+of its own, such as toolchain caches and config under `~`, or under any such dir. Making the file
+read-only doesn't help, as the command runs as its owner. A sandboxed command that can write its own allowlist can
+modify its own limits (`CHOPI_ALLOW_SELF=1` downgrades this to a warning, as for `--config` below).
 
 To use a different sandbox config for a single run, pass `chopi --config FILE`. The file 
 must define the same `CHOPI_SAFEHOUSE_FLAGS` / `CHOPI_EXTRA_ENV` arrays as `config/sandbox.sh`
@@ -252,7 +251,7 @@ therefore split across cooperating layers:
 
 | Layer | Tool | Enforces |
 |-------|------|----------|
-| Sandbox | [`safehouse`](https://github.com/eugene1g/agent-safehouse) (wraps `sandbox-exec`) | Filesystem and preset features; the only outgoing network permitted is to the local proxies at `127.0.0.1:4760` (smokescreen), `:4761` (the GitHub relay), and the relay's unix socket for the `gh` REST API. |
+| Sandbox | [`safehouse`](https://github.com/eugene1g/agent-safehouse) (wraps `sandbox-exec`) | Filesystem and preset features; the only outgoing network permitted is to the session's local proxies: smokescreen and the GitHub relay, each on a `127.0.0.1` port picked for the session, and the relay's unix socket for the `gh` REST API. |
 | Domain-level proxy | [`smokescreen`](https://github.com/stripe/smokescreen) (CONNECT proxy) | Of the traffic that reaches it, only connections to allowed hosts are forwarded; everything else is refused and logged. |
 | GitHub repo-level proxy | [`caddy`](https://caddyserver.com) (reverse proxy) | `github.com` git and the REST API are reached *only* through this relay, which scopes them to a repo allowlist: fetching/reading a **public** repo is unrestricted, but reading a **private** repo, **any push**, and **any authenticated API access** are limited to allowlisted repos. |
 
@@ -281,23 +280,24 @@ Network path of the sandboxed command:
 
 ```
 <cmd>
-  │  Seatbelt allows outgoing connections ONLY to 127.0.0.1:{4760,4761} + the GitHub API relay socket
-  ├─ github.com (git) ─── 4761 ────▶ caddy relay ─(repo allowlisted?)─▶ GitHub
+  │  Seatbelt allows outgoing connections ONLY to the session's proxies' ports + the GitHub API relay socket
+  ├─ github.com (git) ─── port ────▶ caddy relay ─(repo allowlisted?)─▶ GitHub
   │                                   └─ public fetch: any repo · private fetch or push: allowlisted only
   ├─ gh REST API ──── unix socket ─▶ caddy relay ─(repo allowlisted?)─▶ GitHub API
   │                                   └─ read: any public repo · authed access: allowlisted only
-  └─ everything else ──── 4760 ────▶ smokescreen ─(host allowed?)─▶ api.anthropic.com / ...
+  └─ everything else ──── port ────▶ smokescreen ─(host allowed?)─▶ api.anthropic.com / ...
                                           └────(not allowed)────▶ refused + logged
 ```
 
 
 ## Troubleshooting
 
-- **A network connection was refused** -- First verify that the proxy is running.
-  Refused hosts appear as red `DENY` lines in the log (or as a single plain
-  `deny(known)` line if they match the known denylist); if the host should be allowed,
-  add it to `config/proxy-rules.yaml`. The proxy hot-reloads the rules, so you don't
-  need to restart it.
+- **A network connection was refused** -- Refused hosts appear as `DENY` lines in the
+  session's proxy log under `~/Library/Logs/chopi` (or as a single plain `deny(known)`
+  line if they match the known denylist); if the host should be allowed, add it to
+  `config/proxy-rules.yaml`. The proxy hot-reloads the rules, so you don't need to
+  restart the session. A rules edit that fails to load pops a notification and shows in
+  the log as `RULES RELOAD FAILED`, with the previous rules kept.
 - **A `gh` subcommand fails with `not an allowed API operation`, `none of the git
   remotes ... correspond to the GH_HOST environment variable`, or `unable to expand
   placeholder in path`** -- Use REST forms naming the repo explicitly (`-R OWNER/REPO`,
@@ -320,12 +320,14 @@ under `config/templates`.
 
 The proxy is an in-repo Go wrapper, `.internal/proxy/`, that embeds smokescreen as a
 library and hot-reloads the rules file (the standalone smokescreen binary only reads
-its rules at startup). `install.sh` and `make build` compile it to
-`.internal/proxy/chopi-smokescreen`.
+its rules at startup). It also supervises the session's Caddy GitHub relays: it opens
+every listener itself, on ports the kernel picks, hands the relays' to Caddy, and stops
+Caddy with the proxy -- including once `chopi` exits, however it exits. `install.sh` and
+`make build` compile it to `.internal/proxy/chopi-smokescreen`.
 
 ### The GitHub relays
 
-Both GitHub relays live in one Caddy config: a TCP listener on `127.0.0.1:4761` for git
+Both GitHub relays live in one Caddy config: a TCP listener on a `127.0.0.1` port for git
 smart-HTTP, and a loopback unix socket for the `gh` REST API. `chopi` points `gh` at the
 socket with `GH_HOST=github.localhost` (which makes `gh` speak plaintext `http`, so still
 no CA) plus `http_unix_socket` in a throwaway config dir. The host-side token is injected
