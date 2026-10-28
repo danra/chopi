@@ -20,7 +20,7 @@
 }
 
 http:// {
-	bind "unix/@@CHOPI_GH_SOCK@@"
+	bind fd/{$CHOPI_GH_FD}
 
 	# The signed-storage hosts, GET-only, one matcher + handle pair per host: a matcher ANDs
 	# its conditions, so alternative hosts cannot share one. codeload.github.com (repo

@@ -11,22 +11,6 @@ unset _util_dir
 
 SMOKESCREEN_BIN="$CHOPI_DIR/.internal/proxy/chopi-smokescreen"
 
-PROXY_PORT=4760
-# The GitHub relay's loopback listener. Keep this in sync with the hole hardcoded in
-# .internal/network.sb (a Seatbelt profile can't read these shell vars).
-GITHUB_RELAY_PORT=4761       # git-smart-HTTP -> github.com
-
-# The Caddy GitHub-API relay's endpoint. Unlike the git relay (a TCP port), gh reaches this over a
-# unix socket: chopi sets GH_HOST=github.localhost so gh addresses the API as plaintext
-# http://api.github.localhost/... (no CA needed), and gh's http_unix_socket config dials this path
-# instead of resolving that name. The relay therefore sees the cleartext API request and scopes it
-# to the same allowlist as git. Per-user under TMPDIR; chopi.sh opens a Seatbelt hole to this exact
-# path. Computed from the login-canonical TMPDIR -- before the entry scripts repoint TMPDIR to their
-# private self-cleaning dirs -- so chopi-proxy.sh and chopi.sh can share it.
-_gh_tmp="${TMPDIR:-/tmp}"
-GH_RELAY_SOCK="${_gh_tmp%/}/chopi-gh-relay.sock"
-unset _gh_tmp
-
 # mktemp name prefixes of chopi's per-invocation temporaries (created under the private
 # TMPDIR); shared so the tests assert on the same names chopi creates.
 CHOPI_CLAUDE_CONTEXT_READS_PREFIX="chopi-claude-context-reads."
@@ -341,9 +325,11 @@ github_relay_git_config() {
 }
 
 # The env wiring (VAR=val lines) pointing gh at the API relay on unix socket SOCK, writing
-# CONFIG_DIR's config file on the way: GH_HOST=github.localhost makes gh address the API as plaintext
+# CONFIG_DIR's config file on the way. gh reaches the API relay over a unix socket rather than a TCP
+# port: GH_HOST=github.localhost makes gh address the API as plaintext
 # http://api.github.localhost/... (no CA), and http_unix_socket makes it dial the relay socket
 # instead of resolving that name -- it has no environment variable, so it goes in the config file.
+# The relay therefore sees the cleartext API request and scopes it to the same allowlist as git.
 # The GH_TOKEN placeholder only has to make gh consider itself logged in; the relay wipes it and
 # injects the real token host-side.
 github_relay_gh_env() {
@@ -354,6 +340,44 @@ github_relay_gh_env() {
         "GH_HOST=github.localhost" \
         "GH_CONFIG_DIR=$config_dir" \
         "GH_TOKEN=x-chopi-relay"
+}
+
+# Refuse, for REASON and the DETAIL of why it matters, with HINT on what to do about it -- or, with
+# CHOPI_ALLOW_SELF set, only warn.
+#
+# usage: refuse_or_warn REASON DETAIL HINT
+refuse_or_warn() {
+    arity 3
+    local reason="$1" detail="$2" hint="$3"
+    if [ -n "${CHOPI_ALLOW_SELF:-}" ]; then
+        echo "warning: $reason;" >&2
+        echo "         $detail." >&2
+        echo "         continuing anyway (CHOPI_ALLOW_SELF is set)." >&2
+        echo >&2
+    else
+        echo "error: $reason;" >&2
+        echo "       $detail." >&2
+        echo "$hint" >&2
+        return 1
+    fi
+}
+
+# Run COMMAND in the background and exit with its status once it ends -- however it ends, a
+# SIGKILL or a crash included -- signalling the rest of our process group to stop first. For a
+# group's leader, whose group must not outlive COMMAND, its main process: a helper of COMMAND's,
+# with nothing of its own to stop it, then still goes with it, and whoever stops the group by its
+# id, our pid, reaches it all for as long as any of it is left.
+#
+# usage: lead_group COMMAND [ARGS...]
+lead_group() {
+    local pid status=0
+    # Given our stdin explicitly: bash otherwise gives a background command /dev/null for it.
+    "$@" <&0 &
+    pid=$!
+    wait "$pid" || status=$?
+    trap '' TERM
+    kill -TERM 0
+    exit "$status"
 }
 
 # Do github remote URLs resolve to the git relay on PORT under the ambient git config (all
@@ -373,101 +397,4 @@ is_github_relay_reroute_effective() {
         [ "$resolved" = "$relay/o/r" ] || return 1
     done
     return 0
-}
-
-port_has_listener() {
-    arity 1
-    nc -z 127.0.0.1 "$1" 2>/dev/null
-}
-
-# True when something accepts connections on unix socket PATH. curl does the dialing because
-# macOS nc cannot -z-scan a unix socket; any HTTP outcome after a successful connect counts.
-sock_has_listener() {
-    arity 1
-    curl -s -o /dev/null --max-time 2 --unix-socket "$1" http://sock/ 2>/dev/null
-}
-
-# Print the first of the given 127.0.0.1 ports that already has a listener and return 0; print
-# nothing and return 1 when all are free. Callers decide what a busy port means (error vs. skip).
-first_listening_port() {
-    local port
-    for port in "$@"; do
-        if port_has_listener "$port"; then
-            printf '%s' "$port"
-            return 0
-        fi
-    done
-    return 1
-}
-
-# Print the pids of the processes listening on TCP 127.0.0.1:PORT, one per line. Listeners on other
-# addresses of the port (::1, a LAN address) aren't listed: they don't take 127.0.0.1's connections.
-# Nor, though they may answer there, are ones on the wildcard address or another user's.
-port_listener_pids() {
-    arity 1
-    lsof -nP -t -iTCP@127.0.0.1:"$1" -sTCP:LISTEN 2>/dev/null
-}
-
-# Poll for process PID to be the only listener on 127.0.0.1:PORT (~5s, 50 x 0.1s): a port that
-# merely answers may be another process's, one that took it before PID's bind (or shares it, via
-# SO_REUSEPORT). Returns 0 once PID is, 2 at once, saying so, if another process listens on the
-# port -- even after PID died of it -- and 1 on timeout or if PID exits while the port is free (e.g.
-# a server that dies on a bad config). PID must be the binding process itself, not a parent or
-# wrapper, and must not share its listening socket with children, which lsof would list too: the
-# servers waited on, Caddy and smokescreen, are single-process Go servers that don't. This guards
-# against a race at server start, not against impersonation (see check_listener in preflight.sh for
-# why that can't be proven).
-wait_for_listener() {
-    arity 2
-    local port="$1" pid="$2" owners _
-    for _ in {1..50}; do
-        if port_has_listener "$port"; then
-            owners="$(port_listener_pids "$port")"
-            [ "$owners" = "$pid" ] && return 0
-            # Taken, even if PID already died of it (a server losing its port does, within lsof's
-            # run) -- unless lsof lists nobody and PID died: that was PID's listener, gone with it.
-            [ -z "$owners" ] && ! kill -0 "$pid" 2>/dev/null && return 1
-            echo "error: another process is listening on 127.0.0.1:$port" >&2
-            return 2
-        fi
-        kill -0 "$pid" 2>/dev/null || return 1
-        sleep 0.1
-    done
-    return 1
-}
-
-start_github_relay() {
-    arity 2
-    local caddyfile_text="$1" log="$2"
-    # Fill the socket slot with this process's GH_RELAY_SOCK (see its definition for why the
-    # generator can't), and clear any stale socket a crashed prior run left. A socket that
-    # still answers is a sibling relay that won the port race since the caller's busy-port
-    # check (the two aren't atomic): back off before launching caddy, which would itself
-    # unlink the sibling's socket while dying on the busy port.
-    caddyfile_text="${caddyfile_text//@@CHOPI_GH_SOCK@@/$GH_RELAY_SOCK}"
-    if sock_has_listener "$GH_RELAY_SOCK"; then
-        echo "error: a running GitHub API relay already owns $GH_RELAY_SOCK" >&2
-        return 1
-    fi
-    rm -f "$GH_RELAY_SOCK"
-    # Feed the config to Caddy over a pipe (--config -): printf is a builtin, so the baked GitHub
-    # token doesn't appear in any process's argv.
-    printf '%s' "$caddyfile_text" | caddy run --adapter caddyfile --config - > "$log" 2>&1 &
-    CADDY_PID=$!
-    wait_for_listener "$GITHUB_RELAY_PORT" "$CADDY_PID"
-}
-
-# TODO: Here for testability, but awkward in util.sh
-# Watch process MAIN_PID from the background; once it exits, kill CADDY_PID and remove TMPDIR
-# and GH_SOCK. chopi-proxy execs smokescreen over itself, losing its EXIT trap, so this reaper is
-# what takes Caddy and its leftovers down with it. INT, TERM and HUP are ignored: a Ctrl-C or a
-# closing terminal terminate smokescreen, and the reaper must outlive it to clean up; Caddy
-# ignores HUP, so if the reaper dies on it, Caddy would be left orphaned holding the relay port.
-start_relay_reaper() {
-    arity 4
-    local main_pid="$1" caddy_pid="$2" tmpdir="$3" gh_sock="$4"
-    ( trap '' INT TERM HUP
-      while kill -0 "$main_pid" 2>/dev/null; do sleep 0.2; done
-      kill "$caddy_pid" 2>/dev/null || true
-      rm -rf "$tmpdir" "$gh_sock" ) &
 }

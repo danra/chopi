@@ -29,17 +29,19 @@
 # ghproxy, plus rewriting GitHub redirects (e.g. renamed repos) back through the relay.
 (redirecting_ghproxy) {
 	import ghproxy {
-		header_down Location "^https://github\.com/(.*)$" "http://127.0.0.1:@@GITPORT@@/$1"
+		header_down Location "^https://github\.com/(.*)$" "http://127.0.0.1:{$CHOPI_GIT_PORT}/$1"
 		{block}
 	}
 }
 
 # GitHub git site start
-http://127.0.0.1:@@GITPORT@@ {
+http://127.0.0.1:{$CHOPI_GIT_PORT} {
 	# The site address host above only MATCHES requests; it does not bind the listener.
 	# Without an explicit bind Caddy listens on ALL interfaces, where a LAN client sending
-	# "Host: 127.0.0.1" would reach the credentialed routes.
-	bind 127.0.0.1
+	# "Host: 127.0.0.1" would reach the credentialed routes. The listener is the one
+	# chopi-smokescreen opened on 127.0.0.1 and handed to Caddy open, on descriptor CHOPI_GIT_FD,
+	# at the kernel-picked port in CHOPI_GIT_PORT.
+	bind fd/{$CHOPI_GIT_FD}
 
 	map {http.request.header.Content-Encoding} {content_encoding} {
 		gzip gzip

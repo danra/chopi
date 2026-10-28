@@ -86,12 +86,6 @@ if [ -n "$uninstall" ]; then
     exit 0
 fi
 
-if busy_port="$(first_listening_port "$PROXY_PORT" "$GITHUB_RELAY_PORT")"; then
-    echo "error: chopi-proxy (or something else) is currently running and listening on port $busy_port." >&2
-    echo "Shut it down, then re-run this script." >&2
-    exit 1
-fi
-
 
 # ----------------------------------------------------------------------------
 # Dependencies
@@ -127,7 +121,7 @@ ensure_brew caddy     caddy
 hash -r 2>/dev/null || true
 
 if command -v go >/dev/null 2>&1; then
-    echo "  building chopi-smokescreen"
+    echo "  building chopi's proxy binaries"
     trace_on; make -C "$CHOPI_DIR" build; trace_off
 else
     echo "error: go is needed to build chopi's proxy but isn't on PATH yet." >&2
@@ -212,6 +206,4 @@ echo "  * the proxy rules            ($CHOPI_DIR/config/proxy-rules.yaml)"
 echo "  * the GitHub allowlist       ($CHOPI_DIR/config/github-allowlist)"
 echo "  * the sandbox configuration  ($CHOPI_DIR/config/sandbox.sh)"
 echo ""
-echo "To use it:"
-echo "  1. In one terminal, start the outgoing proxy and leave it running:  chopi-proxy"
-echo "  2. From inside the repo you're working on, run a command:           chopi <cmd> [args...]"
+echo "To use it, from inside the repo you're working on, run a command:  chopi <cmd> [args...]"

@@ -16,6 +16,7 @@ if ! command -v git >/dev/null 2>&1; then
     exit
 fi
 
+GITHUB_RELAY_PORT=24761   # any port: a session's is picked when its proxy starts
 relay="http://127.0.0.1:$GITHUB_RELAY_PORT"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/chopi-github-relay-reroute.XXXXXX")"

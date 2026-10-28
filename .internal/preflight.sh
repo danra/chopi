@@ -6,50 +6,18 @@
 # only learns the dir the command will actually run in partway through setup:
 #   * preflight_initial          -- runnable up front: the workspace doesn't overlap chopi's
 #                                   own dir (a confined command must not reach the policy
-#                                   that confines it), the proxy-side services (both loopback
-#                                   ports and the GitHub API relay socket) are up, and the
-#                                   safehouse CLI is on PATH.
+#                                   that confines it), and the safehouse CLI is on PATH.
 #   * preflight_config_placement -- deferred until chopi has resolved the workspace (the
 #                                   --worktree target), since that is the dir a custom
 #                                   --config must stay outside of.
+#
+# resolve_proxy_config, run up front, resolves the proxy's config, which it reads all session long:
+# the in-sandbox wrapper refuses to run the command where it can write it, as only the sandbox
+# itself knows every path it lets the command write.
 
 _preflight_dir="$(dirname "${BASH_SOURCE[0]}")"
 . "$_preflight_dir/util.sh"
 unset _preflight_dir
-
-refuse_or_warn() {
-    arity 3
-    local reason="$1" detail="$2" hint="$3"
-    if [ -n "${CHOPI_ALLOW_SELF:-}" ]; then
-        echo "warning: $reason;" >&2
-        echo "         $detail." >&2
-        echo "         continuing anyway (CHOPI_ALLOW_SELF is set)." >&2
-        echo
-    else
-        echo "error: $reason;" >&2
-        echo "       $detail." >&2
-        echo "$hint" >&2
-        return 1
-    fi
-}
-
-# check_listener -- confirm something is listening on 127.0.0.1:PORT, else print an error naming
-# WHAT (e.g. "no outgoing proxy") and HINT, then fail. Liveness only: it confirms something is
-# listening, not that it's ours. We deliberately don't verify the listener's identity because no
-# purely-local check can: hijacking the port takes separate local code execution (the sandboxed
-# command itself can't bind it), and a same-user attacker who can do that can equally run
-# smokescreen/chopi-proxy or forge any pidfile or token we'd check -- same-user processes have equal
-# OS authority. An identity check would add cost and a false sense of security without changing what
-# such an attacker must do.
-check_listener() {
-    arity 3
-    local port="$1" what="$2" hint="$3"
-    if ! port_has_listener "$port"; then
-        echo "error: $what on 127.0.0.1:$port" >&2
-        echo "$hint" >&2
-        return 1
-    fi
-}
 
 preflight_initial() {
     arity 0
@@ -65,22 +33,6 @@ preflight_initial() {
             || return 1
     fi
 
-    # The outgoing proxy must already be running in its own terminal. We deliberately
-    # don't start it here, so it stays in the foreground where you can watch refused
-    # connections and stop it to edit the list of allowed domains.
-    check_listener "$PROXY_PORT" "no outgoing proxy" \
-        "Start it first in a separate terminal:  chopi-proxy" || return 1
-
-    check_listener "$GITHUB_RELAY_PORT" "no GitHub relay" \
-        "It runs alongside the outgoing proxy; (re)start both in a separate terminal:  chopi-proxy" || return 1
-
-    if ! sock_has_listener "$GH_RELAY_SOCK"; then
-        echo "error: no GitHub API relay listening at $GH_RELAY_SOCK" >&2
-        echo "Start chopi-proxy in this same environment first (a proxy started under a" >&2
-        echo "different TMPDIR binds a different socket path)." >&2
-        return 1
-    fi
-
     # Agent Safehouse builds the sandbox policy and execs the command inside it, so
     # it's a per-run dependency. Fail fast with a pointer rather than a bare
     # "command not found" when chopi calls it.
@@ -91,6 +43,7 @@ preflight_initial() {
     fi
 }
 
+# Refuse a custom --config CONFIG that lies inside the workspace RUN_DIR.
 preflight_config_placement() {
     arity 2
     local config_file="$1" run_dir="$2"
@@ -111,4 +64,35 @@ preflight_config_placement() {
             "Keep the sandbox config outside the workspace you're sandboxing." \
             || return 1
     fi
+}
+
+# Resolve the proxy config file the sandbox config's variable VAR names -- or, when it names none,
+# the default config/DEFAULT the installer creates from config/templates/TEMPLATE -- setting VAR to
+# its real path. chopi hands the proxy that path, which it reads for the whole session, hot-reloading
+# the rules: resolved once, no symlink on the way can be repointed after the in-sandbox wrapper
+# checks it.
+#
+# usage: resolve_proxy_config VAR DEFAULT TEMPLATE
+resolve_proxy_config() {
+    arity 3
+    local var="$1" default="$CHOPI_DIR/config/$2" template="$CHOPI_DIR/config/templates/$3"
+    local path resolved
+    path="${!var}"
+    case "$path" in
+        '') if [ ! -e "$default" ]; then
+                echo "chopi: no $2 at $default" >&2
+                echo "Run the installer to create it from the template:  $CHOPI_DIR/install.sh" >&2
+                echo "or copy it manually:  cp \"$template\" \"$default\"" >&2
+                return 1
+            fi
+            path="$default" ;;
+        /*) ;;
+        *)  echo "chopi: $var must be an absolute path, got '$path'" >&2
+            return 1 ;;
+    esac
+    # Checked apart from realpath: GNU's, often first on PATH, resolves a path that doesn't exist.
+    [ -f "$path" ] || { echo "chopi: no $var file at '$path'" >&2; return 1; }
+    resolved="$(realpath "$path" 2>/dev/null)" \
+        || { echo "chopi: cannot resolve $var path '$path'" >&2; return 1; }
+    printf -v "$var" '%s' "$resolved"
 }

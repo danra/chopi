@@ -1,6 +1,6 @@
 # GitHub API relay head fragment: the gh REST API on a unix socket. gh reaches it because chopi
 # sets GH_HOST=github.localhost (=> plaintext http://api.github.localhost/...) and gh's
-# http_unix_socket config dials @@CHOPI_GH_SOCK@@.
+# http_unix_socket config dials the socket.
 
 # Allowlisted API headers
 (apihdrs) {
@@ -38,7 +38,8 @@
 # api.github.com is served too: absolute URLs in API responses (jobs_url, pagination Link
 # headers) keep their real host, and gh's host-blind socket dialer sends them here as well.
 http://api.github.localhost, http://api.github.com {
-	# Quoted: the socket path is TMPDIR-derived and may hold whitespace.
-	bind "unix/@@CHOPI_GH_SOCK@@"
+	# The listener is the API relay's socket, which chopi-smokescreen opened and handed to Caddy
+	# open, on descriptor CHOPI_GH_FD.
+	bind fd/{$CHOPI_GH_FD}
 
 	# ... Followed by caddyfile fragments for the API allowed and pub routes

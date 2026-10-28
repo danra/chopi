@@ -40,8 +40,10 @@ cf="$WORK/populated"
 render 'soundradix/*' 'acme/tool' 'acme/tool.js' > "$cf"
 
 echo "-- structure --"
-assert_contains "$(cat "$cf")" "http://127.0.0.1:$GITHUB_RELAY_PORT"  "GitHub relay listens on GITHUB_RELAY_PORT"
-assert_contains "$(cat "$cf")" 'bind 127.0.0.1'         "git listener binds loopback explicitly"
+# shellcheck disable=SC2016  # a Caddyfile env placeholder, which Caddy expands, not this shell
+assert_contains "$(cat "$cf")" 'http://127.0.0.1:{$CHOPI_GIT_PORT}'  "GitHub relay serves the port Caddy is started with"
+# shellcheck disable=SC2016  # a Caddyfile env placeholder, which Caddy expands, not this shell
+assert_contains "$(cat "$cf")" 'bind fd/{$CHOPI_GIT_FD}' "git listener is the inherited loopback socket, not Caddy's own"
 assert_contains "$(cat "$cf")" '@@CHOPI_AUTH@@'         "git route carries the credential slot (caller-filled)"
 assert_contains "$(cat "$cf")" 'acme/tool\.js'          "dots in repo names are regex-escaped"
 
@@ -95,7 +97,8 @@ pub_imports="$(printf '%s\n' "$pub_block" | grep -cE 'import (redirecting_)?ghpr
 assert_eq "$pub_imports" 2 "anonymous routes proxy only fetch + LFS batch (push is never proxied)"
 
 echo "-- API listener structure --"
-assert_contains "$(cat "$cf")" 'bind "unix/@@CHOPI_GH_SOCK@@"'        "API relay binds the socket-path slot (caller-filled)"
+# shellcheck disable=SC2016  # a Caddyfile env placeholder, which Caddy expands, not this shell
+assert_contains "$(cat "$cf")" 'bind fd/{$CHOPI_GH_FD}'               "API relay listens on the inherited socket, not one of Caddy's own"
 api_site="$(grep -E '^http://api\.' "$cf")"
 assert_contains "$api_site"    'http://api.github.localhost'          "API relay serves api.github.localhost"
 assert_contains "$api_site"    'http://api.github.com'                "API relay serves Host api.github.com too (gh follows absolute response-body URLs over the socket)"

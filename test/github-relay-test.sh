@@ -5,7 +5,8 @@
 # NOT run by `make test`; it needs a repo you can push to to run fully, set in env
 # as ALLOW_REPO=<owner/repo>
 #
-# It renders the relay config for a throwaway allowlist, starts caddy, and checks that:
+# It renders the relay config for a throwaway allowlist, starts the relays as a session's proxy
+# does (chopi-smokescreen, starting caddy), and checks that:
 #   0. the relay listens on loopback only                          (not on all interfaces)
 #   1. anonymous public fetch works through the relay
 #   1b. a gzipped fetch is decoded by GitHub
@@ -25,7 +26,6 @@
 #   4i. (opt) a real Actions job log: API -> redirect -> signed storage, all over the one socket
 #   4j. id-form /repositories/{id} URLs are served anonymously  (pagination Links, renamed-repo redirects)
 #   4k. (opt) an allowlisted repo's pagination Links keep naming the repo  (page 2 stays authenticated)
-#   4l. a losing concurrent double-start leaves the winner's live socket untouched
 #   4m. (opt) a release with an asset: gh POSTs the asset to uploads.github.com (the API's
 #       upload_url host) over the same socket, and the relay serves it authed
 #   5. a credential GitHub rejects fails with an informative error message (git, API, and
@@ -35,14 +35,14 @@ set -uo pipefail
 
 _test_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
-# A private TMPDIR, exported so the processes under test leave their temporaries here too. Created
-# before sourcing util.sh, which derives GH_RELAY_SOCK from it, so the socket this test creates and
-# removes is its own. Trap it now so an early skip still cleans up (the fuller trap, which also kills
-# caddy, comes after the skip guards).
+# A private TMPDIR, exported so the processes under test leave their temporaries here too, the
+# relay's socket among them. Trap it now so an early skip still cleans up (the fuller trap, which
+# also kills caddy, comes after the skip guards).
 TMPDIR="$(mktemp -d)"; export TMPDIR
 trap 'rm -rf "$TMPDIR"' EXIT
 
 . "$_test_dir/../.internal/util.sh"
+. "$_test_dir/../.internal/session-proxy.sh"
 . "$_test_dir/lib.sh"
 
 header "End-to-end GitHub relay test"
@@ -57,18 +57,44 @@ if ! command -v gh >/dev/null 2>&1; then
     exit 0
 fi
 
-# The test's caddy must own the relay port itself: with a running chopi-proxy holding it,
-# start_github_relay would rightly refuse, leaving nothing to test.
-if busy_port="$(first_listening_port "$GITHUB_RELAY_PORT")"; then
-    echo "  SKIP: port $busy_port is already in use -- stop your running chopi-proxy first"
+if [ ! -x "$SMOKESCREEN_BIN" ]; then
+    echo "  SKIP: proxy binary not built at $SMOKESCREEN_BIN (run: make build)"
     exit 0
 fi
 
 RENDER="$CHOPI_DIR/.internal/github-relays-caddyfile.sh"
 WORK="$(mktemp -d "$TMPDIR/chopi-github-relay-test.XXXXXX")"
-CADDY_PID=""
-cleanup() { [ -n "$CADDY_PID" ] && kill "$CADDY_PID" 2>/dev/null; rm -rf "$TMPDIR"; }
+PROXY_PID=""
+cleanup() { [ -n "$PROXY_PID" ] && kill "$PROXY_PID" 2>/dev/null; rm -rf "$TMPDIR"; }
 trap cleanup EXIT
+
+# The outgoing proxy, which serves beside the relays, gets rules allowing nothing: only the relays
+# are under test.
+printf 'version: v1\nservices: []\ndefault:\n  name: default\n  action: enforce\n  allowed_domains: []\n' \
+    > "$WORK/rules.yaml"
+
+# start_relays CONFIG LOG -- start the proxy as a session's would, the relays on the Caddy config
+# CONFIG, logging to LOG (and caddy to LOG.caddy, which LOG quotes if caddy fails to start); sets
+# PROXY_PID, CADDY_PID, GITHUB_RELAY_PORT and GH_RELAY_SOCK once they serve, or fails. Awaited as
+# chopi awaits a session's proxy, sharing its handshake.
+start_relays() {
+    local config="$1" log="$2"
+    # shellcheck disable=SC2034 # consumed by await_session_proxy
+    SESSION_PROXY_DIR="$(mktemp -d "$WORK/proxy.XXXXXX")"
+    # shellcheck disable=SC2034 # consumed by await_session_proxy
+    SESSION_PROXY_LOG="$log"
+    "$SMOKESCREEN_BIN" --dir "$SESSION_PROXY_DIR" --parent $$ --relay-log "$log.caddy" -- \
+        --config-file "$CHOPI_DIR/.internal/smokescreen-config.yaml" --listen-ip 127.0.0.1 \
+        --egress-acl-file "$WORK/rules.yaml" < <(printf '%s' "$config") \
+        >>"$log" 2>"$SESSION_PROXY_DIR/startup.err" &
+    # shellcheck disable=SC2034 # consumed by await_session_proxy
+    SESSION_PROXY_PID=$!
+    PROXY_PID=$!
+    await_session_proxy 2>>"$log" || return 1
+    GITHUB_RELAY_PORT="$SESSION_RELAY_PORT"
+    GH_RELAY_SOCK="$SESSION_GH_SOCK"
+    CADDY_PID="$(pgrep -P "$PROXY_PID" -x caddy)"
+}
 
 # A denied git operation must fail, not hang on a credential prompt.
 export GIT_TERMINAL_PROMPT=0
@@ -92,7 +118,7 @@ if [[ "$caddy_cfg" == *@@CHOPI_AUTH@@* ]]; then
     caddy_cfg="${caddy_cfg//@@CHOPI_API_AUTH@@/$(gh_bearer_auth_header "$TOKEN")}"
 fi
 
-if ! start_github_relay "$caddy_cfg" "$WORK/caddy.log"; then
+if ! start_relays "$caddy_cfg" "$WORK/caddy.log"; then
     bad "caddy failed to start"; sed 's/^/      /' "$WORK/caddy.log"; summary; exit 1
 fi
 
@@ -372,48 +398,6 @@ if [ -n "${ALLOW_REPO:-}" ] && [ -n "$TOKEN" ]; then
     fi
 fi
 
-# 4l. concurrent double-start: two chopi-proxys can both pass the busy-port check before either
-#     binds, so this is the losing proxy's exact code path. It must fail without touching the
-#     winner's live API socket -- unlinking it leaves the surviving proxy holding the port while
-#     gh can no longer reach the relay. This test only pins the behavior when one of two racing
-#     proxies successfully bound the socket before the second one checks it: as long as
-#     start_github_relay is not atomic (it currently isn't), there is still a very short window
-#     where both pass the socket check and the loser's caddy unlinks the winner's socket.
-if ( start_github_relay "$caddy_cfg" "$WORK/caddy-loser.log" ) 2>"$WORK/e4l"; then
-    bad "double-start: the losing start_github_relay unexpectedly reported success"
-else
-    ok "double-start: the losing start_github_relay fails"
-fi
-if [ -S "$GH_RELAY_SOCK" ]; then
-    ok "double-start: the winner's API socket file survives"
-else
-    bad "double-start: the winner's API socket file is gone"
-fi
-code="$(api_code "$api_url/repos/octocat/Hello-World")"
-if [ "$code" != "000" ]; then
-    ok "double-start: the winner still answers on its API socket (HTTP $code)"
-else
-    bad "double-start: the winner's API socket no longer answers"
-fi
-
-# 4l'. another process holds the relay port (the caddy above stands in for any): the socket
-#      check passes (its own path, here), so caddy launches and dies on the busy port -- or
-#      shares it, if it binds with SO_REUSEPORT. The other listener must not pass for ours.
-( GH_RELAY_SOCK="$WORK/caddy-loser-port.sock"
-  start_github_relay "$caddy_cfg" "$WORK/caddy-loser-port.log"; rc=$?
-  kill "$CADDY_PID" 2>/dev/null
-  exit "$rc" ) 2>"$WORK/e4l2"
-assert_eq "$?" 2 "port taken: start_github_relay reports a foreign listener"
-assert_contains "$(cat "$WORK/e4l2")" "another process is listening on 127.0.0.1:$GITHUB_RELAY_PORT" \
-    "  -> naming the taken port"
-for _ in {1..20}; do
-    owners="$(port_listener_pids "$GITHUB_RELAY_PORT")"
-    [ "$owners" = "$CADDY_PID" ] && break
-    sleep 0.1
-done
-assert_eq "$owners" "$CADDY_PID" \
-    "port taken: the other process is again the port's only listener"
-
 # 4m. optional: a release with an asset. gh creates the release via the REST route, then POSTs
 #     the asset to uploads.github.com -- the upload_url host in the API's release response --
 #     over the same socket, so the relay must serve that Host authed too. A draft release keeps
@@ -457,14 +441,15 @@ fi
 # 5. credential rejected by GitHub: relaunch with an allowlist entry and a bogus token. Probe
 # with operations GitHub can never serve anonymously (a push; a fetch of a nonexistent repo),
 # so it must 401 the bogus credential rather than fall back to anonymous access.
-kill "$CADDY_PID" 2>/dev/null; wait "$CADDY_PID" 2>/dev/null
+kill "$PROXY_PID" 2>/dev/null; wait "$PROXY_PID" 2>/dev/null
 printf 'octocat/*\n' > "$WORK/allow-bogus"
 bogus_cfg="$("$RENDER" "$WORK/allow-bogus")"
 bogus_cfg="${bogus_cfg//@@CHOPI_AUTH@@/Basic Ym9ndXM6Ym9ndXM=}"
 bogus_cfg="${bogus_cfg//@@CHOPI_API_AUTH@@/Bearer bogus}"
-if ! start_github_relay "$bogus_cfg" "$WORK/caddy-bogus.log"; then
+if ! start_relays "$bogus_cfg" "$WORK/caddy-bogus.log"; then
     bad "caddy failed to restart for the rejected-credential test"; sed 's/^/      /' "$WORK/caddy-bogus.log"
 else
+    git_url="http://127.0.0.1:$GITHUB_RELAY_PORT"   # the relaunch's own port
     if git -C "$WORK/pushsrc" push -q "$git_url/octocat/Hello-World" HEAD:refs/heads/chopi-e2e 2>"$WORK/e5"; then
         bad "push with a rejected credential unexpectedly succeeded"
     elif grep -q 'remote error: chopi: GitHub rejected the relay credential' "$WORK/e5"; then

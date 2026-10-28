@@ -1,8 +1,9 @@
 .PHONY: build test lint
 
 # chopi's proxy binary: smokescreen embedded as a library and extended to hot-reload
-# the rules file (see main.go). Each recipe is guarded on `go`: skip with a hint rather
-# than fail when it is missing, matching how the parent Makefile guards shellcheck.
+# the rules file, supervising the Caddy GitHub relays beside it (see main.go). Each recipe
+# is guarded on `go`: skip with a hint rather than fail when it is missing, matching how
+# the parent Makefile guards shellcheck.
 BINARY = chopi-smokescreen
 
 build:

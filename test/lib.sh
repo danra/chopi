@@ -17,6 +17,13 @@ header() {
     printf '════════════════════════════════════════════════════════════════════════════\n'
 }
 
+# wait_for_exit PID -- wait up to ~3s for process PID to exit.
+wait_for_exit() {
+    arity 1
+    local _
+    for _ in {1..30}; do kill -0 "$1" 2>/dev/null || return 0; sleep 0.1; done
+}
+
 ok()   { arity 1; pass=$((pass + 1)); printf '  ok   %s\n' "$1"; }
 bad()  { arity 1; fail=$((fail + 1)); printf '  FAIL %s\n' "$1"; }
 

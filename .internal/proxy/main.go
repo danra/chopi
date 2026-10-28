@@ -1,20 +1,38 @@
-// chopi-smokescreen -- Stripe's smokescreen egress proxy, embedded as a library and
-// extended to hot-reload the --egress-acl-file rules.
+// chopi-smokescreen -- a chopi session's proxy: Stripe's smokescreen egress proxy, embedded as a
+// library and extended to hot-reload the --egress-acl-file rules, and the supervisor of the
+// session's GitHub relays, served by Caddy.
 //
-//   - Flags and log output are identical to the standalone smokescreen binary.
+//	chopi-smokescreen --dir DIR --parent PID --relay-log FILE [--keep-fresh FILE]... -- SMOKESCREEN_FLAGS...
+//
+//   - Smokescreen's flags and log output are identical to the standalone smokescreen binary's.
 //   - The rules file is polled for changes, with a new valid rules set immediately
 //     and atomically swapped in.
+//   - Every listener is opened here, on a loopback port the kernel picks, or the unix socket
+//     DIR/gh.sock, so no other process can take it first. Smokescreen serves its own; Caddy, started
+//     with its config on stdin and its output in the --relay-log FILE, inherits the relays'.
+//   - Once smokescreen listens and Caddy serves, the ports are reported in DIR/ports, for chopi
+//     to learn them from, and to know the proxy is up. Until then, errors go to stderr, for chopi
+//     to show; from then on, everything goes to stdout, the log.
+//   - The proxy stops once process PID (chopi) exits, removing DIR, or on TERM or HUP; if Caddy
+//     exits, it stops too, so nothing is left serving half the session. Caddy is stopped with it.
+//   - The relay log and each --keep-fresh FILE are touched daily while the proxy runs, for chopi's
+//     log retention, which goes by their last change, to leave them be.
 
 package main
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -101,8 +119,28 @@ func defaultRoleFromRequest(req *http.Request) (string, error) {
 	return req.TLS.PeerCertificates[0].Subject.CommonName, nil
 }
 
+// listenOnPickedPort opens conf's listener on conf.Ip, at a port the kernel picks, and records the
+// port in conf.Port. Opened here rather than left to smokescreen, which would listen on the same
+// port 0 but leave conf.Port at 0: smokescreen's self-connection check compares connections
+// against conf.Port.
+func listenOnPickedPort(conf *smokescreen.Config) error {
+	listener, err := net.Listen("tcp", net.JoinHostPort(conf.Ip, "0"))
+	if err != nil {
+		return err
+	}
+	conf.Listener = listener
+	conf.Port = uint16(listener.Addr().(*net.TCPAddr).Port)
+	return nil
+}
+
 func main() {
-	path := egressACLPath(os.Args[1:])
+	opts, err := parseOptions(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "chopi-smokescreen:", err)
+		os.Exit(2)
+	}
+	args := append([]string{os.Args[0]}, opts.smokeArgs...)
+	path := egressACLPath(opts.smokeArgs)
 	var lastMod time.Time
 	if path != "" {
 		if st, err := os.Stat(path); err == nil {
@@ -110,9 +148,14 @@ func main() {
 		}
 	}
 
-	conf, err := cmd.NewConfiguration(nil, nil)
+	// Smokescreen logs to stdout, the log, from the start, its global logger included: stderr is
+	// for why the proxy can't start.
+	logrus.SetOutput(os.Stdout)
+	logger := logrus.New()
+	logger.Out = os.Stdout
+	conf, err := cmd.NewConfiguration(args, logger)
 	if err != nil {
-		logrus.Fatalf("Could not create configuration: %v", err)
+		fail("could not create the smokescreen configuration: %v", err)
 	}
 	if conf == nil {
 		return // --help or --version, already handled by NewConfiguration
@@ -125,17 +168,108 @@ func main() {
 	log.SetFlags(0)
 
 	if path == "" {
-		conf.Log.Fatal("--egress-acl-file not found on the command line; chopi requires a hot-reloadable egress ACL")
+		fail("--egress-acl-file not found on the command line; chopi requires a hot-reloadable egress ACL")
 	}
-
 	rules, ok := conf.EgressACL.(*acl.ACL)
 	if !ok {
-		conf.Log.Fatal("expected NewConfiguration to have loaded the egress ACL")
+		fail("expected NewConfiguration to have loaded the egress ACL")
 	}
 	holder := &swappableACL{}
 	holder.current.Store(rules)
 	conf.EgressACL = holder
-	go watchRules(conf, holder, path, lastMod)
 
-	smokescreen.StartWithConfig(conf, nil)
+	if err := listenOnPickedPort(conf); err != nil {
+		fail("can't listen: %v", err)
+	}
+	// Checked here, as smokescreen would only as it starts: a config it refuses is a reason the
+	// session can't start, for chopi to show.
+	if err := conf.Validate(); err != nil {
+		fail("invalid smokescreen config: %v", err)
+	}
+	relays, err := listenRelays(opts.dir)
+	if err != nil {
+		fail("can't listen: %v", err)
+	}
+	parentExited, err := watchExit(opts.parent)
+	if err != nil {
+		fail("can't watch process %d: %v", opts.parent, err)
+	}
+	stop := stopSignals()
+
+	// Both servers start at once: smokescreen serves its listener right away, as Caddy starts.
+	caddy, caddyExited, err := startCaddy(relays, opts.relayLog)
+	if err != nil {
+		fail("can't start caddy for the GitHub relay: %v", err)
+	}
+	// Stop the proxy with STATUS, Caddy with it.
+	exit := func(status int) {
+		caddy.Process.Signal(syscall.SIGTERM)
+		os.Exit(status)
+	}
+	go watchRules(conf, holder, path, lastMod)
+	go keepFresh(opts.keepFresh, keepFreshInterval)
+	smokescreenExited := make(chan struct{})
+	go func() {
+		smokescreen.StartWithConfig(conf, nil)
+		close(smokescreenExited)
+	}()
+
+	// Wait for Caddy, then serve -- until the session ends or a server exits. Once chopi is gone,
+	// nobody else removes the dir.
+	ready := awaitCaddy(relays.gitPort)
+	up := false
+	relayFailed := func(err error) {
+		relayLog, _ := os.ReadFile(opts.relayLog)
+		complain("the GitHub relay did not come up (%v). Its log:\n%s", err,
+			strings.TrimRight(string(relayLog), "\n"))
+		exit(1)
+	}
+	for {
+		select {
+		case err := <-ready:
+			ready = nil
+			if err != nil {
+				relayFailed(err)
+			}
+			if err := reportPorts(opts.dir, int(conf.Port), relays.gitPort); err != nil {
+				complain("can't report the ports: %v", err)
+				exit(1)
+			}
+			fmt.Printf("[chopi-smokescreen] outgoing proxy on 127.0.0.1:%d, GitHub relay on 127.0.0.1:%d, "+
+				"GitHub API relay on %s\n", conf.Port, relays.gitPort, filepath.Join(opts.dir, "gh.sock"))
+			// Up from here on, so anything left to say belongs in the log.
+			syscall.Dup2(1, 2)
+			// Should the log's formatter die, the log is lost from here on, but not the session's
+			// network: writing to it then fails instead of killing the proxy.
+			signal.Ignore(syscall.SIGPIPE)
+			up = true
+		case <-caddyExited:
+			if !up {
+				relayFailed(errors.New("caddy exited"))
+			}
+			fmt.Println("[chopi-smokescreen] the GitHub relay exited; stopping the proxy")
+			exit(1)
+		case <-smokescreenExited:
+			if !up {
+				complain("smokescreen stopped as it started; see the log")
+			}
+			exit(1)
+		case <-stop:
+			exit(0)
+		case <-parentExited:
+			os.RemoveAll(opts.dir)
+			exit(0)
+		}
+	}
+}
+
+// fail reports a reason the proxy can't start, as complain does, and exits.
+func fail(format string, args ...any) {
+	complain(format, args...)
+	os.Exit(1)
+}
+
+// complain reports a reason the proxy can't start on stderr, for chopi to show.
+func complain(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "chopi-smokescreen: "+format+"\n", args...)
 }

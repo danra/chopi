@@ -31,6 +31,7 @@ trap 'rm -rf "$TMPDIR"' EXIT
 # a global config and running from a clean dir.
 # The gate test cases later override GIT_CONFIG_GLOBAL, so the config setup here doesn't affect them.
 export GIT_CONFIG_SYSTEM=/dev/null
+GITHUB_RELAY_PORT=24761   # any port: a session's is picked when its proxy starts
 export CHOPI_GITHUB_RELAY_PORT="$GITHUB_RELAY_PORT"   # as chopi passes it into the sandbox
 relay="http://127.0.0.1:$GITHUB_RELAY_PORT"
 relay_global_config="$TMPDIR/relay-global.gitconfig"

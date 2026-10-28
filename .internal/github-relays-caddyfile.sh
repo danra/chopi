@@ -8,16 +8,18 @@
 # github-relay-*.caddy (git) and github-api-relay-*.caddy (API) fragments next to this script:
 # two loopback reverse-proxy listeners,
 #
-#   :GITHUB_RELAY_PORT (TCP)      git-smart-HTTP -> github.com
-#   GH_RELAY_SOCK (unix socket)   gh REST API    -> api.github.com / uploads.github.com
+#   fd/{$CHOPI_GIT_FD} (TCP)        git-smart-HTTP -> github.com
+#   fd/{$CHOPI_GH_FD} (unix socket) gh REST API    -> api.github.com / uploads.github.com
 #
 # with the credentialed routes included only when the allowlist has entries, and a catch-all
 # tail on the API relay: an anonymous passthrough for GitHub's signed-storage download hosts
 # (gh follows those redirects over the socket) and a loud refusal for any other Host.
 #
-# chopi-proxy.sh renders this, fills the @@CHOPI_AUTH@@ / @@CHOPI_API_AUTH@@ credential slots and
-# the @@CHOPI_GH_SOCK@@ socket-path slot in memory, and pipes the result to Caddy over stdin -- so
-# they never touch disk.
+# chopi-proxy.sh renders this, fills the @@CHOPI_AUTH@@ / @@CHOPI_API_AUTH@@ credential slots in
+# memory, and pipes the result to Caddy over stdin -- so the credentials never touch disk. The
+# listeners are chopi-smokescreen's, opened before Caddy starts and handed to it open: Caddy reads
+# their descriptors from its environment, and the git relay's kernel-picked port, for the redirects
+# it rewrites, too ({$CHOPI_GIT_PORT}).
 #
 # These are reverse proxies, not MITMs: the sandbox reaches them over plaintext loopback HTTP (gh
 # speaks plaintext because chopi sets GH_HOST=github.localhost, dialing the socket via
@@ -109,9 +111,7 @@ validate_repo_slug() {
 
 # emit_caddyfile -- assemble the Caddyfile from the fragments and fill every slot except the
 # caller-filled ones: @@CHOPI_AUTH@@ / @@CHOPI_API_AUTH@@ (in-memory credential fills, so this
-# generator never handles the token itself) and @@CHOPI_GH_SOCK@@ (the API-relay socket path: the caller
-# knows it; this generator may run under an already-repointed TMPDIR, where re-deriving it gives a
-# different path). $1 is the allowlist regex alternation; when it is empty the credentialed
+# generator never handles the token itself). $1 is the allowlist regex alternation; when it is empty the credentialed
 # fragments are dropped entirely, so no push route and no authed API route exist at all.
 emit_caddyfile() {
     arity 1
@@ -142,7 +142,6 @@ emit_caddyfile() {
     deny_auth_push="$(deny_pkt git-receive-pack "$auth_msg")"
 
     fill_slots "$text" \
-        @@GITPORT@@ "$GITHUB_RELAY_PORT" \
         @@ALLOWLIST_REGEX@@ "$allowlist_regex" \
         @@DENY_PKT_FETCH@@ "$deny_fetch" \
         @@DENY_PKT_PUSH@@ "$deny_push" \

@@ -32,8 +32,8 @@ above is something the user chose. When you hit one:
 
 1. Name exactly what was denied: the full path, or the host and port.
 2. Give the user the whole fix in one message, from the table below: which file in chopi's
-   directory to edit, the exact line to add, and whether it takes effect immediately, on a
-   `chopi-proxy` restart, or only in a fresh chopi session.
+   directory to edit, the exact line to add, and whether it takes effect immediately or only
+   in a fresh chopi session.
 3. Stop and wait, or continue with the parts of the task that don't need it.
 
 Never try to get around a denial. Concretely, do not look for a mirror or an alternate host
@@ -45,8 +45,8 @@ opening is the exact thing it exists to prevent.
 
 ## Symptom, cause, and what to ask for
 
-Note the third column. The three configuration files apply at different times, and telling
-the user to restart the wrong thing wastes a cycle.
+Note the third column. The configuration files apply at different times, and telling the
+user to start a new session when a retry would do, or the reverse, wastes a cycle.
 
 For a network failure, first pin down which transport the failing command used -- git (the
 relay), `gh` (its socket), or plain HTTPS (the proxy) -- and scope the conclusion and the
@@ -60,16 +60,16 @@ git's access to the same host.
 | `EPERM` **writing** a path outside the workspace and outside every safe write target | Filesystem policy | First `realpath` the path: a read-only file can be a symlink into a safe write target, which makes this the row above -- queue a patch, no grant needed. Otherwise, two grants to choose between, and the choice is yours to recommend: see "Changing a file outside the workspace" below. **Both need a new chopi session.** |
 | `EPERM` writing under `.git/` (`git config`, `git remote add`, `git worktree add`, `git submodule update`, hook installers like husky) | Git hardening | These cannot be made to work in-session. Ask the user to run the command **outside** the sandbox. For `--worktree` runs, recurring setup belongs in `CHOPI_WORKTREE_SETUP`. |
 | Another worktree of the same repo, or another repo, is unreadable | Worktree isolation | Intended. Do not ask for it to be lifted unless the task genuinely spans worktrees, in which case the user should run a session at the other worktree. |
-| `Received HTTP code 407 from proxy after CONNECT`, a refused connection to a host, or a generic HTTP 4xx/5xx inside a tool that embeds curl (CMake `file(DOWNLOAD)`, pip, installers) | The host is not on the proxy allowlist | User adds it to `config/proxy-rules.yaml`. **Hot-reloads:** no restart, retry once they confirm. Denials also appear in the terminal running `chopi-proxy`, which you cannot see, so quote the host. |
+| `Received HTTP code 407 from proxy after CONNECT`, a refused connection to a host, or a generic HTTP 4xx/5xx inside a tool that embeds curl (CMake `file(DOWNLOAD)`, pip, installers) | The host is not on the proxy allowlist | User adds it to `config/proxy-rules.yaml` (or to the rules file `CHOPI_PROXY_RULES` names in their sandbox config). **Hot-reloads:** no restart, retry once they confirm. Denials also appear as notifications and in the session's proxy log, neither of which you can see, so quote the host. |
 | A network call hangs or fails with no proxy error | Something bypassed the proxy environment variables | Use a client that honors `HTTP_PROXY`/`HTTPS_PROXY`. Nothing can be granted for this. |
-| `chopi: push denied, repo is not in chopi's config/github-allowlist` | The repo is not allowlisted for push | User adds `owner/repo` (or `owner/*`) to `config/github-allowlist`. **Needs a `chopi-proxy` restart:** the allowlist is compiled in when the proxy starts. |
+| `chopi: push denied, repo is not in chopi's config/github-allowlist` | The repo is not allowlisted for push | User adds `owner/repo` (or `owner/*`) to `config/github-allowlist`. **Needs a new chopi session:** the allowlist is compiled in when the session's proxy starts. |
 | `chopi: repo not found, or private and missing from ...` | Private repo fetch, same allowlist | Same as above. Public repo fetch needs no entry. |
 | `gh api` fails: `unable to expand placeholder in path` | `{owner}`/`{repo}`/`{branch}` placeholders are filled from the git-remote resolution below, which cannot work here | Write literal slugs in the path: `gh api repos/OWNER/REPO/...`. |
 | gh: `none of the git remotes configured for this repository correspond to the GH_HOST environment variable` | gh resolves the target repo from the git remotes, which chopi rewrites to the loopback relay, so none can ever match -- by design | Nothing to grant, and the error's own advice leads to other denials: do not unset `GH_HOST` (gh's relay transport needs it) or add a remote (a denied config write). Pass `-R OWNER/REPO` instead; REST-backed subcommands then work, GraphQL-backed ones get the deny below. |
 | `gh pr` / `gh issue` / `gh repo view` / `gh release view` (on draft releases) and similar fail: `chopi GitHub relay: not an allowed API operation` | GraphQL and account-level endpoints name their target in the request body, not the URL, so the relay cannot scope them to the repo allowlist -- denied by design | Not available in-session. Use the REST form (`gh api repos/OWNER/REPO/...`) when one exists, or ask the user to run the command outside the sandbox. |
 | Creating a GitHub Discussion or discussion comment fails: GraphQL gets the deny above, and a REST `POST .../discussions` gets GitHub's own 404 | GitHub offers Discussions writes only via GraphQL; its REST API has no discussion write routes at all, so the 404 comes from GitHub, not the relay | Not possible in-session, and no config change enables it -- don't probe for a REST write route. Reading works, via REST endpoints GitHub leaves undocumented (so they may change): `gh api repos/OWNER/REPO/discussions`, `.../discussions/{number}`, `.../discussions/{number}/comments`, with standard pagination. To post, the user goes through the web UI (`https://github.com/OWNER/REPO/discussions/new?category=SLUG`) or runs the `createDiscussion` GraphQL mutation with `gh api graphql` outside the sandbox; the repo and category node IDs it needs appear in the REST read responses. |
-| `gh` REST reads 404 on a non-allowlisted private repo, or writes are unauthorized | The GitHub token is injected only for allowlisted repos; other repos are reached anonymously | Same allowlist and restart as above. Public-repo reads need no entry. |
-| `gh` REST reads 404 (`Not Found`) on an **allowlisted** private repo | GitHub hides repos the credential cannot see: the host's token does not cover this one (fine-grained PATs are repo-scoped) | User grants the repo to the host's token, outside the sandbox. Widening the existing token applies immediately; a replacement token **needs a `chopi-proxy` restart:** the credential is read when the proxy starts. |
+| `gh` REST reads 404 on a non-allowlisted private repo, or writes are unauthorized | The GitHub token is injected only for allowlisted repos; other repos are reached anonymously | Same allowlist and new session as above. Public-repo reads need no entry. |
+| `gh` REST reads 404 (`Not Found`) on an **allowlisted** private repo | GitHub hides repos the credential cannot see: the host's token does not cover this one (fine-grained PATs are repo-scoped) | User grants the repo to the host's token, outside the sandbox. Widening the existing token applies immediately; a replacement token **needs a new chopi session:** the credential is read when the session's proxy starts. |
 | Anything hitting `api.github.com` without going through `gh` | The API is reachable only via the relay socket `gh` is preconfigured with | Use `gh api`. Direct hits are quietly denied; nothing to grant for other clients. |
 | Background tasks fail to start | The daemon needs a unix socket the policy denies; the default config also turns them off (`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`) | Run the command in the foreground. |
 
@@ -171,11 +171,12 @@ to modify some configuration.
 
 ## Landmines
 
-- **Never run `lsof`, `pkill`, or `fuser -k` against ports 4760 or 4761.** From inside the
-  sandbox those resolve to *your own* process, not the host's proxy, so you kill your own
-  session. You cannot restart the host proxy from in here either. The proxy is your only
-  gateway to Anthropic's servers, so under normal circumstances, the fact you're reading
-  this message means the proxy is up.
+- **Never run `lsof`, `pkill`, or `fuser -k` against the proxy ports** (the one in
+  `HTTP_PROXY`, and the GitHub relay's in `CHOPI_GITHUB_RELAY_PORT`). From inside the sandbox
+  those resolve to *your own* process, not the host's proxy, so you kill your own session.
+  You cannot restart the host proxy from in here either. The proxy is your only gateway to
+  Anthropic's servers, so under normal circumstances, the fact you're reading this message
+  means the proxy is up.
 - **Do not run `chopi` or `sandbox-exec` from inside the sandbox.** Seatbelt does not nest;
   it will fail in confusing ways.
 - **Do not leave a rebase or cherry-pick in progress.** chopi aborts any sequenced

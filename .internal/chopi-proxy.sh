@@ -1,25 +1,36 @@
 #!/usr/bin/env bash
 #
-# chopi-proxy.sh -- run the outgoing network traffic proxy
+# chopi-proxy.sh -- run a chopi session's outgoing network traffic proxy
+#
+# Not run directly: chopi starts one per session and stops it when the session ends. Its ports are
+# the kernel's picks, which it reports in its --dir. What it says before it is up goes to stderr, so
+# chopi's terminal shows why a session couldn't start, or a note the user should see as it starts;
+# everything else -- the formatted smokescreen log -- goes to the --log file.
 
 set -euo pipefail
 
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
-SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"   # resolve the bin/chopi-proxy symlink
-SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
+SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
 
 . "$SCRIPT_DIR/util.sh"
 
 usage() {
     cat <<EOF
-usage: $SCRIPT_NAME [--rules FILE] [--github-allowlist FILE] [--verbose]   # listens on 127.0.0.1:$PROXY_PORT
+usage: $SCRIPT_NAME --dir DIR --log FILE --parent PID --rules FILE --github-allowlist FILE
+                    [--verbose]
 
-  --rules FILE       use FILE as the proxy rules instead of the default
-                     config/proxy-rules.yaml
+The outgoing proxy and the GitHub git relay listen on 127.0.0.1, on ports the kernel picks.
+
+  --dir DIR          keep the proxy's temporaries in DIR, removed once PID exits, serve the
+                     GitHub API relay on the unix socket DIR/gh.sock, and report the ports
+                     in DIR/ports once the proxy and the relays serve
+  --log FILE         append the proxy's log to FILE, and the relays' to FILE's name with
+                     .caddy.log for .log
+  --parent PID       stop once process PID exits
+  --rules FILE       use FILE (absolute) as the proxy rules
   --github-allowlist FILE
-                     use FILE as the GitHub allowlist instead of the default
-                     config/github-allowlist
-  --verbose          show smokescreen's output verbatim, interleaved with chopi-proxy's
+                     use FILE (absolute) as the GitHub allowlist
+  --verbose          log smokescreen's output verbatim, interleaved with chopi-proxy's
                      own: nothing is dropped or replaced.
 
 Edits to the rules file take effect while the proxy runs; no restart needed.
@@ -37,26 +48,35 @@ option_value() {
     printf '%s' "$2"
 }
 
-CUSTOM_RULES=""
-CUSTOM_GITHUB_ALLOWLIST=""
+PROXY_DIR=""
+LOG=""
+PARENT_PID=""
+RULES=""
+GITHUB_ALLOWLIST=""
 VERBOSE=false
-INVOCATION_DIR="$PWD"
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -h|--help) usage; exit 0 ;;
-        --rules)            CUSTOM_RULES="$(option_value "$1" "${2:-}")"            || exit 1; shift 2 ;;
-        --github-allowlist) CUSTOM_GITHUB_ALLOWLIST="$(option_value "$1" "${2:-}")" || exit 1; shift 2 ;;
+        --dir)              PROXY_DIR="$(option_value "$1" "${2:-}")"               || exit 1; shift 2 ;;
+        --rules)            RULES="$(option_value "$1" "${2:-}")"                   || exit 1; shift 2 ;;
+        --github-allowlist) GITHUB_ALLOWLIST="$(option_value "$1" "${2:-}")"        || exit 1; shift 2 ;;
+        --log)              LOG="$(option_value "$1" "${2:-}")"                     || exit 1; shift 2 ;;
+        --parent)           PARENT_PID="$(option_value "$1" "${2:-}")"              || exit 1; shift 2 ;;
         --verbose) VERBOSE=true; shift ;;
         *) usage >&2; exit 1 ;;
     esac
 done
 
-cd "$CHOPI_DIR"
-
-if busy_port="$(first_listening_port "$PROXY_PORT" "$GITHUB_RELAY_PORT")"; then
-    echo "error: something is already listening on 127.0.0.1:$busy_port" >&2
+if [ -z "$PROXY_DIR" ] || [ -z "$LOG" ] || [ -z "$PARENT_PID" ] || [ -z "$RULES" ] \
+    || [ -z "$GITHUB_ALLOWLIST" ]; then
+    echo "error: --dir, --log, --parent, --rules and --github-allowlist are required" >&2
+    usage >&2
     exit 1
 fi
+
+exec >>"$LOG" || { echo "error: cannot write the proxy log $LOG" >&2; exit 1; }
+
+cd "$CHOPI_DIR"
 
 if [ ! -x "$SMOKESCREEN_BIN" ]; then
     echo "Can't run chopi's proxy. Build it with the installer ($CHOPI_DIR/install.sh)" >&2
@@ -82,34 +102,17 @@ if ! command -v alerter >/dev/null 2>&1; then
     exit 1
 fi
 
-# Print the config file to use: CUSTOM, as passed with FLAG (relative to where chopi-proxy was
-# started), or else config/DEFAULT, which the installer creates from config/templates/TEMPLATE.
-# Fails when the file is missing.
+# Check config FILE, the DESCRIPTION passed with FLAG, exists, logging which file it is.
 #
-# usage: config_file DESCRIPTION FLAG CUSTOM DEFAULT TEMPLATE
-config_file() {
-    arity 5
-    local description="$1" flag="$2" custom="$3" default="$CHOPI_DIR/config/$4" template="$5"
-    if [ -n "$custom" ]; then
-        case "$custom" in
-            /*) ;;
-            *)  custom="$INVOCATION_DIR/$custom" ;;
-        esac
-        [ -f "$custom" ] || { echo "error: $flag file not found: $custom" >&2; return 1; }
-        echo "[$SCRIPT_NAME] using custom $description: $custom" >&2
-        printf '%s' "$custom"
-    elif [ -f "$default" ]; then
-        printf '%s' "$default"
-    else
-        echo "error: no $description at $default" >&2
-        echo "Run the installer to create it from the template:  $CHOPI_DIR/install.sh" >&2
-        echo "or copy it manually:  cp \"$CHOPI_DIR/config/templates/$template\" \"$default\"" >&2
-        return 1
-    fi
+# usage: check_config_file DESCRIPTION FLAG FILE
+check_config_file() {
+    arity 3
+    local description="$1" flag="$2" file="$3"
+    [ -f "$file" ] || { echo "error: $flag file not found: $file" >&2; return 1; }
+    echo "[$SCRIPT_NAME] using $description: $file"
 }
 
-RULES="$(config_file "proxy rules" --rules "$CUSTOM_RULES" \
-    proxy-rules.yaml proxy-rules.template.yaml)" || exit 1
+check_config_file "proxy rules" --rules "$RULES" || exit 1
 
 # Rules that allow GitHub's own domains defeat the GitHub repos allowlist: a sandboxed
 # command could push data to ANY repo directly, skipping the relays. The expected case is
@@ -139,15 +142,7 @@ if [ -n "$github_exfil_domains" ]; then
     fi
 fi
 
-GITHUB_ALLOWLIST="$(config_file "GitHub allowlist" --github-allowlist "$CUSTOM_GITHUB_ALLOWLIST" \
-    github-allowlist github-allowlist.template)" || exit 1
-
-if [ -n "$CUSTOM_RULES$CUSTOM_GITHUB_ALLOWLIST" ]; then
-    # The proxy doesn't know which dirs will be sandboxed later, so it can't enforce no overlap with a custom rules file.
-    # Warn instead
-    echo "[$SCRIPT_NAME] warning: keep custom config files OUTSIDE any workspace you sandbox with chopi --" >&2
-    echo "              a sandboxed command that can write one can lift its own outgoing limits." >&2
-fi
+check_config_file "GitHub allowlist" --github-allowlist "$GITHUB_ALLOWLIST" || exit 1
 
 . "$CHOPI_DIR/.internal/classify-log.sh"
 for f in "$CONNECTION_FILTER" "$DENY_HOST_FILTER" "$KNOWN_DENY_FILTER" \
@@ -164,48 +159,66 @@ done
 # - Denials of hosts matching the configured denylist show as a plain "deny(known)" line,
 #   once per host per session -- no notification, repeats dropped
 # - Rules hot-reloads show as a plain "rules reloaded" line; a failed reload (the edit
-#   did NOT take effect) shows as a loud "RULES RELOAD FAILED" line
+#   did NOT take effect) shows as a loud "RULES RELOAD FAILED" line, and notifies
 # - Allowed connections and the known noise are dropped
-# - Every other line passes through. notify_deny pops the macOS banner on each DENY.
+# - Every other line passes through. notify_deny and notify_reload_failed pop the macOS banners.
 format_smokescreen_log() {
-    # This runs in a process substitution, which inherits the launching shell's job table
-    # (the caddy pipeline, the reaper). Those are not this shell's children, so their
-    # entries stay "running" forever, and once the pid counter wraps, a per-line fork
-    # landing on a recycled pid from one of them makes bash print a "forked pid N appears
-    # in running job 0" warning into the log. Drop the inherited entries.
-    disown -a
-    local is_interactive=false
-    [ -t 1 ] && is_interactive=true
-    classify_log "$is_interactive" "$SCRIPT_NAME" notify_deny "$VERBOSE"
+    # chopi stops the proxy by signalling its whole process group, this formatter included, as
+    # soon as the session's command exits -- often right after a denial that made it fail. The
+    # formatter, and the notifications it starts, ignore that and finish on their own instead:
+    # the formatter once smokescreen's output ends, so the denial still reaches the log, and each
+    # notification once it is dismissed or times out, so its banner still shows.
+    trap '' INT TERM HUP
+    # A formatter that fails takes the rest of the log with it, while the proxy keeps serving: the
+    # log says so where it ends, rather than just going quiet.
+    trap 'report_formatter_failure $?' EXIT
+    # Not interactive: the log is a file, where the bell and colors would be noise.
+    classify_log false "$SCRIPT_NAME" notify_deny notify_reload_failed "$VERBOSE"
+}
+
+report_formatter_failure() {
+    arity 1
+    [ "$1" -eq 0 ] && return
+    echo "[$SCRIPT_NAME] BUG: the log formatter failed (status $1); the proxy keeps serving," \
+         "but logs nothing more, and notifies of no more denials"
 }
 
 notify_deny() {
-    local host="$1"
+    arity 1
+    notify 'connection denied' "DENY $1"
+}
 
-    # macOS sets __CFBundleIdentifier to the terminal's bundle id; use it to bring the
-    # proxy's terminal to focus if the notification is clicked.
-    local term_bundle="${__CFBundleIdentifier:-}"
+notify_reload_failed() {
+    arity 0
+    notify 'rules reload failed' "Your edit to $(basename -- "$RULES") did not take effect"
+}
 
+# Pop a macOS banner with SUBTITLE and MESSAGE, in the background. A click on it opens the log,
+# which has the event in context. Each new banner replaces the session's last one, but not another
+# session's, whose log it opens.
+#
+# usage: notify SUBTITLE MESSAGE
+notify() {
+    arity 2
+    local subtitle="$1" message="$2"
     {
         result=$(alerter --title 'Chopi' \
-                         --subtitle 'connection denied' \
-                         --message "DENY $host" \
-                         --group 'chopi-proxy' \
+                         --subtitle "$subtitle" \
+                         --message "$message" \
+                         --group "chopi-proxy-$PARENT_PID" \
                          --timeout 10 2>/dev/null || true)
         case "$result" in
             @TIMEOUT | @CLOSED | '') ;;
-            *) [ -n "$term_bundle" ] && open -b "$term_bundle" >/dev/null 2>&1 || true ;;
+            *) open "$LOG" >/dev/null 2>&1 || true ;;
         esac
     } &
 }
 
-# Cleanup any temporaries this process generates on exit.
-TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/chopi-proxy.XXXXXX")" \
-    || { echo "error: could not create a temp dir for chopi-proxy" >&2; exit 1; }
-trap 'rm -rf "$TMPDIR"' EXIT
+# The proxy's temporaries go in its private dir, removed once the parent exits.
+export TMPDIR="$PROXY_DIR"
 
-# Render the GitHub relay config.
-CADDY_LOG="$TMPDIR/caddy.log"
+# Render the GitHub relay config. Its log sits beside the proxy's, outliving the session as it does.
+CADDY_LOG="${LOG%.log}.caddy.log"
 CADDYFILE_TEXT="$("$CHOPI_DIR/.internal/github-relays-caddyfile.sh" "$GITHUB_ALLOWLIST")" \
     || { echo "error: could not render the GitHub relay config from $GITHUB_ALLOWLIST" >&2; exit 1; }
 if [[ "$CADDYFILE_TEXT" == *@@CHOPI_AUTH@@* ]]; then
@@ -225,37 +238,33 @@ if [[ "$CADDYFILE_TEXT" == *@@CHOPI_AUTH@@* ]]; then
     gh_api_auth=""
 else
     # No credential slot: the GitHub allowlist is empty, so the relay proxies anonymous public fetch
-    # only.
-    note_marker="NOTE"
-    [ -t 2 ] && note_marker=$'\033[33mNOTE\033[0m'
-    echo "[$SCRIPT_NAME] $note_marker: the GitHub allowlist is empty; only public fetch and anonymous public API reads are enabled until you add allowed repos." >&2
+    # only. In the log, for the user to find why authenticated GitHub access fails: an empty
+    # allowlist can be deliberate, so it is no reason to speak up at every session's start.
+    echo "[$SCRIPT_NAME] note: the GitHub allowlist is empty; only public fetch and anonymous public API reads are enabled until you add allowed repos."
 fi
 
 # Strip any GitHub token the user exported into our environment to avoid passing it down to more processes
 # (if set, resolve_gh_token already read it above).
 unset GH_TOKEN GITHUB_TOKEN
 
-if ! start_github_relay "$CADDYFILE_TEXT" "$CADDY_LOG"; then
-    echo "error: the GitHub relay did not come up on 127.0.0.1:$GITHUB_RELAY_PORT." >&2
-    if [ -f "$CADDY_LOG" ]; then
-        echo "Its log:" >&2
-        sed 's/^/  /' "$CADDY_LOG" >&2
-    fi
-    kill "${CADDY_PID:-}" 2>/dev/null || true
-    exit 1
-fi
-CADDYFILE_TEXT=""
+echo "[$SCRIPT_NAME] relay log: $CADDY_LOG"
+echo "[$SCRIPT_NAME] starting the outgoing proxy and the GitHub relays"
+# Run chopi-smokescreen with fd 3 for its stderr, which the call below sets aside for it.
+run_smokescreen() {
+    exec "$SMOKESCREEN_BIN" "$@" 2>&3 3>&-
+}
 
-# Tie Caddy's lifetime to smokescreen's.
-start_relay_reaper $$ "$CADDY_PID" "$TMPDIR" "$GH_RELAY_SOCK"
-
-# Start smokescreen
-echo "[$SCRIPT_NAME] GitHub relay on 127.0.0.1:$GITHUB_RELAY_PORT, GitHub API relay on $GH_RELAY_SOCK" >&2
-echo "[$SCRIPT_NAME]   relay log: $CADDY_LOG" >&2
-echo "[$SCRIPT_NAME] starting outgoing proxy on 127.0.0.1:$PROXY_PORT (Ctrl-C to stop)" >&2
-# exec keeps our pid for smokescreen: callers waiting on its port (test/integration.sh) pass
-# wait_for_listener this script's pid as the listener's own.
-exec "$SMOKESCREEN_BIN" --config-file ./.internal/smokescreen-config.yaml \
-              --listen-ip 127.0.0.1 --listen-port "$PROXY_PORT" \
-              --egress-acl-file "$RULES" \
-              > >(format_smokescreen_log) 2>&1
+# chopi-smokescreen opens the listeners, serves the proxy, and starts Caddy on the relays' config,
+# handed over stdin: printf is a builtin, so the baked GitHub token doesn't appear in any process's
+# argv. It reports its ports in DIR/ports once up; until then, its stderr is still ours as chopi
+# started us, where chopi shows why it couldn't start, and its log output, on stdout, goes through
+# the formatter. Our own stderr goes to the log from here on, as does the formatter's: both outlive
+# the startup, whose stderr chopi reads only then -- the shell's word of how chopi-smokescreen
+# ended, a crash's say, would be lost there. We stay, leading the process group chopi stops the
+# proxy by, for Caddy to go with chopi-smokescreen however it goes; and chopi-smokescreen keeps the
+# logs fresh, for their retention not to take a running session's.
+lead_group run_smokescreen --dir "$PROXY_DIR" --parent "$PARENT_PID" --relay-log "$CADDY_LOG" \
+    --keep-fresh "$LOG" -- \
+    --config-file ./.internal/smokescreen-config.yaml --listen-ip 127.0.0.1 \
+    --egress-acl-file "$RULES" \
+    3>&2 2>&1 < <(printf '%s' "$CADDYFILE_TEXT") > >(format_smokescreen_log 2>&1)

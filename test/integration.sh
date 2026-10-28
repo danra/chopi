@@ -2,25 +2,25 @@
 #
 # test/integration.sh -- chopi's end-to-end integration tests
 #
-# starts the real outgoing proxy (.internal/chopi-proxy.sh) and runs real sandbox-protected
-# commands through the `chopi` command (bin/chopi -> chopi.sh), then asserts that filesystem
-# and network access are exactly what the policy allows -- no more, no less:
+# runs real sandbox-protected commands through the `chopi` command (bin/chopi -> chopi.sh), each
+# with the real outgoing proxy it starts for its session, then asserts that filesystem and
+# network access are exactly what the policy allows -- no more, no less:
 #
 #   * filesystem: read/write inside the workspace works; reads/writes OUTSIDE it (incl.
 #     chopi's own dir) are denied.
 #   * network: an allowed host is reachable THROUGH the proxy; a host that's not allowed
 #     is refused by the proxy (and the denial is logged + notified); any direct outgoing connection
 #     that bypasses the proxy, or aims at a non-allowlisted loopback port, is blocked by Seatbelt.
-#   * rules hot reload: an edit to the rules file takes effect while the proxy runs; a
+#   * rules hot reload: an edit to the rules file takes effect while the session runs; a
 #     broken edit is refused loudly and the previous rules stay in effect.
 
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
-# A private TMPDIR, exported so the scripts under test leave their temporaries here too. Created
-# before sourcing util.sh, which derives GH_RELAY_SOCK from it; trap it now so an early skip still
-# cleans up (the rest of the fixtures, and the fuller trap, come after the skip guards below).
+# A private TMPDIR, exported so the scripts under test leave their temporaries here too. Trap it
+# now so an early skip still cleans up (the rest of the fixtures, and the fuller trap, come after
+# the skip guards below).
 TMPDIR="$(mktemp -d)"; export TMPDIR
 trap 'rm -rf "$TMPDIR"' EXIT
 
@@ -46,9 +46,6 @@ for t in safehouse jq alerter nc caddy git gh; do
 done
 # The proxy binary is invoked by absolute path (it isn't on PATH); mirror chopi-proxy.sh's check.
 [ -x "$SMOKESCREEN_BIN" ] || skip "proxy binary not built at $SMOKESCREEN_BIN (run: make build)"
-if busy_port="$(first_listening_port "$PROXY_PORT" "$GITHUB_RELAY_PORT")"; then
-    skip "port $busy_port is already in use -- stop your running chopi-proxy first"
-fi
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +58,7 @@ fi
 # ---------------------------------------------------------------------------
 vartmp="$(cd /var/tmp && pwd -P)" || { echo "error: cannot resolve /var/tmp" >&2; exit 1; }
 base="$(mktemp -d "$vartmp/chopi-itest.XXXXXX")" || { echo "error: mktemp failed" >&2; exit 1; }
-trap 'if [ -n "${proxy_pid:-}" ]; then kill "$proxy_pid" 2>/dev/null || true; wait "$proxy_pid" 2>/dev/null || true; fi; rm -rf "$base" "$TMPDIR"' EXIT
+trap 'rm -rf "$base" "$TMPDIR"' EXIT
 
 ws="$base/workspace"            # the sandbox workspace (read/write granted, as the workdir)
 outside="$base/outside"         # sibling of the workspace -> reliably denied
@@ -70,7 +67,7 @@ claudebin="$base/claudebin"     # a stand-in `claude` for the Claude-context cas
 codexbin="$base/codexbin"       # a stand-in `codex` for checking Chopi's argv
 cfg="$base/config/sandbox.sh"   # minimal sandbox config, OUTSIDE the workspace
 rules="$base/config/itest-rules.yaml"
-proxy_log="$base/proxy.log"
+empty_github_allow="$base/config/itest-github-allowlist-empty"
 alerter_log="$base/alerter-calls.log"
 mkdir -p "$ws" "$outside" "$alerter_stub" "$claudebin" "$codexbin" "$base/config" "$base/home"
 
@@ -78,8 +75,10 @@ mkdir -p "$ws" "$outside" "$alerter_stub" "$claudebin" "$codexbin" "$base/config
 # Belongs in /var/tmp for the same reason $base does; under $TMPDIR, safehouse's blanket
 # /var/folders grant would make that file readable to any command, agent profile or not.
 HOME="$base/home"; export HOME
-# Sourced here, not with the libs above: it derives the patch queue root from $HOME.
+# Sourced here, not with the libs above: they derive the patch queue root and the proxy log dir
+# from $HOME.
 . "$repo/.internal/write-targets.sh"
+. "$repo/.internal/session-proxy.sh"
 # A commit identity, the one thing the fixture takes away from the developer's global git config
 printf '[user]\n\tname = t\n\temail = t@t.t\n' > "$HOME/.gitconfig"
 
@@ -108,12 +107,30 @@ printf '%s\n' "$@"
 EOF
 chmod +x "$codex_shim"
 
-# Minimal config: no dir grants beyond the stub agent's (so denials are clean), PATH of
-# system binaries only
-cat > "$cfg" <<EOF
+: > "$empty_github_allow"
+
+# write_cfg FILE [LINE...] -- a minimal config: no dir grants beyond the stub agent's (so denials
+# are clean), PATH of system binaries only, and the test's proxy rules and empty GitHub allowlist,
+# plus any LINEs, which can override those. The proxy config keeps every session from falling back
+# to the developer's own config/proxy-rules.yaml.
+# With --template, the config first sources the shipped template, as a user's would.
+write_cfg() {
+    local file="$1"; shift
+    {
+        if [ "${1:-}" = --template ]; then
+            shift
+            echo ". '$repo/config/templates/sandbox.template.sh'"
+        fi
+        cat <<EOF
 CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$claudebin:$codexbin" )
 CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
+CHOPI_PROXY_RULES="$rules"
+CHOPI_GITHUB_ALLOWLIST="$empty_github_allow"
 EOF
+        printf '%s\n' "$@"
+    } > "$file"
+}
+write_cfg "$cfg"
 
 # Test rules: exactly one host allowed.
 # A function because the hot-reload tests below restore this same baseline mid-run.
@@ -132,7 +149,8 @@ EOF
 write_test_rules
 
 # alerter shim: record each invocation (so we can prove the denial-notification path fired)
-# instead of popping a real macOS banner per DENY.
+# instead of popping a real macOS banner per DENY. First on PATH, which chopi passes on to the
+# sessions' proxies; jq/nc/etc. stay reachable via the rest.
 : > "$alerter_log"
 cat > "$alerter_stub/alerter" <<EOF
 #!/bin/sh
@@ -140,6 +158,18 @@ printf '%s\n' "\$*" >> "$alerter_log"
 exit 0
 EOF
 chmod +x "$alerter_stub/alerter"
+PATH="$alerter_stub:$PATH"
+
+# The log of the latest session's proxy.
+latest_proxy_log() {
+    arity 0
+    local latest
+    # Not the relays' logs beside it (proxy-*.caddy.log), which Caddy, starting alongside the
+    # proxy, may write last.
+    # shellcheck disable=SC2012,SC2010  # chopi names the logs, so odd names are moot
+    latest="$(ls -t "$CHOPI_PROXY_LOG_DIR"/proxy-*.log 2>/dev/null | grep -v '\.caddy\.log$' | head -n 1)"
+    printf '%s' "${latest:-$CHOPI_PROXY_LOG_DIR/none.log}"
+}
 
 # Poll FILE until PATTERN (literal) appears on at least COUNT lines -- for asserting a
 # repeat of an already-seen log line (e.g. a second rules reload).
@@ -161,58 +191,41 @@ wait_for() {
     wait_for_count "$f" "$pat" 1
 }
 
-# Poll ~5s for child PID to exit and reap it: returns 0 with its exit status in
-# WAIT_FOR_EXIT_RC. On timeout kills PID, reaps it, and returns 1.
-wait_for_exit() {
-    arity 1
-    local pid="$1" _
-    for _ in {1..50}; do
-        if ! kill -0 "$pid" 2>/dev/null; then
-            WAIT_FOR_EXIT_RC=0
-            wait "$pid" || WAIT_FOR_EXIT_RC=$?
-            return 0
-        fi
-        sleep 0.1
-    done
-    kill "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
-    return 1
+# Every sandboxed call: run from the workspace with the minimal config. The Claude-context
+# cases go through the stand-in agent, in another workspace or under another config when the
+# case calls for it.
+chopi_t() { chopi_cfg "$cfg" "$@"; }
+chopi_claude_in() {
+    local dir="$1" conf="$2"; shift 2
+    ( cd "$dir" && "$repo/bin/chopi" --config "$conf" -- "$claude_shim" "$@" )
 }
+chopi_claude() { chopi_claude_in "$ws" "$cfg" "$@"; }
+chopi_codex() { chopi_t "$codex_shim" "$@"; }
+# chopi_cfg CONF CMD... -- run from the workspace under another config
+chopi_cfg() { local conf="$1"; shift; ( cd "$ws" && "$repo/bin/chopi" --config "$conf" -- "$@" ); }
 
-# assert_no_listeners STAGE -- a refused chopi-proxy start must exit before binding anything:
-# assert both proxy ports are free ("refused before STAGE").
-assert_no_listeners() {
-    arity 1
-    local stage="$1"
-    if first_listening_port "$PROXY_PORT" "$GITHUB_RELAY_PORT" >/dev/null; then
-        bad "  -> but a port stayed bound (it must refuse before $stage)"
-    else
-        ok  "  -> and neither port was bound (refused before $stage)"
-    fi
-}
+# Run curl INSIDE the sandbox and echo its HTTP status code ("000" when the connection is
+# blocked/refused before any response).
+sandbox_curl() { chopi_t /usr/bin/curl -sS -o /dev/null -w '%{http_code}' "$@" 2>/dev/null; }
+
+# Denied operations and captured exit codes below rely on errexit being off.
+set +e
 
 
 # ---------------------------------------------------------------------------
-echo "the proxy refuses a populated allowlist with no GitHub token"
+echo "the session's proxy refuses a populated allowlist with no GitHub token"
 # ---------------------------------------------------------------------------
 nonempty_github_allow="$base/config/itest-github-allowlist-nonempty"
 printf 'soundradix/*\n' > "$nonempty_github_allow"
-refuse_log="$base/refuse.log"
-
-GH_TOKEN='' "$repo/.internal/chopi-proxy.sh" --rules "$rules" --github-allowlist "$nonempty_github_allow" > "$refuse_log" 2>&1 &
-refuse_pid=$!
-
-if ! wait_for_exit "$refuse_pid"; then
-    bad "chopi-proxy kept running for a populated allowlist with no token (it must refuse)"
-else
-    assert_nonzero  "$WAIT_FOR_EXIT_RC" "chopi-proxy refuses a populated allowlist with no token"
-    assert_contains "$(cat "$refuse_log")" "no GitHub token is set" "  -> and logs the reason"
-    assert_no_listeners "starting Caddy"
-fi
+write_cfg "$base/config/no-token.sh" "CHOPI_GITHUB_ALLOWLIST=\"$nonempty_github_allow\""
+out="$(GH_TOKEN='' chopi_cfg "$base/config/no-token.sh" /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_nonzero      "$rc"                         "chopi refuses to run when its proxy refuses a populated allowlist with no token"
+assert_contains     "$out" "no GitHub token is set" "  -> and shows the proxy's reason"
+assert_not_contains "$out" "RAN"                  "  -> and the command does not run"
 
 
 # ---------------------------------------------------------------------------
-echo "the proxy refuses rules that allow github.com/api.github.com (pre-relay leftovers)"
+echo "the session's proxy refuses rules that allow github.com/api.github.com (pre-relay leftovers)"
 # ---------------------------------------------------------------------------
 exfil_rules="$base/config/itest-rules-exfil.yaml"
 cat > "$exfil_rules" <<EOF
@@ -226,89 +239,24 @@ default:
     - github.com
     - api.github.com
 EOF
-exfil_github_allow="$base/config/itest-github-allowlist-exfil"
-: > "$exfil_github_allow"
-exfil_log="$base/exfil-refuse.log"
-
-"$repo/.internal/chopi-proxy.sh" --rules "$exfil_rules" --github-allowlist "$exfil_github_allow" > "$exfil_log" 2>&1 &
-exfil_pid=$!
-
-if ! wait_for_exit "$exfil_pid"; then
-    bad "chopi-proxy kept running with github.com allowed in the rules (it must refuse)"
-else
-    assert_nonzero  "$WAIT_FOR_EXIT_RC" "chopi-proxy refuses rules that allow github.com and api.github.com"
-    assert_contains "$(cat "$exfil_log")" "github.com, api.github.com"  "  -> the refusal names the domains"
-    assert_contains "$(cat "$exfil_log")" "dedicated relays"            "  -> and says both git and the API are relayed"
-    assert_contains "$(cat "$exfil_log")" "proxy-rules.template.yaml"   "  -> and directs to the current template"
-    assert_contains "$(cat "$exfil_log")" "global_deny_list"            "  -> or to moving the domains to the denylist"
-    assert_contains "$(cat "$exfil_log")" "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY" "  -> and names the override"
-    assert_no_listeners "starting anything"
-fi
+write_cfg "$base/config/exfil.sh" "CHOPI_PROXY_RULES=\"$exfil_rules\""
+out="$(chopi_cfg "$base/config/exfil.sh" /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_nonzero      "$rc" "chopi refuses to run when its proxy refuses rules that allow github.com and api.github.com"
+assert_not_contains "$out" "RAN"                         "  -> and the command does not run"
+assert_contains     "$out" "github.com, api.github.com"  "  -> the refusal names the domains"
+assert_contains     "$out" "dedicated relays"            "  -> and says both git and the API are relayed"
+assert_contains     "$out" "proxy-rules.template.yaml"   "  -> and directs to the current template"
+assert_contains     "$out" "global_deny_list"            "  -> or to moving the domains to the denylist"
+assert_contains     "$out" "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY" "  -> and names the override"
 
 # The override: the same rules only warn with CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1,
-# and the proxy comes up.
-override_log="$base/exfil-override.log"
-CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1 "$repo/.internal/chopi-proxy.sh" --rules "$exfil_rules" --github-allowlist "$exfil_github_allow" > "$override_log" 2>&1 &
-override_pid=$!
-if wait_for_listener "$PROXY_PORT" "$override_pid"; then
-    ok "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1 lets the proxy start"
-    assert_contains "$(cat "$override_log")" "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY is set" \
-        "  -> with the refusal downgraded to a warning"
-else
-    bad "the proxy did not come up with CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1"
-    sed 's/^/  /' "$override_log" >&2 || true
-fi
-kill "$override_pid" 2>/dev/null || true
-wait "$override_pid" 2>/dev/null || true
-# Free the ports for the real proxy below (Caddy exits ~0.2s after smokescreen).
-for _ in {1..50}; do
-    first_listening_port "$PROXY_PORT" "$GITHUB_RELAY_PORT" >/dev/null || break
-    sleep 0.1
-done
-
-
-# ---------------------------------------------------------------------------
-# Start the real proxy.
-# ---------------------------------------------------------------------------
-echo "proxy + sandbox setup"
-
-empty_github_allow="$base/config/itest-github-allowlist-empty"
-: > "$empty_github_allow"
-
-# The stub alerter goes first on the proxy's PATH; jq/nc/etc. stay reachable via the rest.
-PATH="$alerter_stub:$PATH" "$repo/.internal/chopi-proxy.sh" --rules "$rules" --github-allowlist "$empty_github_allow" > "$proxy_log" 2>&1 &
-proxy_pid=$!
-
-if ! wait_for_listener "$PROXY_PORT" "$proxy_pid"; then
-    echo "error: the test proxy did not come up on 127.0.0.1:$PROXY_PORT" >&2
-    echo "--- proxy.log ---" >&2; cat "$proxy_log" >&2
-    exit 1
-fi
-ok "test proxy is listening on 127.0.0.1:$PROXY_PORT"
-
-# Every sandboxed call: run from the workspace with the minimal config. The Claude-context
-# cases go through the stand-in agent, in another workspace or under another config when the
-# case calls for it.
-chopi_t() { ( cd "$ws" && "$repo/bin/chopi" --config "$cfg" -- "$@" ); }
-chopi_claude_in() {
-    local dir="$1" conf="$2"; shift 2
-    ( cd "$dir" && "$repo/bin/chopi" --config "$conf" -- "$claude_shim" "$@" )
-}
-chopi_claude() { chopi_claude_in "$ws" "$cfg" "$@"; }
-chopi_codex() { chopi_t "$codex_shim" "$@"; }
-
-# Run curl INSIDE the sandbox and echo its HTTP status code ("000" when the connection is
-# blocked/refused before any response).
-sandbox_curl() { chopi_t /usr/bin/curl -sS -o /dev/null -w '%{http_code}' "$@" 2>/dev/null; }
-
-# The CONNECT response code is the proxy's own verdict on a tunneled host: 200 = allowed (and
-# the upstream TCP dial succeeded), 407 = denied by the rules. Unlike %{http_code} it does not
-# depend on the full TLS+HTTP exchange with the remote host, which can stall mid-connection on
-# a flaky network path (curl then reports 000, indistinguishable from a deny).
-sandbox_curl_connect() { chopi_t /usr/bin/curl -sS -o /dev/null -w '%{http_connect}' "$@" 2>/dev/null; }
-
-# Denied operations and captured exit codes below rely on errexit being off.
-set +e
+# and the session runs.
+out="$(CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1 \
+    chopi_cfg "$base/config/exfil.sh" /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_zero     "$rc"        "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1 lets the session run"
+assert_contains "$out" "RAN" "  -> the command runs"
+assert_contains "$out" "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY is set" \
+    "  -> with the refusal downgraded to a warning the user sees"
 
 
 # ---------------------------------------------------------------------------
@@ -422,10 +370,8 @@ assert_contains     "$both" "$base/shared-claude/CLAUDE.md  (via the symlink at 
 assert_not_contains "$both" "RAN"                            "  -> and does not run the command"
 
 cfg_shared="$base/config/sandbox-shared-claude.sh"
-cat > "$cfg_shared" <<EOF
-CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$base/shared-claude:$claudebin" )
-CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
-EOF
+write_cfg "$cfg_shared" \
+    "CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro \"$base/shared-claude:$claudebin\" )"
 out="$(chopi_claude_in "$base/dev/ws2" "$cfg_shared" -c "cat '$base/dev/.claude/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_contains "$out" "SHARED_DOTCLAUDE_MARKER"   "with the target granted, the CLAUDE.md behind the link is readable"
 assert_contains "$out" "READ_OK"                   "  -> and the read succeeds"
@@ -456,10 +402,8 @@ assert_not_contains "$both" "RAN"                            "  -> and does not 
 # the traversed link node and the kernel-resolved file -- lets the check follow it, which
 # surfaces its own nested import.
 cfg_imports="$base/config/sandbox-imports.sh"
-cat > "$cfg_imports" <<EOF
-CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$base/imports:$base/import-target:$claudebin" )
-CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
-EOF
+write_cfg "$cfg_imports" \
+    "CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro \"$base/imports:$base/import-target:$claudebin\" )"
 both="$(chopi_claude_in "$ws" "$cfg_imports" -c 'echo RAN' 2>&1)"; rc=$?
 assert_nonzero      "$rc"                                     "chopi still refuses: the now-followable import reveals its nested import"
 assert_contains     "$both" "$base/import-nested/deep.md"     "  -> listing the nested import"
@@ -468,10 +412,8 @@ assert_not_contains "$both" "RAN"                             "  -> and does not
 
 # With the whole chain granted, the run proceeds.
 cfg_imports_all="$base/config/sandbox-imports-all.sh"
-cat > "$cfg_imports_all" <<EOF
-CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$base/imports:$base/import-target:$base/import-nested:$claudebin" )
-CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
-EOF
+write_cfg "$cfg_imports_all" \
+    "CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro \"$base/imports:$base/import-target:$base/import-nested:$claudebin\" )"
 out="$(chopi_claude_in "$ws" "$cfg_imports_all" -c "cat '$base/imports/linked-import.md' '$base/import-nested/deep.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_contains "$out" "LINKED_IMPORT_MARKER"      "with the full chain granted the run proceeds"
 assert_contains "$out" "NESTED_IMPORT_MARKER"      "  -> the nested import is readable too"
@@ -571,17 +513,17 @@ EOF
 chmod +x "$agentbin/claude"
 
 cfg_agent="$base/config/sandbox-agent.sh"
-cat > "$cfg_agent" <<EOF
-CHOPI_SAFEHOUSE_FLAGS=()
-CHOPI_EXTRA_ENV=( PATH=$agentbin:/usr/bin:/bin:/usr/sbin:/sbin )
-CHOPI_GIT_CONFIG=( chopi.wrapped=wrappedmarker )
-EOF
+write_cfg "$cfg_agent" \
+    "CHOPI_SAFEHOUSE_FLAGS=()" \
+    "CHOPI_EXTRA_ENV=( PATH=$agentbin:/usr/bin:/bin:/usr/sbin:/sbin )" \
+    "CHOPI_GIT_CONFIG=( chopi.wrapped=wrappedmarker )"
 chopi_wrap() { ( cd "$wrap_repo" && "$repo/bin/chopi" --config "$cfg_agent" -- "$@" ); }
 
 # shellcheck disable=SC2016
-out="$(chopi_wrap /bin/sh -c 'echo "$GIT_CONFIG_KEY_0=$GIT_CONFIG_VALUE_0"; git ls-remote --get-url https://github.com/o/r; ls "$TMPDIR"' 2>/dev/null)"
+out="$(chopi_wrap /bin/sh -c 'echo "$GIT_CONFIG_KEY_0=$GIT_CONFIG_VALUE_0"; echo "RELAY_PORT=$CHOPI_GITHUB_RELAY_PORT"; git ls-remote --get-url https://github.com/o/r; ls "$TMPDIR"' 2>/dev/null)"
+relay_port="$(printf '%s\n' "$out" | sed -n 's/^RELAY_PORT=//p')"
 assert_contains "$out" "chopi.wrapped=wrappedmarker"   "a CHOPI_GIT_CONFIG pair reaches the sandboxed command at a worktree root"
-assert_contains "$out" "http://127.0.0.1:$GITHUB_RELAY_PORT/o/r"   "  -> and github.com git reroutes to the relay in the sandbox"
+assert_contains "$out" "http://127.0.0.1:${relay_port:-?}/o/r"   "  -> and github.com git reroutes to the session's relay in the sandbox"
 assert_contains "$out" "$CHOPI_IN_SANDBOX_WRAPPER_PREFIX"  "  -> the in-sandbox wrapper profile is created for the run"
 assert_contains "$out" "$CHOPI_CMD_ALIAS_PREFIX"            "  -> as is the command-alias dir"
 
@@ -624,11 +566,9 @@ mkdir -p "$swt_target"
 printf '# Guidelines\nBe kind.\n' > "$swt_target/Guidelines.md"
 
 cfg_swt="$base/config/sandbox-swt.sh"
-cat > "$cfg_swt" <<EOF
-CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$claudebin" )
-CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
-CHOPI_SAFE_WRITE_TARGETS=( "$swt_target" )
-EOF
+write_cfg "$cfg_swt" \
+    "CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro \"$claudebin\" )" \
+    "CHOPI_SAFE_WRITE_TARGETS=( \"$swt_target\" )"
 
 swt_repo_real="$(realpath "$swt_repo")"
 swt_queue="$CHOPI_PATCH_QUEUE_ROOT/$(path_id "$swt_repo_real")"
@@ -689,7 +629,7 @@ fi
 # notification path firing (the recording alerter stub).
 code="$(sandbox_curl --max-time 20 "https://$DENIED_HOST")"
 assert_not_contains "$code" "200"                  "a host not allowed in the rules is refused by the proxy"
-if wait_for "$proxy_log" "$DENIED_HOST"; then
+if wait_for "$(latest_proxy_log)" "$DENIED_HOST"; then
     ok  "  -> the proxy logged a DENY for $DENIED_HOST"
 else
     bad "  -> the proxy did NOT log a DENY for $DENIED_HOST"
@@ -705,8 +645,8 @@ fi
 code="$(sandbox_curl --max-time 15 --noproxy '*' "https://$ALLOWED_HOST")"
 assert_not_contains "$code" "200"                  "a direct outgoing connection bypassing the proxy is blocked by the sandbox"
 
-# (4) Outgoing connections are pinned to the allowed proxy ports SPECIFICALLY: a loopback port
-# that network.sb does not allow (it allows 4760-4761) is blocked by Seatbelt. Offline-safe.
+# (4) Outgoing connections are pinned to the session's proxy ports SPECIFICALLY: any other
+# loopback port is blocked by Seatbelt. Offline-safe.
 code="$(sandbox_curl --max-time 15 --proxy "http://127.0.0.1:9999" "https://$ALLOWED_HOST")"
 assert_not_contains "$code" "200"                  "an outgoing connection to a non-allowlisted loopback port is blocked by the sandbox"
 
@@ -714,7 +654,6 @@ assert_not_contains "$code" "200"                  "an outgoing connection to a 
 # env, and opens the socket's Seatbelt hole -- and the real gh consumes all of it from inside
 # the sandbox. GraphQL is denied by the relay itself, so this stays offline-safe: Caddy answers
 # the 403 locally, and gh displays the JSON deny message.
-[ -S "$GH_RELAY_SOCK" ] || bad "the GitHub API relay socket file is missing on the host: $GH_RELAY_SOCK"
 # The config's in-sandbox PATH is system-only, so gh (a homebrew tool) must be invoked by
 # absolute path, like the other in-sandbox commands; the profile allows reading+exec under /opt.
 gh_bin="$(command -v gh)"
@@ -723,18 +662,10 @@ assert_nonzero  "$rc"       "in-sandbox gh api graphql is refused"
 assert_contains "$api_deny" 'not an allowed API operation' "  -> gh reached the relay through its socket and displays the deny"
 assert_contains "$api_deny" 'HTTP 403'                     "  -> as the relay's own 403"
 
-# (6) Conversely, chopi refuses upfront when no relay socket is present at the path it derives from
-# TMPDIR.
-no_sock_tmp="$(mktemp -d "$base/chopi-no-sock.XXXXXX")"
-refuse_out="$(TMPDIR="$no_sock_tmp" chopi_t /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
-assert_nonzero     "$rc"         "chopi refuses when the GitHub API relay socket is absent"
-assert_contains    "$refuse_out" "no GitHub API relay listening at $no_sock_tmp/chopi-gh-relay.sock" \
-    "  -> the refusal names the missing relay socket"
-assert_not_contains "$refuse_out" "RAN"                "  -> the sandboxed command never runs"
 
 
 # ---------------------------------------------------------------------------
-echo "github git public fetch through the relay (end-to-end: sandbox -> :$GITHUB_RELAY_PORT -> Caddy -> github.com)"
+echo "github git public fetch through the relay (end-to-end: sandbox -> relay port -> Caddy -> github.com)"
 # ---------------------------------------------------------------------------
 if ! curl -sS -o /dev/null --max-time 15 "https://github.com" 2>/dev/null; then
     echo "  SKIP github-through-relay (no host connectivity to github.com)"
@@ -754,19 +685,59 @@ fi
 
 
 # ---------------------------------------------------------------------------
-echo "rules hot reload (edits take effect without restarting the proxy)"
+echo "rules hot reload (edits take effect within a running session)"
 # ---------------------------------------------------------------------------
-# The proxy polls the rules file and swaps freshly loaded rules.
-# (1) Allowing the denied host must lift its denial with no proxy restart; the log
-# confirms the reload happened.
+# The proxy polls the rules file and swaps freshly loaded rules. All of it happens within one
+# session, stepped from here: the session runs each probe the test asks for in step files.
+steps="$ws/steps"; mkdir -p "$steps"
+# shellcheck disable=SC2016  # expands in the sandboxed shell, not here
+chopi_t /bin/sh -c '
+    n=1
+    while [ ! -e steps/done ]; do
+        if [ -e "steps/$n.host" ]; then
+            /usr/bin/curl -sS -o /dev/null -w "%{$(cat "steps/$n.what")}" --max-time 20 \
+                "https://$(cat "steps/$n.host")" > "steps/$n.tmp" 2>/dev/null
+            mv "steps/$n.tmp" "steps/$n.out"
+            n=$((n + 1))
+        fi
+        sleep 0.1
+    done' >/dev/null 2>&1 &
+reload_session=$!
+reload_step=0
+
+# session_probe WHAT HOST -- have the session curl HOST, setting code to the curl %{WHAT}. Not
+# for a $(...): the step count must advance in this shell, or the next probe reads a stale answer.
+# The CONNECT response code (http_connect) is the proxy's own verdict on a tunneled host: 200 =
+# allowed (and the upstream TCP dial succeeded), 407 = denied by the rules. Unlike http_code it
+# does not depend on the full TLS+HTTP exchange with the remote host, which can stall
+# mid-connection on a flaky network path (curl then reports 000, indistinguishable from a deny).
+session_probe() {
+    arity 2
+    local _
+    reload_step=$((reload_step + 1))
+    printf '%s' "$1" > "$steps/$reload_step.what"
+    printf '%s' "$2" > "$steps/$reload_step.host"
+    for _ in {1..300}; do
+        [ -e "$steps/$reload_step.out" ] && { code="$(cat "$steps/$reload_step.out")"; return 0; }
+        sleep 0.1
+    done
+    code="timeout"
+}
+
+# The session's proxy is up once a probe went through it.
+session_probe http_code "$OTHER_DENIED_HOST"
+reload_log="$(latest_proxy_log)"
+
+# (1) Allowing the denied host must lift its denial with no new session; the log confirms the
+# reload happened.
 printf '    - %s\n' "$DENIED_HOST" >> "$rules"
-if wait_for "$proxy_log" "rules reloaded"; then
+if wait_for "$reload_log" "rules reloaded"; then
     ok "the proxy reloaded the rules after the file changed"
 else
     bad "the proxy did NOT log a rules reload after the file changed"
 fi
 if curl -sS -o /dev/null --max-time 10 "https://$DENIED_HOST" 2>/dev/null; then
-    code="$(sandbox_curl_connect --max-time 20 "https://$DENIED_HOST")"
+    session_probe http_connect "$DENIED_HOST"
     assert_eq "$code" "200"                        "the previously denied host is now allowed through the proxy"
 else
     echo "  SKIP hot-reloaded host reachability (no connectivity to $DENIED_HOST)"
@@ -775,16 +746,16 @@ fi
 # (2) A broken edit is refused loudly and the previous rules stay in effect: hosts not
 # on the allowlist stay refused.
 printf 'all rules have been broken\n' > "$rules"
-if wait_for "$proxy_log" "RULES RELOAD FAILED"; then
+if wait_for "$reload_log" "RULES RELOAD FAILED"; then
     ok "a broken rules edit is logged loudly as a failed reload"
 else
     bad "a broken rules edit did NOT log a failed reload"
 fi
-code="$(sandbox_curl --max-time 20 "https://$OTHER_DENIED_HOST")"
+session_probe http_code "$OTHER_DENIED_HOST"
 assert_not_contains "$code" "200"                  "after a failed reload the previous rules still refuse other hosts"
 # ...and the host the last good edit ALLOWED stays allowed.
 if curl -sS -o /dev/null --max-time 10 "https://$DENIED_HOST" 2>/dev/null; then
-    code="$(sandbox_curl_connect --max-time 20 "https://$DENIED_HOST")"
+    session_probe http_connect "$DENIED_HOST"
     assert_eq "$code" "200"                        "after a failed reload the previously allowed host stays allowed"
 else
     echo "  SKIP still-allowed host reachability (no connectivity to $DENIED_HOST)"
@@ -792,13 +763,17 @@ fi
 
 # (3) Fixing the file reloads again.
 write_test_rules
-if wait_for_count "$proxy_log" "rules reloaded" 2; then
+if wait_for_count "$reload_log" "rules reloaded" 2; then
     ok "the proxy reloaded again once the rules were fixed"
 else
     bad "the proxy did NOT reload after the rules were fixed"
 fi
-code="$(sandbox_curl --max-time 20 "https://$DENIED_HOST")"
+session_probe http_code "$DENIED_HOST"
 assert_not_contains "$code" "200"                  "the restored rules refuse the host again"
+
+: > "$steps/done"
+wait "$reload_session"
+rm -rf "$steps"
 
 
 # ---------------------------------------------------------------------------
@@ -819,11 +794,7 @@ git -C "$gitrepo" commit -q -m root-marker
 
 # Default sandbox config comes from sourcing the shipped template,
 # so the suite tracks it; the grants and env are re-minimized like the main $cfg's.
-cat > "$cfg_git" <<EOF
-. '$repo/config/templates/sandbox.template.sh'
-CHOPI_SAFEHOUSE_FLAGS=()
-CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
-EOF
+write_cfg "$cfg_git" --template "CHOPI_SAFEHOUSE_FLAGS=()"
 
 nested_wt="$gitrepo_real/.worktrees/nested_wt"
 nested_wt_admin="$shared_git/worktrees/nested_wt"
@@ -1035,11 +1006,7 @@ pick1="$(git -C "$gitrepo" rev-parse HEAD~1)"
 pick2="$(git -C "$gitrepo" rev-parse HEAD)"
 git -C "$gitrepo" checkout -q "$mainbr"
 
-cat > "$cfg_wt" <<EOF
-. '$repo/config/templates/sandbox.template.sh'
-CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$claudebin" )
-CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
-EOF
+write_cfg "$cfg_wt" --template "CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro \"$claudebin\" )"
 
 chopi_wt() { ( cd "$gitrepo" && "$repo/bin/chopi" --worktree nested_wt2 --config "$cfg_wt" -- "$@" ); }
 
@@ -1268,13 +1235,9 @@ assert_eq "$(cat "$sub_cfg")" "$sub_cfg_before"    "  -> and the submodule's con
 
 # Host-forwarded git config (safehouse --env-pass) survives, and overridable by CHOPI_GIT_CONFIG
 cfg_envpass="$base/config/sandbox-envpass.sh"
-cat > "$cfg_envpass" <<EOF
-. '$repo/config/templates/sandbox.template.sh'
-CHOPI_SAFEHOUSE_FLAGS=( --enable xcode
-                    --env-pass GIT_CONFIG_COUNT,GIT_CONFIG_KEY_0,GIT_CONFIG_VALUE_0,GIT_CONFIG_KEY_1,GIT_CONFIG_VALUE_1,GIT_CONFIG_KEY_2,GIT_CONFIG_VALUE_2 )
-CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
-CHOPI_GIT_CONFIG=( chopi.conflict=fromconfig )
-EOF
+write_cfg "$cfg_envpass" --template \
+    "CHOPI_SAFEHOUSE_FLAGS=( --enable xcode --env-pass GIT_CONFIG_COUNT,GIT_CONFIG_KEY_0,GIT_CONFIG_VALUE_0,GIT_CONFIG_KEY_1,GIT_CONFIG_VALUE_1,GIT_CONFIG_KEY_2,GIT_CONFIG_VALUE_2 )" \
+    "CHOPI_GIT_CONFIG=( chopi.conflict=fromconfig )"
 chopi_ep() { ( cd "$gitrepo" && env \
     GIT_CONFIG_COUNT=3 \
     GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always \
@@ -1290,11 +1253,9 @@ assert_eq "$out" "fromconfig"                      "  -> and on a conflicting ke
 # CHOPI_WORKTREE_NAME expands to the worktree name at setup time.
 wt_cfg="$base/config/sandbox-setup.sh"
 setup_marker="$base/setup-marker.txt"
-cat > "$wt_cfg" <<EOF
-CHOPI_SAFEHOUSE_FLAGS=( --enable xcode )
-CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
-CHOPI_WORKTREE_SETUP=( 'echo "\$CHOPI_WORKTREE_NAME" > "$setup_marker"' )
-EOF
+write_cfg "$wt_cfg" \
+    "CHOPI_SAFEHOUSE_FLAGS=( --enable xcode )" \
+    "CHOPI_WORKTREE_SETUP=( 'echo \"\$CHOPI_WORKTREE_NAME\" > \"$setup_marker\"' )"
 ( cd "$gitrepo" && "$repo/bin/chopi" --worktree wtcfg --config "$wt_cfg" -- /bin/sh -c 'true' ) >/dev/null 2>&1
 assert_eq "$(cat "$setup_marker" 2>/dev/null)" "wtcfg" \
     "a custom CHOPI_WORKTREE_SETUP command runs (unsandboxed) with CHOPI_WORKTREE_NAME set"
@@ -1311,11 +1272,7 @@ assert_absent "$gitrepo/.worktrees/wtnone" "  -> and no worktree is created"
 #       isolated worktree can't write it. (Checking the invocation dir would wrongly
 #       refuse it.)
 repo_cfg="$gitrepo_real/wt-repo-cfg.sh"          # in the repo, outside the worktree
-cat > "$repo_cfg" <<EOF
-. '$repo/config/templates/sandbox.template.sh'
-CHOPI_SAFEHOUSE_FLAGS=()
-CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
-EOF
+write_cfg "$repo_cfg" --template "CHOPI_SAFEHOUSE_FLAGS=()"
 out="$(cd "$gitrepo" && "$repo/bin/chopi" --worktree nested_wt2 --config "$repo_cfg" -- /bin/sh -c 'echo CFG_OK' 2>&1)"; st=$?
 assert_contains "$out" "CFG_OK"                    "a --config in the repo but outside the target worktree is allowed"
 assert_zero "$st" "  -> and the run succeeds"
@@ -1323,11 +1280,7 @@ assert_zero "$st" "  -> and the run succeeds"
 #       read/write there and could rewrite the policy that confines its next run.
 #       (Checking the invocation dir would miss it entirely.)
 inside_cfg="$nested_wt2/inside-cfg.sh"           # inside the worktree (writable by the command)
-cat > "$inside_cfg" <<EOF
-. '$repo/config/templates/sandbox.template.sh'
-CHOPI_SAFEHOUSE_FLAGS=()
-CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
-EOF
+write_cfg "$inside_cfg" --template "CHOPI_SAFEHOUSE_FLAGS=()"
 out="$(cd "$gitrepo" && "$repo/bin/chopi" --worktree nested_wt2 --config "$inside_cfg" -- /bin/sh -c 'echo NOPE' 2>&1)"; st=$?
 assert_contains "$out" "is inside the workspace" "a --config inside the target worktree is refused"
 assert_not_contains "$out" "NOPE"                  "  -> and the command never runs"

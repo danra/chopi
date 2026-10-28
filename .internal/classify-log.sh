@@ -54,19 +54,22 @@ known_deny_seen() {
     return 1
 }
 
-# classify_log <is_interactive> <script> <on_deny_cmd> <verbose>
+# classify_log <is_interactive> <script> <on_deny_cmd> <on_reload_fail_cmd> <verbose>
 #
 # Read smokescreen log lines on stdin; write the display output to stdout, one line in to
 # zero-or-one line out (empty == the line is dropped) -- or, in verbose mode, one-or-two.
 #
 #   <is_interactive>  true/false -- enables the DENY bell + red color in format-deny.jq;
-#                     both are noise in a file or a pipe, so the proxy passes the result of
-#                     its own `[ -t 1 ]` and the tests drive both values explicitly.
+#                     both are noise in a file or a pipe, so the proxy, which logs to a file,
+#                     passes false; the tests drive both values explicitly.
 #   <script>          name shown in the "[<script>] DENY host @ time" prefix.
 #   <on_deny_cmd>     called as `<on_deny_cmd> <host>` once per denied connection -- except
 #                     known denies, see below -- or "" for none. The proxy passes notify_deny
 #                     (pops a macOS banner); the tests pass "" so a test run never fires
 #                     real notifications.
+#   <on_reload_fail_cmd> called with no arguments once per failed rules reload, or "" for
+#                     none: the user's edit did NOT take effect, which they must hear about as
+#                     surely as a DENY. The proxy passes notify_reload_failed.
 #   <verbose>         true/false -- when true, nothing is dropped or replaced: every raw
 #                     smokescreen line is passed through as-is, interleaved with chopi-proxy's
 #                     own output. Normally-dropped lines (allowed connections, known noise)
@@ -89,12 +92,16 @@ known_deny_seen() {
 # consumer for good -- silencing every later DENY. Degraded formatting on a broken line is fine; a
 # silently dropped DENY is not, so a failed classifier always errs toward surfacing the raw line.
 classify_log() {
-    arity 4
-    local is_interactive="$1" script="$2" on_deny="$3" verbose="$4" line host known reload_line
+    arity 5
+    local is_interactive="$1" script="$2" on_deny="$3" on_reload_fail="$4" verbose="$5" line host known reload_line
     # Hosts whose denylist denial was already logged this session (read by known_deny_seen)
     local -a known_seen=()
     while IFS= read -r line || [ -n "$line" ]; do
         [ "$verbose" = true ] && printf '%s\n' "$line"
+        # Matched on the raw text, ahead of any jq, so a failing filter can't swallow the alert.
+        if [ -n "$on_reload_fail" ] && [[ "$line" == *'"msg":"egress ACL reload failed'* ]]; then
+            "$on_reload_fail"
+        fi
         if [ -n "$(printf '%s\n' "$line" | jq -R -r -f "$CONNECTION_FILTER")" ]; then
             # deny-host.jq decides deny-or-allow; if it fails we can't tell, so surface the
             # raw line (fail-safe) rather than guessing ALLOW and dropping a possible DENY.

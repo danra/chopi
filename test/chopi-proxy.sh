@@ -8,11 +8,12 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$repo/.internal/util.sh"
 . "$repo/test/lib.sh"
 . "$repo/.internal/classify-log.sh"
+. "$repo/.internal/session-proxy.sh"
 BEL="$(printf '\007')"   # U+0007 BEL: format-deny.jq prefixes an interactive DENY with it
 ESC="$(printf '\033')"   # U+001B ANSI escape: introduces the DENY color code
 set +euo pipefail
 
-header "test/chopi-proxy.sh -- unit tests for the proxy's log logic + proxy-port invariant + github migration refusal + relay reaper + listener ownership"
+header "test/chopi-proxy.sh -- unit tests for the proxy's log logic + github migration refusal + session network holes"
 
 # Exported so the scripts under test leave their temporaries here too.
 TMPDIR="$(mktemp -d)"; export TMPDIR
@@ -28,7 +29,7 @@ echo "log classifier (connection-request / deny-host / format-deny / format-misc
 classify() {
     arity 1
     local is_interactive="$1"
-    classify_log "$is_interactive" "chopi-proxy.sh" "" false
+    classify_log "$is_interactive" "chopi-proxy.sh" "" "" false
 }
 
 out="$(printf '%s\n' '{"allow":false,"requested_host":"evil.com","time":"T"}' | classify false)"
@@ -97,7 +98,7 @@ out="$(
     set -euo pipefail
     FORMAT_MISC_FILTER="$poison_filter"
     printf '%s\n' 'POISON-LINE' '{"allow":false,"requested_host":"late.example","time":"T"}' \
-        | classify_log false "chopi-proxy.sh" "" false
+        | classify_log false "chopi-proxy.sh" "" "" false
 )"
 assert_contains "$out" "[chopi-proxy.sh] DENY  late.example  @ T" \
     "a jq failure on one line does not abort the loop and silence later DENYs (under set -e)"
@@ -113,7 +114,7 @@ echo "verbose mode (--verbose: nothing dropped or replaced)"
 classify_verbose() {
     arity 1
     local is_interactive="$1"
-    classify_log "$is_interactive" "chopi-proxy.sh" "" true
+    classify_log "$is_interactive" "chopi-proxy.sh" "" "" true
 }
 
 deny_raw='{"allow":false,"requested_host":"evil.com","time":"T"}'
@@ -167,9 +168,9 @@ assert_eq "$out" "[chopi-proxy.sh] DENY  tele.example:443  @ T2" "a deny with an
 
 # The deny hook (the macOS notification in the live proxy) fires for unknown denies only.
 record_deny() { arity 1; printf 'HOOK:%s\n' "$1"; }
-out="$(printf '%s\n' "$known_deny" | classify_log false "chopi-proxy.sh" record_deny false)"
+out="$(printf '%s\n' "$known_deny" | classify_log false "chopi-proxy.sh" record_deny "" false)"
 assert_not_contains "$out" "HOOK:" "known deny does NOT fire the deny hook (no notification)"
-out="$(printf '%s\n' "$unknown_deny" | classify_log false "chopi-proxy.sh" record_deny false)"
+out="$(printf '%s\n' "$unknown_deny" | classify_log false "chopi-proxy.sh" record_deny "" false)"
 assert_contains "$out" "HOOK:tele.example:443" "unknown deny still fires the deny hook"
 
 # Once per host per session: a repeat is silent, a different host gets its own line.
@@ -210,7 +211,7 @@ out="$(
     # shellcheck disable=SC2030 # deliberately subshell-local: the real filter must survive for later tests
     KNOWN_DENY_FILTER="$poison_filter"
     printf '%s\n' "$known_deny" '{"allow":false,"requested_host":"late.example","time":"T"}' \
-        | classify_log false "chopi-proxy.sh" "" false
+        | classify_log false "chopi-proxy.sh" "" "" false
 )"
 assert_eq "$out" "[chopi-proxy.sh] DENY  tele.example:443  @ T
 [chopi-proxy.sh] DENY  late.example  @ T" \
@@ -259,7 +260,7 @@ out="$(
     # shellcheck disable=SC2030 # deliberately subshell-local
     FORMAT_RELOAD_FILTER="$poison_filter"
     printf '%s\n' "$reload_ok" '{"allow":false,"requested_host":"late.example","time":"T"}' \
-        | classify_log false "chopi-proxy.sh" "" false
+        | classify_log false "chopi-proxy.sh" "" "" false
 )"
 assert_eq "$out" "$reload_ok
 [chopi-proxy.sh] DENY  late.example  @ T" \
@@ -402,72 +403,19 @@ assert_eq "$(exfiltration_prone_github_allowed_domains "$lookalike_rules")" "" \
 
 
 # ---------------------------------------------------------------------------
-echo "proxy port consistency (network.sb <-> util.sh)"
+echo "the session's network holes (network.sb denies, the session profile re-opens)"
 # ---------------------------------------------------------------------------
-ports_sb="$(grep -oE 'localhost:[0-9]+' "$repo/.internal/network.sb" | grep -oE '[0-9]+')"
-want_ports="$PROXY_PORT
-$GITHUB_RELAY_PORT"
-assert_eq "$ports_sb" "$want_ports" "network.sb loopback ports match util.sh (smokescreen $PROXY_PORT, GitHub relay $GITHUB_RELAY_PORT)"
+assert_eq "$(grep -c '^[[:space:]]*(allow' "$repo/.internal/network.sb")" "0" \
+    "network.sb opens nothing itself: the holes are per session"
 
-
-# ---------------------------------------------------------------------------
-echo "relay reaper (caddy must not outlive smokescreen -- terminal hangup included)"
-# ---------------------------------------------------------------------------
-# A closing terminal (window closed, multiplexer restarted) HUPs the whole foreground
-# process group: smokescreen dies of it, but Caddy ignores HUP by design, so the reaper is
-# the only thing left to take Caddy down -- if the same HUP kills the reaper, the orphaned
-# Caddy keeps the relay port bound and blocks every later chopi-proxy start. Stand-ins:
-# a `sleep` each for smokescreen (killed explicitly, as the HUP would) and for Caddy
-# (sent nothing, as ignoring the HUP).
-sleep 30 & fake_main=$!
-sleep 30 & fake_caddy=$!
-reaper_tmpdir="$TMPDIR/reaper-tmpdir"; mkdir "$reaper_tmpdir"
-reaper_sock="$TMPDIR/reaper-sock"; : > "$reaper_sock"
-start_relay_reaper "$fake_main" "$fake_caddy" "$reaper_tmpdir" "$reaper_sock"
-reaper=$!
-
-sleep 0.3   # give the reaper time to install its signal traps
-kill -HUP "$reaper" 2>/dev/null
-sleep 0.3
-kill -0 "$reaper" 2>/dev/null
-assert_zero $? "the reaper survives the terminal's HUP"
-kill -0 "$fake_caddy" 2>/dev/null
-assert_zero $? "caddy is left alone while smokescreen lives"
-
-kill "$fake_main" 2>/dev/null; wait "$fake_main" 2>/dev/null
-# The reaper exits right after the kill and the rm -- or is already dead, the failing case.
-for _ in {1..30}; do kill -0 "$reaper" 2>/dev/null || break; sleep 0.1; done
-kill -0 "$fake_caddy" 2>/dev/null
-assert_nonzero $? "caddy is killed once smokescreen is gone"
-assert_absent "$reaper_tmpdir" "the proxy's temp dir is removed"
-assert_absent "$reaper_sock"   "the GitHub API relay socket is removed"
-
-kill "$fake_main" "$fake_caddy" "$reaper" 2>/dev/null   # strays, if any assertion failed
-
-
-# ---------------------------------------------------------------------------
-echo "listener ownership (a server's port taken by another process is not the server up)"
-# ---------------------------------------------------------------------------
-# Another process can take a port between chopi-proxy's busy-port check and Caddy's bind, and
-# Caddy then dies on it: its port answering must not count as Caddy up. Stand-ins: `nc -lk`
-# for the other process (-k: it keeps listening past wait_for_listener's probes), `sleep` for
-# the server that never got the port, and an exited `true` for one already dead of it.
-own_port=4769
-if port_has_listener "$own_port"; then
-    echo "  SKIP: port $own_port is already in use"
-else
-    nc -lk 127.0.0.1 "$own_port" & listener=$!
-    nc -lk ::1 "$own_port" & other_addr=$!
-    sleep 30 & server=$!
-    true & dead=$!; wait "$dead"
-    wait_for_listener "$own_port" "$listener"
-    assert_eq "$?" 0 "the port's own listener -> up, a listener on another address notwithstanding"
-    wait_for_listener "$own_port" "$server" 2>/dev/null
-    assert_eq "$?" 2 "a port held by another process -> reported as such, not as the server up"
-    wait_for_listener "$own_port" "$dead" 2>/dev/null
-    assert_eq "$?" 2 "  -> even once the server died of it"
-    kill "$listener" "$other_addr" "$server" 2>/dev/null
-fi
+gh_sock="$TMPDIR/gh sock"
+: > "$gh_sock"
+write_session_proxy_network_profile "$TMPDIR/net.sb" 24760 24761 "$gh_sock"
+net_rules="$(grep -v '^;' "$TMPDIR/net.sb")"
+assert_eq "$net_rules" '(allow network-outbound (remote ip "localhost:24760"))
+(allow network-outbound (remote ip "localhost:24761"))
+(allow network-outbound (literal "'"$(realpath "$gh_sock")"'"))' \
+    "the session profile opens exactly the session's two ports and its API relay socket"
 
 
 # ---------------------------------------------------------------------------

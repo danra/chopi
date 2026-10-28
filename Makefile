@@ -7,6 +7,7 @@ SHELL_SOURCES = \
 	install.sh \
 	.internal/util.sh \
 	.internal/chopi-proxy.sh \
+	.internal/session-proxy.sh \
 	.internal/classify-log.sh \
 	.internal/in-sandbox-wrapper.sh \
 	.internal/github-relays-caddyfile.sh \
