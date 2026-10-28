@@ -26,6 +26,17 @@ Edits to the rules file take effect while the proxy runs; no restart needed.
 EOF
 }
 
+# Print the value of option $1, given as $2, failing when it is missing.
+option_value() {
+    arity 2
+    if [ -z "$2" ]; then
+        echo "error: $1 requires a value" >&2
+        usage >&2
+        return 1
+    fi
+    printf '%s' "$2"
+}
+
 CUSTOM_RULES=""
 CUSTOM_GITHUB_ALLOWLIST=""
 VERBOSE=false
@@ -33,20 +44,8 @@ INVOCATION_DIR="$PWD"
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -h|--help) usage; exit 0 ;;
-        --rules)
-            if [ "$#" -lt 2 ]; then
-                echo "error: --rules requires a file path" >&2
-                usage >&2
-                exit 1
-            fi
-            CUSTOM_RULES="$2"; shift 2 ;;
-        --github-allowlist)
-            if [ "$#" -lt 2 ]; then
-                echo "error: --github-allowlist requires a file path" >&2
-                usage >&2
-                exit 1
-            fi
-            CUSTOM_GITHUB_ALLOWLIST="$2"; shift 2 ;;
+        --rules)            CUSTOM_RULES="$(option_value "$1" "${2:-}")"            || exit 1; shift 2 ;;
+        --github-allowlist) CUSTOM_GITHUB_ALLOWLIST="$(option_value "$1" "${2:-}")" || exit 1; shift 2 ;;
         --verbose) VERBOSE=true; shift ;;
         *) usage >&2; exit 1 ;;
     esac
