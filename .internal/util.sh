@@ -313,9 +313,10 @@ exfiltration_prone_github_allowed_domains() {
     done <<< "$section"
 }
 
+# The git config pairs (key=value lines) routing github git to the git relay on PORT.
 github_relay_git_config() {
-    arity 0
-    local relay="http://127.0.0.1:$GITHUB_RELAY_PORT"
+    arity 1
+    local relay="http://127.0.0.1:$1"
     printf '%s\n' \
         "url.$relay/.insteadOf=https://github.com/" \
         "url.$relay/.insteadOf=git@github.com:" \
@@ -339,33 +340,33 @@ github_relay_git_config() {
     printf '%s\n' "lfs.$relay/.locksverify=true"
 }
 
-# The env wiring (VAR=val lines) pointing gh at the API relay, writing CONFIG_DIR's config file on
-# the way: GH_HOST=github.localhost makes gh address the API as plaintext
+# The env wiring (VAR=val lines) pointing gh at the API relay on unix socket SOCK, writing
+# CONFIG_DIR's config file on the way: GH_HOST=github.localhost makes gh address the API as plaintext
 # http://api.github.localhost/... (no CA), and http_unix_socket makes it dial the relay socket
 # instead of resolving that name -- it has no environment variable, so it goes in the config file.
 # The GH_TOKEN placeholder only has to make gh consider itself logged in; the relay wipes it and
 # injects the real token host-side.
 github_relay_gh_env() {
-    arity 1
-    local config_dir="$1"
-    printf 'http_unix_socket: %s\n' "$GH_RELAY_SOCK" > "$config_dir/config.yml" || return 1
+    arity 2
+    local config_dir="$1" sock="$2"
+    printf 'http_unix_socket: %s\n' "$sock" > "$config_dir/config.yml" || return 1
     printf '%s\n' \
         "GH_HOST=github.localhost" \
         "GH_CONFIG_DIR=$config_dir" \
         "GH_TOKEN=x-chopi-relay"
 }
 
-# Do github remote URLs resolve to the relay under the ambient git config (all scopes, read from
-# the current directory)? The in-sandbox wrapper runs this after exporting chopi's
-# rewrites into the command scope, so it checks exactly the config the sandboxed command will see:
-# a competing insteadOf in an earlier-read scope wins the longest-prefix tie and would divert
-# github git off the relay onto a transport the sandbox blocks.
+# Do github remote URLs resolve to the git relay on PORT under the ambient git config (all
+# scopes, read from the current directory)? The in-sandbox wrapper runs this after exporting
+# chopi's rewrites into the command scope, so it checks exactly the config the sandboxed command
+# will see: a competing insteadOf in an earlier-read scope wins the longest-prefix tie and would
+# divert github git off the relay onto a transport the sandbox blocks.
 #
 # Returns 1 when a github URL resolves elsewhere, and 2 when git itself fails (e.g. the
 # /usr/bin/git stub finding no developer tools it can read), with git's output on stderr.
 is_github_relay_reroute_effective() {
-    arity 0
-    local relay="http://127.0.0.1:$GITHUB_RELAY_PORT"
+    arity 1
+    local relay="http://127.0.0.1:$1"
     local src resolved
     for src in "https://github.com/o/r" "git@github.com:o/r" "ssh://git@github.com/o/r"; do
         resolved="$(git ls-remote --get-url "$src")" || return 2

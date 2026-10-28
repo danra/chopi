@@ -219,7 +219,7 @@ fi
 # sandboxed command (github_relay_gh_env), so the config key, the socket dial, and the host
 # derivation are all pinned by gh itself.
 mkdir -p "$WORK/gh-config"
-readarray -t gh_env < <(github_relay_gh_env "$WORK/gh-config")
+readarray -t gh_env < <(github_relay_gh_env "$WORK/gh-config" "$GH_RELAY_SOCK")
 gh_relay() { env "${gh_env[@]}" gh "$@"; }
 
 # curl fills in for gh to test forged Hosts, unclean paths, bogus storage blobs etc.

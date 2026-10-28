@@ -74,8 +74,13 @@ main() {
     # actually wins it: a competing insteadOf in the user's config takes the longest-prefix tie
     # (earlier-read scopes win it) and would divert github git off the relay onto a transport
     # the sandbox blocks. Checked here, in-sandbox, against exactly the config "$@" will see.
+    if [ -z "${CHOPI_GITHUB_RELAY_PORT:-}" ]; then
+        echo "$prog: CHOPI_GITHUB_RELAY_PORT is not set" >&2
+        return 2
+    fi
     local reroute_rc=0 git_err
-    git_err="$(is_github_relay_reroute_effective 2>&1 >/dev/null)" || reroute_rc=$?
+    git_err="$(is_github_relay_reroute_effective "$CHOPI_GITHUB_RELAY_PORT" 2>&1 >/dev/null)" \
+        || reroute_rc=$?
     if [ "$reroute_rc" -eq 2 ]; then
         echo "chopi: error: git fails in the sandbox, so chopi cannot check its GitHub relay routing:" >&2
         printf '%s\n' "$git_err" | sed 's/^/       /' >&2

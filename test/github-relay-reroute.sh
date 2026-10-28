@@ -22,7 +22,7 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/chopi-github-relay-reroute.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
 echo "-- github_relay_git_config --"
-cfg="$(github_relay_git_config)"
+cfg="$(github_relay_git_config "$GITHUB_RELAY_PORT")"
 assert_contains "$cfg" "url.$relay/.insteadOf=https://github.com/"   "rewrites the https github prefix to the relay"
 assert_contains "$cfg" "url.$relay/.insteadOf=git@github.com:"       "rewrites the scp-style ssh github prefix"
 assert_contains "$cfg" "url.$relay/.insteadOf=ssh://git@github.com/" "rewrites the ssh:// github prefix"
@@ -40,13 +40,13 @@ i=0
 while IFS= read -r pair; do
     export "GIT_CONFIG_KEY_$i=${pair%%=*}" "GIT_CONFIG_VALUE_$i=${pair#*=}"
     i=$((i + 1))
-done < <(github_relay_git_config)
+done < <(github_relay_git_config "$GITHUB_RELAY_PORT")
 export GIT_CONFIG_COUNT="$i"
 
 # reroute_in DIR -- run the check from DIR, as the wrapper runs it from the run dir.
 reroute_in() {
     arity 1
-    ( cd "$1" && is_github_relay_reroute_effective )
+    ( cd "$1" && is_github_relay_reroute_effective "$GITHUB_RELAY_PORT" )
 }
 
 empty="$WORK/empty"; : > "$empty"

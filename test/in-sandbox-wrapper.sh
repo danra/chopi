@@ -31,11 +31,12 @@ trap 'rm -rf "$TMPDIR"' EXIT
 # a global config and running from a clean dir.
 # The gate test cases later override GIT_CONFIG_GLOBAL, so the config setup here doesn't affect them.
 export GIT_CONFIG_SYSTEM=/dev/null
+export CHOPI_GITHUB_RELAY_PORT="$GITHUB_RELAY_PORT"   # as chopi passes it into the sandbox
 relay="http://127.0.0.1:$GITHUB_RELAY_PORT"
 relay_global_config="$TMPDIR/relay-global.gitconfig"
 while IFS= read -r pair; do
     git config --file "$relay_global_config" --add "${pair%%=*}" "${pair#*=}"
-done < <(github_relay_git_config)
+done < <(github_relay_git_config "$GITHUB_RELAY_PORT")
 export GIT_CONFIG_GLOBAL="$relay_global_config"
 cd "$TMPDIR"
 
@@ -150,7 +151,7 @@ assert_absent "$leak_marker" "  -> the line appended mid-run is never executed"
 echo "the run is gated on the GitHub->relay reroute being effective"
 # ---------------------------------------------------------------------------
 relay_pairs=()
-while IFS= read -r pair; do relay_pairs+=("$pair"); done < <(github_relay_git_config)
+while IFS= read -r pair; do relay_pairs+=("$pair"); done < <(github_relay_git_config "$GITHUB_RELAY_PORT")
 empty_global="$TMPDIR/empty.gitconfig"; : > "$empty_global"
 
 out=""; rc=0
@@ -186,6 +187,7 @@ assert_contains     "$out" "No developer tools were found" "  -> showing git's o
 assert_not_contains "$out" "insteadOf"                   "  -> not blamed on a competing rewrite"
 assert_not_contains "$out" "RAN"                         "  -> and the command does not run"
 assert_nonzero "$rc" "  -> and exits non-zero"
+
 
 
 # ---------------------------------------------------------------------------
