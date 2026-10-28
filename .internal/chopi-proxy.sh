@@ -8,7 +8,7 @@ SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"   # resolve the bin/chopi-proxy symlink
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 
-. "$SCRIPT_DIR/../.internal/util.sh"
+. "$SCRIPT_DIR/util.sh"
 
 usage() {
     cat <<EOF

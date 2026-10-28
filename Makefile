@@ -3,10 +3,10 @@
 # Shell sources that shellcheck should analyze.
 SHELL_SOURCES = \
 	bin/chopi.sh \
-	bin/chopi-proxy.sh \
 	bin/chopi-review.sh \
 	install.sh \
 	.internal/util.sh \
+	.internal/chopi-proxy.sh \
 	.internal/classify-log.sh \
 	.internal/in-sandbox-wrapper.sh \
 	.internal/github-relays-caddyfile.sh \
