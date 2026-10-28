@@ -311,9 +311,10 @@ exfiltration_prone_github_allowed_domains() {
     done <<< "$section"
 }
 
+# The git config pairs (key=value lines) routing github git to the git relay on PORT.
 github_relay_git_config() {
-    arity 0
-    local relay="http://127.0.0.1:$GITHUB_RELAY_PORT"
+    arity 1
+    local relay="http://127.0.0.1:$1"
     printf '%s\n' \
         "url.$relay/.insteadOf=https://github.com/" \
         "url.$relay/.insteadOf=git@github.com:" \
@@ -371,17 +372,17 @@ write_proxy_network_profile() {
     } >"$file"
 }
 
-# Do github remote URLs resolve to the relay under the ambient git config (all scopes, read from
-# the current directory)? The in-sandbox wrapper runs this after exporting chopi's
-# rewrites into the command scope, so it checks exactly the config the sandboxed command will see:
-# a competing insteadOf in an earlier-read scope wins the longest-prefix tie and would divert
-# github git off the relay onto a transport the sandbox blocks.
+# Do github remote URLs resolve to the git relay on PORT under the ambient git config (all
+# scopes, read from the current directory)? The in-sandbox wrapper runs this after exporting
+# chopi's rewrites into the command scope, so it checks exactly the config the sandboxed command
+# will see: a competing insteadOf in an earlier-read scope wins the longest-prefix tie and would
+# divert github git off the relay onto a transport the sandbox blocks.
 #
 # Returns 1 when a github URL resolves elsewhere, and 2 when git itself fails (e.g. the
 # /usr/bin/git stub finding no developer tools it can read), with git's output on stderr.
 is_github_relay_reroute_effective() {
-    arity 0
-    local relay="http://127.0.0.1:$GITHUB_RELAY_PORT"
+    arity 1
+    local relay="http://127.0.0.1:$1"
     local src resolved
     for src in "https://github.com/o/r" "git@github.com:o/r" "ssh://git@github.com/o/r"; do
         resolved="$(git ls-remote --get-url "$src")" || return 2

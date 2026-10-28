@@ -213,7 +213,7 @@ main() {
     local relay_pair
     while IFS= read -r relay_pair; do
         CHOPI_GIT_CONFIG+=("$relay_pair")
-    done < <(github_relay_git_config)
+    done < <(github_relay_git_config "$GITHUB_RELAY_PORT")
 
     local cleanup_script_path="$CHOPI_DIR/.internal/git-protect-cleanup.sh"
     local wrapper_cmd=("$cmd_alias" "$cleanup_script_path")
@@ -283,6 +283,7 @@ main() {
         "${CHOPI_EXTRA_ENV[@]+"${CHOPI_EXTRA_ENV[@]}"}" \
         "${queue_env[@]+"${queue_env[@]}"}" \
         CHOPI_DIR="$CHOPI_DIR" \
+        CHOPI_GITHUB_RELAY_PORT="$GITHUB_RELAY_PORT" \
         HTTP_PROXY="$proxy"  HTTPS_PROXY="$proxy" \
         http_proxy="$proxy"  https_proxy="$proxy" \
         NODE_USE_ENV_PROXY=1 \
