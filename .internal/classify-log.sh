@@ -21,7 +21,7 @@
 # That is a couple of extra jq invocations per line, which is nothing at log volumes, in
 # exchange for filters that each do exactly one thing.
 #
-# Both the live proxy (bin/chopi-proxy.sh) and the unit tests source this file and call
+# Both the live proxy (.internal/chopi-proxy.sh) and the unit tests source this file and call
 # classify_log, so the tests exercise the real routing rather than a copy that can drift.
 
 # The filter files sit next to this one in .internal/. Resolve them from this file's own

@@ -2,7 +2,7 @@
 #
 # test/integration.sh -- chopi's end-to-end integration tests
 #
-# starts the real outgoing proxy (bin/chopi-proxy.sh) and runs real sandbox-protected
+# starts the real outgoing proxy (.internal/chopi-proxy.sh) and runs real sandbox-protected
 # commands through the `chopi` command (bin/chopi -> chopi.sh), then asserts that filesystem
 # and network access are exactly what the policy allows -- no more, no less:
 #
@@ -199,7 +199,7 @@ nonempty_github_allow="$base/config/itest-github-allowlist-nonempty"
 printf 'soundradix/*\n' > "$nonempty_github_allow"
 refuse_log="$base/refuse.log"
 
-GH_TOKEN='' "$repo/bin/chopi-proxy.sh" --rules "$rules" --github-allowlist "$nonempty_github_allow" > "$refuse_log" 2>&1 &
+GH_TOKEN='' "$repo/.internal/chopi-proxy.sh" --rules "$rules" --github-allowlist "$nonempty_github_allow" > "$refuse_log" 2>&1 &
 refuse_pid=$!
 
 if ! wait_for_exit "$refuse_pid"; then
@@ -230,7 +230,7 @@ exfil_github_allow="$base/config/itest-github-allowlist-exfil"
 : > "$exfil_github_allow"
 exfil_log="$base/exfil-refuse.log"
 
-"$repo/bin/chopi-proxy.sh" --rules "$exfil_rules" --github-allowlist "$exfil_github_allow" > "$exfil_log" 2>&1 &
+"$repo/.internal/chopi-proxy.sh" --rules "$exfil_rules" --github-allowlist "$exfil_github_allow" > "$exfil_log" 2>&1 &
 exfil_pid=$!
 
 if ! wait_for_exit "$exfil_pid"; then
@@ -248,7 +248,7 @@ fi
 # The override: the same rules only warn with CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1,
 # and the proxy comes up.
 override_log="$base/exfil-override.log"
-CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1 "$repo/bin/chopi-proxy.sh" --rules "$exfil_rules" --github-allowlist "$exfil_github_allow" > "$override_log" 2>&1 &
+CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1 "$repo/.internal/chopi-proxy.sh" --rules "$exfil_rules" --github-allowlist "$exfil_github_allow" > "$override_log" 2>&1 &
 override_pid=$!
 if wait_for_listener "$PROXY_PORT" "$override_pid"; then
     ok "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1 lets the proxy start"
@@ -276,7 +276,7 @@ empty_github_allow="$base/config/itest-github-allowlist-empty"
 : > "$empty_github_allow"
 
 # The stub alerter goes first on the proxy's PATH; jq/nc/etc. stay reachable via the rest.
-PATH="$alerter_stub:$PATH" "$repo/bin/chopi-proxy.sh" --rules "$rules" --github-allowlist "$empty_github_allow" > "$proxy_log" 2>&1 &
+PATH="$alerter_stub:$PATH" "$repo/.internal/chopi-proxy.sh" --rules "$rules" --github-allowlist "$empty_github_allow" > "$proxy_log" 2>&1 &
 proxy_pid=$!
 
 if ! wait_for_listener "$PROXY_PORT" "$proxy_pid"; then

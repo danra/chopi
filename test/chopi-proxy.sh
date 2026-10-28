@@ -12,7 +12,7 @@ BEL="$(printf '\007')"   # U+0007 BEL: format-deny.jq prefixes an interactive DE
 ESC="$(printf '\033')"   # U+001B ANSI escape: introduces the DENY color code
 set +euo pipefail
 
-header "test/chopi-proxy.sh -- unit tests for bin/chopi-proxy.sh's log logic + proxy-port invariant + github migration refusal + relay reaper + listener ownership"
+header "test/chopi-proxy.sh -- unit tests for the proxy's log logic + proxy-port invariant + github migration refusal + relay reaper + listener ownership"
 
 # Exported so the scripts under test leave their temporaries here too.
 TMPDIR="$(mktemp -d)"; export TMPDIR
@@ -476,10 +476,10 @@ echo "option values (an option given no value, or an empty one, is refused)"
 # A trailing unknown option ends any run that gets past the one under test, with nothing started:
 # what tells the two apart is whether the run stopped at the option under test, naming it.
 for opt in --rules --github-allowlist; do
-    out="$("$repo/bin/chopi-proxy.sh" "$opt" 2>&1)"; st=$?
+    out="$("$repo/.internal/chopi-proxy.sh" "$opt" 2>&1)"; st=$?
     assert_nonzero "$st" "$opt with no value is refused"
     assert_contains "$out" "$opt requires" "  -> naming the option"
-    out="$("$repo/bin/chopi-proxy.sh" "$opt" "" --no-such-option 2>&1)"; st=$?
+    out="$("$repo/.internal/chopi-proxy.sh" "$opt" "" --no-such-option 2>&1)"; st=$?
     assert_nonzero "$st" "$opt with an empty value is refused"
     assert_contains "$out" "$opt requires" "  -> naming the option, not falling back to the default file"
 done
