@@ -82,34 +82,34 @@ if ! command -v alerter >/dev/null 2>&1; then
     exit 1
 fi
 
-resolve_custom_config_path() {
-    local flag="$1" custom="$2" resolved
-    case "$custom" in
-        /*) resolved="$custom" ;;
-        *)  resolved="$INVOCATION_DIR/$custom" ;;
-    esac
-    if [ ! -f "$resolved" ]; then
-        echo "error: $flag file not found: $resolved" >&2
+# Print the config file to use: CUSTOM, as passed with FLAG (relative to where chopi-proxy was
+# started), or else config/DEFAULT, which the installer creates from config/templates/TEMPLATE.
+# Fails when the file is missing.
+#
+# usage: config_file DESCRIPTION FLAG CUSTOM DEFAULT TEMPLATE
+config_file() {
+    arity 5
+    local description="$1" flag="$2" custom="$3" default="$CHOPI_DIR/config/$4" template="$5"
+    if [ -n "$custom" ]; then
+        case "$custom" in
+            /*) ;;
+            *)  custom="$INVOCATION_DIR/$custom" ;;
+        esac
+        [ -f "$custom" ] || { echo "error: $flag file not found: $custom" >&2; return 1; }
+        echo "[$SCRIPT_NAME] using custom $description: $custom" >&2
+        printf '%s' "$custom"
+    elif [ -f "$default" ]; then
+        printf '%s' "$default"
+    else
+        echo "error: no $description at $default" >&2
+        echo "Run the installer to create it from the template:  $CHOPI_DIR/install.sh" >&2
+        echo "or copy it manually:  cp \"$CHOPI_DIR/config/templates/$template\" \"$default\"" >&2
         return 1
     fi
-    printf '%s' "$resolved"
 }
 
-custom_config=false
-
-if [ -n "$CUSTOM_RULES" ]; then
-    RULES="$(resolve_custom_config_path --rules "$CUSTOM_RULES")" || exit 1
-    echo "[$SCRIPT_NAME] using custom proxy rules: $RULES" >&2
-    custom_config=true
-else
-    RULES="$CHOPI_DIR/config/proxy-rules.yaml"
-    if [ ! -f "$RULES" ]; then
-        echo "error: no outgoing rules at $RULES" >&2
-        echo "Run the installer to create it from the template:  $CHOPI_DIR/install.sh" >&2
-        echo "or copy it manually:  cp \"$CHOPI_DIR/config/templates/proxy-rules.template.yaml\" \"$RULES\"" >&2
-        exit 1
-    fi
-fi
+RULES="$(config_file "proxy rules" --rules "$CUSTOM_RULES" \
+    proxy-rules.yaml proxy-rules.template.yaml)" || exit 1
 
 # Rules that allow GitHub's own domains defeat the GitHub repos allowlist: a sandboxed
 # command could push data to ANY repo directly, skipping the relays. The expected case is
@@ -139,21 +139,10 @@ if [ -n "$github_exfil_domains" ]; then
     fi
 fi
 
-if [ -n "$CUSTOM_GITHUB_ALLOWLIST" ]; then
-    GITHUB_ALLOWLIST="$(resolve_custom_config_path --github-allowlist "$CUSTOM_GITHUB_ALLOWLIST")" || exit 1
-    echo "[$SCRIPT_NAME] using custom GitHub allowlist: $GITHUB_ALLOWLIST" >&2
-    custom_config=true
-else
-    GITHUB_ALLOWLIST="$CHOPI_DIR/config/github-allowlist"
-    if [ ! -f "$GITHUB_ALLOWLIST" ]; then
-        echo "error: no GitHub allowlist at $GITHUB_ALLOWLIST" >&2
-        echo "Run the installer to create it from the template:  $CHOPI_DIR/install.sh" >&2
-        echo "or copy it manually:  cp \"$CHOPI_DIR/config/templates/github-allowlist.template\" \"$CHOPI_DIR/config/github-allowlist\"" >&2
-        exit 1
-    fi
-fi
+GITHUB_ALLOWLIST="$(config_file "GitHub allowlist" --github-allowlist "$CUSTOM_GITHUB_ALLOWLIST" \
+    github-allowlist github-allowlist.template)" || exit 1
 
-if [ "$custom_config" = true ]; then
+if [ -n "$CUSTOM_RULES$CUSTOM_GITHUB_ALLOWLIST" ]; then
     # The proxy doesn't know which dirs will be sandboxed later, so it can't enforce no overlap with a custom rules file.
     # Warn instead
     echo "[$SCRIPT_NAME] warning: keep custom config files OUTSIDE any workspace you sandbox with chopi --" >&2
