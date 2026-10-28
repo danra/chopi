@@ -471,4 +471,19 @@ fi
 
 
 # ---------------------------------------------------------------------------
+echo "option values (an option given no value, or an empty one, is refused)"
+# ---------------------------------------------------------------------------
+# A trailing unknown option ends any run that gets past the one under test, with nothing started:
+# what tells the two apart is whether the run stopped at the option under test, naming it.
+for opt in --rules --github-allowlist; do
+    out="$("$repo/bin/chopi-proxy.sh" "$opt" 2>&1)"; st=$?
+    assert_nonzero "$st" "$opt with no value is refused"
+    assert_contains "$out" "$opt requires" "  -> naming the option"
+    out="$("$repo/bin/chopi-proxy.sh" "$opt" "" --no-such-option 2>&1)"; st=$?
+    assert_nonzero "$st" "$opt with an empty value is refused"
+    assert_contains "$out" "$opt requires" "  -> naming the option, not falling back to the default file"
+done
+
+
+# ---------------------------------------------------------------------------
 summary
