@@ -173,6 +173,20 @@ assert_not_contains "$out" "RAN"                                    "  -> and th
 assert_nonzero "$rc" "  -> and exits non-zero"
 assert_eq "$(cat "$cleanup_marker")" "" "  -> the cleanup is not run (no command ran)"
 
+# A git that can't run at all fails the gate too, which must not read as a competing rewrite.
+broken_git_dir="$TMPDIR/broken-git"; mkdir -p "$broken_git_dir"
+printf '#!/bin/sh\necho "xcode-select: error: No developer tools were found" >&2\nexit 1\n' \
+    > "$broken_git_dir/git"
+chmod +x "$broken_git_dir/git"
+out=""; rc=0
+out="$(env -u GIT_CONFIG_COUNT PATH="$broken_git_dir:$PATH" GIT_CONFIG_GLOBAL="$empty_global" \
+    "$WRAP" "$cleanup_script" "${relay_pairs[@]}" -- /bin/sh -c 'echo RAN' 2>&1)" || rc=$?
+assert_contains     "$out" "git fails in the sandbox"    "a git that cannot run is refused as such"
+assert_contains     "$out" "No developer tools were found" "  -> showing git's own error"
+assert_not_contains "$out" "insteadOf"                   "  -> not blamed on a competing rewrite"
+assert_not_contains "$out" "RAN"                         "  -> and the command does not run"
+assert_nonzero "$rc" "  -> and exits non-zero"
+
 
 # ---------------------------------------------------------------------------
 echo "the Claude-context refusal gate runs only for claude"
