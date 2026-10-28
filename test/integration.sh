@@ -2,7 +2,7 @@
 #
 # test/integration.sh -- chopi's end-to-end integration tests
 #
-# starts the real outgoing proxy (bin/chopi-proxy.sh) and runs real sandbox-protected
+# starts the real outgoing proxy (.internal/chopi-proxy.sh) and runs real sandbox-protected
 # commands through the `chopi` command (bin/chopi -> chopi.sh), then asserts that filesystem
 # and network access are exactly what the policy allows -- no more, no less:
 #
@@ -167,7 +167,7 @@ wait_for() {
 start_proxy() {
     local log="$1"; shift
     set -m
-    "$repo/bin/chopi-proxy.sh" "$@" > "$log" 2>&1 &
+    "$repo/.internal/chopi-proxy.sh" "$@" > "$log" 2>&1 &
     set +m
 }
 
