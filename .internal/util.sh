@@ -360,12 +360,15 @@ github_relay_gh_env() {
 # rewrites into the command scope, so it checks exactly the config the sandboxed command will see:
 # a competing insteadOf in an earlier-read scope wins the longest-prefix tie and would divert
 # github git off the relay onto a transport the sandbox blocks.
+#
+# Returns 1 when a github URL resolves elsewhere, and 2 when git itself fails (e.g. the
+# /usr/bin/git stub finding no developer tools it can read), with git's output on stderr.
 is_github_relay_reroute_effective() {
     arity 0
     local relay="http://127.0.0.1:$GITHUB_RELAY_PORT"
     local src resolved
     for src in "https://github.com/o/r" "git@github.com:o/r" "ssh://git@github.com/o/r"; do
-        resolved="$(git ls-remote --get-url "$src" 2>/dev/null)"
+        resolved="$(git ls-remote --get-url "$src")" || return 2
         [ "$resolved" = "$relay/o/r" ] || return 1
     done
     return 0

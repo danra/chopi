@@ -74,7 +74,14 @@ main() {
     # actually wins it: a competing insteadOf in the user's config takes the longest-prefix tie
     # (earlier-read scopes win it) and would divert github git off the relay onto a transport
     # the sandbox blocks. Checked here, in-sandbox, against exactly the config "$@" will see.
-    if ! is_github_relay_reroute_effective; then
+    local reroute_rc=0 git_err
+    git_err="$(is_github_relay_reroute_effective 2>&1 >/dev/null)" || reroute_rc=$?
+    if [ "$reroute_rc" -eq 2 ]; then
+        echo "chopi: error: git fails in the sandbox, so chopi cannot check its GitHub relay routing:" >&2
+        printf '%s\n' "$git_err" | sed 's/^/       /' >&2
+        return 1
+    fi
+    if [ "$reroute_rc" -ne 0 ]; then
         echo "chopi: error: a git 'insteadOf' rewrite in your config overrides chopi's GitHub relay routing;" >&2
         echo "       find it with: git config --show-origin --get-regexp 'url\\..*\\.insteadof' github.com" >&2
         echo "       then remove or narrow the rewrite." >&2
