@@ -118,7 +118,10 @@ if [[ "$caddy_cfg" == *@@CHOPI_AUTH@@* ]]; then
     caddy_cfg="${caddy_cfg//@@CHOPI_API_AUTH@@/$(gh_bearer_auth_header "$TOKEN")}"
 fi
 
-if ! start_relays "$caddy_cfg" "$WORK/caddy.log"; then
+# With an http_proxy in the environment, as a user's may have, pointing at a port nothing serves:
+# the relay must still be found up, not have its readiness probe sent there.
+if ! http_proxy=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9 \
+    start_relays "$caddy_cfg" "$WORK/caddy.log"; then
     bad "caddy failed to start"; sed 's/^/      /' "$WORK/caddy.log"; summary; exit 1
 fi
 

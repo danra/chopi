@@ -13,7 +13,7 @@ BEL="$(printf '\007')"   # U+0007 BEL: format-deny.jq prefixes an interactive DE
 ESC="$(printf '\033')"   # U+001B ANSI escape: introduces the DENY color code
 set +euo pipefail
 
-header "test/chopi-proxy.sh -- unit tests for the proxy's log logic + github migration refusal + session network holes"
+header "test/chopi-proxy.sh -- unit tests for the proxy's log logic + github migration refusal + session network holes + session proxy lifecycle"
 
 # Exported so the scripts under test leave their temporaries here too.
 TMPDIR="$(mktemp -d)"; export TMPDIR
@@ -247,6 +247,13 @@ out="$(printf '%s\n' '{"level":"error","msg":"egress ACL reload failed; keeping 
 assert_eq "$out" "[chopi-proxy.sh] RULES RELOAD FAILED (previous rules kept)  ?  @ T" \
     "a failed reload missing the error field still surfaces loud"
 
+# The reload-failure hook (the macOS notification in the live proxy) fires for failures only.
+record_reload_fail() { arity 0; printf 'HOOK:reload-failed\n'; }
+out="$(printf '%s\n' "$reload_fail" | classify_log false "chopi-proxy.sh" "" record_reload_fail false)"
+assert_contains "$out" "HOOK:reload-failed" "a failed reload fires the reload-failure hook"
+out="$(printf '%s\n' "$reload_ok" | classify_log false "chopi-proxy.sh" "" record_reload_fail false)"
+assert_not_contains "$out" "HOOK:" "  -> a successful one doesn't"
+
 out="$(printf '%s\n' "$reload_ok" | classify_verbose false)"
 assert_eq "$out" "$reload_ok
 [chopi-proxy.sh] rules reloaded  @ T" "verbose rules reload -> raw line, then the formatted line after it"
@@ -416,6 +423,142 @@ assert_eq "$net_rules" '(allow network-outbound (remote ip "localhost:24760"))
 (allow network-outbound (remote ip "localhost:24761"))
 (allow network-outbound (literal "'"$(realpath "$gh_sock")"'"))' \
     "the session profile opens exactly the session's two ports and its API relay socket"
+
+
+# ---------------------------------------------------------------------------
+echo "session proxy lifecycle (launch, await the ports it reports, stop)"
+# ---------------------------------------------------------------------------
+# Hermetic: a stub stands in for chopi-proxy.sh, reporting made-up ports in its --dir, so
+# nothing binds a real port. The stub's behavior comes from STUB_PLAN: "up" starts a child standing
+# in for Caddy (its pid left in stub-child), reports the ports, and stays up until killed;
+# "warn" does the same after a warning on stderr; "garbled" reports a port that isn't one; "fail"
+# exits 1 with a reason on stderr; "crash" exits 1 with its reason only in the log, as smokescreen
+# would; and "warn-crash" warns on stderr first.
+stub="$TMPDIR/stub-proxy.sh"
+cat > "$stub" <<EOF
+#!/usr/bin/env bash
+while [ "\$#" -gt 0 ]; do
+    case "\$1" in
+        --log) log="\$2" ;;
+        --dir) dir="\$2" ;;
+    esac
+    case "\$1" in
+        --log|--parent|--dir|--rules|--github-allowlist) printf '%s=%s\n' "\$1" "\$2" >> "$TMPDIR/stub-args"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+case "\$STUB_PLAN" in
+    fail)  echo "the proxy says why" >&2; exit 1 ;;
+    warn|warn-crash) echo "a warning for the user" >&2 ;;
+esac
+case "\$STUB_PLAN" in
+    crash|warn-crash) echo "smokescreen says why" >> "\$log"; exit 1 ;;
+esac
+sleep 30 & echo \$! > "$TMPDIR/stub-child"
+if [ "\$STUB_PLAN" = garbled ]; then relay="not a port"; else relay=24761; fi
+printf 'proxy 24760\nrelay %s\n' "\$relay" > "\$dir/ports"
+exec sleep 30
+EOF
+chmod +x "$stub"
+CHOPI_PROXY_SCRIPT="$stub"
+CHOPI_PROXY_LOG_DIR="$TMPDIR/logs"
+
+# start_proxy_with PLAN -- start a session proxy under the stub.
+start_proxy_with() {
+    arity 1
+    : > "$TMPDIR/stub-args"
+    STUB_PLAN="$1" launch_session_proxy "$TMPDIR" "$TMPDIR/rules.yaml" "$TMPDIR/allowlist" "" \
+        && await_session_proxy
+}
+
+# Not in a $(...): the proxy must outlive the call, as it does in chopi, and a job started under job
+# control in a command substitution is killed on leaving it.
+start_proxy_with up 2>"$TMPDIR/start.err"; st=$?
+assert_zero "$st" "the proxy starts"
+assert_eq "$(cat "$TMPDIR/start.err")" "" "  -> quietly"
+assert_eq "$SESSION_PROXY_PORT" 24760 "  -> its port the one it reports"
+assert_eq "$SESSION_RELAY_PORT" 24761 "  -> and the relay's"
+assert_eq "$SESSION_GH_SOCK" "$SESSION_PROXY_DIR/gh.sock" "  -> and the API relay's socket"
+assert_contains "$(cat "$TMPDIR/stub-args")" "--rules=$TMPDIR/rules.yaml" "  -> passing the configured rules"
+assert_contains "$(cat "$TMPDIR/stub-args")" "--github-allowlist=$TMPDIR/allowlist" "  -> and the configured allowlist"
+assert_contains "$(cat "$TMPDIR/stub-args")" "--log=$CHOPI_PROXY_LOG_DIR/proxy-" "  -> logging under the log dir"
+pid="$SESSION_PROXY_PID" dir="$SESSION_PROXY_DIR" child="$(cat "$TMPDIR/stub-child")"
+kill -0 "$pid" 2>/dev/null
+assert_zero $? "  -> and stays up"
+assert_contains "$(cat "$TMPDIR/stub-args")" "--dir=$dir" "  -> with a dir of its own"
+stop_session_proxy
+wait_for_exit "$pid"
+kill -0 "$pid" 2>/dev/null
+assert_nonzero $? "stop_session_proxy stops it"
+# Its process group goes with it, Caddy included.
+wait_for_exit "$child"
+kill -0 "$child" 2>/dev/null
+assert_nonzero $? "  -> and its children too"
+assert_absent "$dir" "  -> and removes its dir"
+kill "$child" 2>/dev/null   # a stray, if the assertion failed
+
+# A proxy gone on its own, and reaped, leaves its pid free for reuse: signalling its group then
+# could reach an unrelated process. Its stand-in Caddy, left behind in the group, stands in for
+# that process.
+start_proxy_with up 2>/dev/null
+pid="$SESSION_PROXY_PID" dir="$SESSION_PROXY_DIR" child="$(cat "$TMPDIR/stub-child")"
+kill "$pid"; wait "$pid" 2>/dev/null
+stop_session_proxy
+sleep 0.2
+kill -0 "$child" 2>/dev/null
+assert_zero $? "stop_session_proxy signals nothing once the proxy is gone"
+assert_absent "$dir" "  -> but still removes its dir"
+kill "$child" 2>/dev/null
+
+# The real proxy leads its group past chopi-smokescreen, for Caddy to go with it however it goes:
+# here a stand-in for Caddy, left in the group as its main process is killed outright.
+set -m
+# shellcheck disable=SC2016 # expanded by the inner shells
+bash -c '. "$1"; sleep 30 & echo $! > "$2"; lead_group sh -c "kill -KILL \$\$"' \
+    _ "$repo/.internal/util.sh" "$TMPDIR/lead-child" &
+lead=$!
+set +m
+wait "$lead"; st=$?
+assert_eq "$st" 137 "lead_group exits with its command's status, a SIGKILL's included"
+child="$(cat "$TMPDIR/lead-child")"
+wait_for_exit "$child"
+kill -0 "$child" 2>/dev/null
+assert_nonzero $? "  -> stopping the rest of its group"
+kill "$child" 2>/dev/null   # a stray, if the assertion failed
+
+# chopi-proxy.sh hands Caddy its config on stdin, through chopi-smokescreen; run, as it is, in a
+# shell without job control, which gives a background command /dev/null for stdin of its own.
+set -m
+# shellcheck disable=SC2016 # expanded by the inner shell
+bash -c '. "$1"; lead_group cat' _ "$repo/.internal/util.sh" < <(echo the config) > "$TMPDIR/lead-out" &
+lead=$!
+set +m
+wait "$lead"
+assert_eq "$(cat "$TMPDIR/lead-out")" "the config" "lead_group hands its command our stdin"
+
+start_proxy_with warn 2>"$TMPDIR/start.err"; st=$?
+assert_zero "$st" "a proxy that warns as it starts still starts"
+assert_contains "$(cat "$TMPDIR/start.err")" "a warning for the user" "  -> showing the warning"
+stop_session_proxy
+
+out="$(start_proxy_with fail 2>&1)"; st=$?
+assert_nonzero "$st" "a proxy that fails to start fails the start"
+assert_contains "$out" "the proxy says why" "  -> showing the proxy's reason"
+assert_not_contains "$out" "its log:" "  -> without the log, which has nothing on it"
+
+out="$(start_proxy_with crash 2>&1)"; st=$?
+assert_nonzero "$st" "a proxy that dies with its reason in its log fails the start"
+assert_contains "$out" "smokescreen says why" "  -> showing the log's tail"
+
+out="$(start_proxy_with warn-crash 2>&1)"; st=$?
+assert_nonzero "$st" "a proxy that warns, then dies with its reason in its log, fails the start"
+assert_contains "$out" "a warning for the user" "  -> showing the warning"
+assert_contains "$out" "smokescreen says why" "  -> and the log's tail too"
+
+out="$(start_proxy_with garbled 2>&1)"; st=$?
+assert_nonzero "$st" "a proxy reporting a malformed port fails the start"
+assert_contains "$out" "malformed ports" "  -> saying so"
+kill "$(cat "$TMPDIR/stub-child")" 2>/dev/null
 
 
 # ---------------------------------------------------------------------------

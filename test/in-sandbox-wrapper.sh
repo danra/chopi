@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # test/in-sandbox-wrapper.sh -- unit tests for the in-sandbox wrapper: its
-# git-config appending, its GitHub->relay reroute gate, and its run-the-command-then-cleanup
+# proxy-config write gate, its git-config appending, its GitHub->relay reroute gate, and its run-the-command-then-cleanup
 # teardown.
 
 # shellcheck disable=SC2016  # GIT_CONFIG_* vars expand in the shell the wrapper execs, not in this script
@@ -26,6 +26,11 @@ WRAP="$repo/.internal/in-sandbox-wrapper.sh"
 TMPDIR="$(mktemp -d)"; export TMPDIR
 trap 'rm -rf "$TMPDIR"' EXIT
 
+# The wrapper runs in the sandbox, where its `env bash` finds macOS's bash 3.2: run it on that
+# here too, so a newer bash's features fail here as they would in a session.
+mkdir "$TMPDIR/sandbox-bash" && ln -s /bin/bash "$TMPDIR/sandbox-bash/bash"
+export PATH="$TMPDIR/sandbox-bash:$PATH"
+
 # The wrapper gates every run on the GitHub->relay reroute being effective under the ambient git
 # config. For the config test cases, neutralize the developer's config and satisfy the gate by using
 # a global config and running from a clean dir.
@@ -40,6 +45,13 @@ while IFS= read -r pair; do
 done < <(github_relay_git_config "$GITHUB_RELAY_PORT")
 export GIT_CONFIG_GLOBAL="$relay_global_config"
 cd "$TMPDIR"
+
+# The wrapper refuses to run where the command can change the proxy's config. Run here as the
+# owner of whatever the test creates, outside a sandbox, it can change all of that, whatever its
+# mode -- so the config the command can't change is files root owns, in dirs root owns, as the
+# sandbox makes the real config in a session. The cases below say where they differ.
+export CHOPI_PROXY_CONFIG_FILES=/etc/hosts$'\n'/etc/shells   # one per line, as chopi passes it
+unset CHOPI_ALLOW_SELF
 
 # The wrapper requires a CLEANUP_SCRIPT_PATH first argument and runs it on every exit path. Most
 # cases don't care what it does, so use a stub that just records that it ran (to a file, so it
@@ -59,6 +71,69 @@ scrubbed() { env -u GIT_CONFIG_COUNT "$@"; }
 
 # Captured exit codes below rely on errexit being off.
 set +e
+
+
+# ---------------------------------------------------------------------------
+echo "the proxy-config write gate"
+# ---------------------------------------------------------------------------
+out="$(scrubbed "$WRAP" "$cleanup_script" -- /bin/sh -c 'echo "RAN files=${CHOPI_PROXY_CONFIG_FILES-unset}"' 2>&1)"; rc=$?
+assert_zero "$rc" "config the command can't write lets it run"
+assert_eq "$out" "RAN files=unset" "  -> quietly, the paths kept from the command's environment"
+
+proxy_allowlist="$TMPDIR/github-allowlist"
+: > "$proxy_allowlist"
+config_files=/etc/hosts$'\n'"$proxy_allowlist"
+old_mtime="$(stat -f %m "$proxy_allowlist")"
+sleep 1
+out="$(CHOPI_PROXY_CONFIG_FILES="$config_files" scrubbed "$WRAP" "$cleanup_script" -- /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_nonzero "$rc" "a config file the command can write is refused"
+assert_contains "$out" "the proxy's config file '$proxy_allowlist' is writable by the sandboxed command" \
+    "  -> naming it"
+assert_not_contains "$out" "RAN" "  -> and the command does not run"
+assert_eq "$(stat -f %m "$proxy_allowlist")" "$old_mtime" "  -> the file left untouched, for the proxy not to reload it"
+
+out="$(CHOPI_ALLOW_SELF=1 CHOPI_PROXY_CONFIG_FILES="$config_files" scrubbed "$WRAP" "$cleanup_script" -- \
+    /bin/sh -c 'echo "RAN allow=${CHOPI_ALLOW_SELF-unset}"' 2>&1)"; rc=$?
+assert_zero "$rc" "CHOPI_ALLOW_SELF downgrades the refusal"
+assert_contains "$out" "warning: the proxy's config file '$proxy_allowlist'" "  -> to a warning"
+assert_contains "$out" "RAN allow=unset" "  -> and the command runs, without it in its environment"
+
+# Read-only, but the command's own: it could make it writable.
+chmod a-w "$proxy_allowlist"
+out="$(CHOPI_PROXY_CONFIG_FILES="$proxy_allowlist" scrubbed "$WRAP" "$cleanup_script" -- /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_nonzero "$rc" "a read-only config file the command can make writable is refused"
+assert_contains "$out" "the proxy's config file '$proxy_allowlist' is writable by the sandboxed command" \
+    "  -> naming it"
+assert_eq "$(stat -f %m "$proxy_allowlist")" "$old_mtime" "  -> the file left untouched"
+
+# Unchangeable itself, but in a dir the command can make writable: it could put another in its
+# place. Read-only, the dir is still the one named, not the writable one above it.
+mkdir "$TMPDIR/ro" "$TMPDIR/ro/config"
+ln -s /etc/hosts "$TMPDIR/ro/config/rules.yaml"   # a file only root can change
+chmod a-w "$TMPDIR/ro/config"
+out="$(CHOPI_PROXY_CONFIG_FILES="$TMPDIR/ro/config/rules.yaml" scrubbed "$WRAP" "$cleanup_script" -- \
+    /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_nonzero "$rc" "a config file in a read-only dir the command can make writable is refused"
+assert_contains "$out" "the proxy's config file '$TMPDIR/ro/config/rules.yaml' is replaceable by the sandboxed command, which can write in '$TMPDIR/ro/config'" \
+    "  -> naming the dir"
+assert_not_contains "$out" "RAN" "  -> and the command does not run"
+assert_eq "$(find "$TMPDIR/ro" -name '.chopi-probe.*')" "" "  -> leaving no probe behind"
+chmod u+w "$TMPDIR/ro/config"   # for the cleanup to remove it
+
+missing=/etc/chopi-missing-rules.yaml
+out="$(CHOPI_PROXY_CONFIG_FILES="$missing" scrubbed "$WRAP" "$cleanup_script" -- /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_zero "$rc" "a config file missing, as an editor's save replaces it, lets the command run"
+assert_absent "$missing" "  -> without the check creating it"
+
+missing="$TMPDIR/missing-rules.yaml"
+out="$(CHOPI_PROXY_CONFIG_FILES="$missing" scrubbed "$WRAP" "$cleanup_script" -- /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_nonzero "$rc" "a config file missing from a dir the command can write in is refused, as it could create one"
+assert_absent "$missing" "  -> without the check creating it"
+
+out="$(env -u CHOPI_PROXY_CONFIG_FILES "$WRAP" "$cleanup_script" -- /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_contains "$out" "CHOPI_PROXY_CONFIG_FILES is not set" "a run without the config's paths is refused"
+assert_not_contains "$out" "RAN" "  -> and the command does not run"
+assert_nonzero "$rc" "  -> and exits non-zero"
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +264,13 @@ assert_not_contains "$out" "insteadOf"                   "  -> not blamed on a c
 assert_not_contains "$out" "RAN"                         "  -> and the command does not run"
 assert_nonzero "$rc" "  -> and exits non-zero"
 
+# The gate checks against the session's relay port, which only chopi knows.
+out=""; rc=0
+out="$(env -u GIT_CONFIG_COUNT -u CHOPI_GITHUB_RELAY_PORT GIT_CONFIG_GLOBAL="$empty_global" \
+    "$WRAP" "$cleanup_script" "${relay_pairs[@]}" -- /bin/sh -c 'echo RAN' 2>&1)" || rc=$?
+assert_contains     "$out" "CHOPI_GITHUB_RELAY_PORT is not set" "a run without the relay port is refused"
+assert_not_contains "$out" "RAN"                                "  -> and the command does not run"
+assert_nonzero "$rc" "  -> and exits non-zero"
 
 
 # ---------------------------------------------------------------------------

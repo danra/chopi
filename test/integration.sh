@@ -10,7 +10,8 @@
 #     chopi's own dir) are denied.
 #   * network: an allowed host is reachable THROUGH the proxy; a host that's not allowed
 #     is refused by the proxy (and the denial is logged + notified); any direct outgoing connection
-#     that bypasses the proxy, or aims at a non-allowlisted loopback port, is blocked by Seatbelt.
+#     that bypasses the proxy, or aims at a non-allowlisted loopback port -- another session's
+#     proxy included -- is blocked by Seatbelt. A session's proxy stops with the session.
 #   * rules hot reload: an edit to the rules file takes effect while the session runs; a
 #     broken edit is refused loudly and the previous rules stay in effect.
 
@@ -150,10 +151,13 @@ write_test_rules
 
 # alerter shim: record each invocation (so we can prove the denial-notification path fired)
 # instead of popping a real macOS banner per DENY. First on PATH, which chopi passes on to the
-# sessions' proxies; jq/nc/etc. stay reachable via the rest.
+# sessions' proxies; jq/nc/etc. stay reachable via the rest. It records only after a second, as
+# a banner stays up a while: by then its session has ended and stopped the proxy, which must
+# leave the notification be.
 : > "$alerter_log"
 cat > "$alerter_stub/alerter" <<EOF
 #!/bin/sh
+sleep 1
 printf '%s\n' "\$*" >> "$alerter_log"
 exit 0
 EOF
@@ -257,6 +261,36 @@ assert_zero     "$rc"        "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESP
 assert_contains "$out" "RAN" "  -> the command runs"
 assert_contains "$out" "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY is set" \
     "  -> with the refusal downgraded to a warning the user sees"
+
+
+# ---------------------------------------------------------------------------
+echo "the proxy config must live where the sandboxed command can't write it"
+# ---------------------------------------------------------------------------
+cp "$rules" "$ws/rules.yaml"
+write_cfg "$base/config/rules-inside.sh" "CHOPI_PROXY_RULES=\"$ws/rules.yaml\""
+out="$(chopi_cfg "$base/config/rules-inside.sh" /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_nonzero      "$rc"                          "chopi refuses proxy rules inside the workspace"
+assert_contains     "$out" "is writable by the sandboxed command" "  -> saying why"
+assert_not_contains "$out" "RAN"                   "  -> and the command does not run"
+rm -f "$ws/rules.yaml"
+
+# In a dir granted to the command, read-only: it is the file's owner, free to make it writable.
+granted="$base/granted"
+mkdir -p "$granted"
+cp "$rules" "$granted/rules.yaml"; chmod a-w "$granted/rules.yaml"
+write_cfg "$base/config/rules-granted.sh" \
+    "CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro \"$claudebin:$codexbin\" --add-dirs \"$granted\" )" \
+    "CHOPI_PROXY_RULES=\"$granted/rules.yaml\""
+out="$(chopi_cfg "$base/config/rules-granted.sh" /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_nonzero      "$rc"                          "chopi refuses read-only proxy rules in a dir the command can write"
+assert_contains     "$out" "'$granted/rules.yaml' is writable by the sandboxed command" "  -> saying why"
+assert_not_contains "$out" "RAN"                   "  -> and the command does not run"
+
+write_cfg "$base/config/rules-relative.sh" "CHOPI_PROXY_RULES=rules.yaml"
+out="$(chopi_cfg "$base/config/rules-relative.sh" /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_nonzero      "$rc"                              "chopi refuses relative proxy rules paths"
+assert_contains     "$out" "must be an absolute path"  "  -> saying why"
+assert_not_contains "$out" "RAN"                       "  -> and the command does not run"
 
 
 # ---------------------------------------------------------------------------
@@ -662,6 +696,38 @@ assert_nonzero  "$rc"       "in-sandbox gh api graphql is refused"
 assert_contains "$api_deny" 'not an allowed API operation' "  -> gh reached the relay through its socket and displays the deny"
 assert_contains "$api_deny" 'HTTP 403'                     "  -> as the relay's own 403"
 
+# (6) Each session has a proxy of its own, which another session cannot reach. A first session
+# reports its proxy and waits; a second one, started meanwhile, tries going out through it.
+handoff="$ws/handoff"; mkdir -p "$handoff"
+# shellcheck disable=SC2016  # expands in the sandboxed shell, not here
+chopi_t /bin/sh -c 'printf "%s\n" "$HTTP_PROXY" > handoff/proxy;
+    for _ in $(seq 1 300); do [ -e handoff/done ] && exit 0; sleep 0.1; done' >/dev/null 2>&1 &
+first_session=$!
+for _ in {1..150}; do [ -s "$handoff/proxy" ] && break; sleep 0.1; done
+first_proxy="$(cat "$handoff/proxy" 2>/dev/null)"
+if [ -n "$first_proxy" ]; then
+    # shellcheck disable=SC2016  # expands in the sandboxed shell, not here
+    second_proxy="$(chopi_t /bin/sh -c 'printf "%s" "$HTTP_PROXY"' 2>/dev/null)"
+    assert_not_contains "$second_proxy" "$first_proxy" "concurrent sessions each get a proxy of their own"
+    code="$(sandbox_curl --max-time 15 --proxy "$first_proxy" "https://$DENIED_HOST")"
+    assert_eq "$code" "000" "  -> and a session cannot reach another session's proxy"
+else
+    bad "the first session did not report its proxy"
+fi
+: > "$handoff/done"
+wait "$first_session"
+
+# (7) A session's proxy stops with the session.
+first_port="${first_proxy##*:}"
+if [ -n "$first_port" ]; then
+    for _ in {1..100}; do nc -z 127.0.0.1 "$first_port" 2>/dev/null || break; sleep 0.1; done
+    if nc -z 127.0.0.1 "$first_port" 2>/dev/null; then
+        bad "a session's proxy keeps running after the session ends (port $first_port)"
+    else
+        ok "a session's proxy stops with the session"
+    fi
+fi
+rm -rf "$handoff"
 
 
 # ---------------------------------------------------------------------------
