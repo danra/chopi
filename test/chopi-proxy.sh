@@ -12,7 +12,7 @@ BEL="$(printf '\007')"   # U+0007 BEL: format-deny.jq prefixes an interactive DE
 ESC="$(printf '\033')"   # U+001B ANSI escape: introduces the DENY color code
 set +euo pipefail
 
-header "test/chopi-proxy.sh -- unit tests for bin/chopi-proxy.sh's log logic + network holes + github migration refusal"
+header "test/chopi-proxy.sh -- unit tests for the proxy's log logic + network holes + github migration refusal"
 
 # Exported so the scripts under test leave their temporaries here too.
 TMPDIR="$(mktemp -d)"; export TMPDIR
@@ -471,10 +471,10 @@ echo "option values (an option given no value, or an empty one, is refused)"
 # A trailing unknown option ends any run that gets past the one under test, with nothing started:
 # what tells the two apart is whether the run stopped at the option under test, naming it.
 for opt in --rules --github-allowlist; do
-    out="$("$repo/bin/chopi-proxy.sh" "$opt" 2>&1)"; st=$?
+    out="$("$repo/.internal/chopi-proxy.sh" "$opt" 2>&1)"; st=$?
     assert_nonzero "$st" "$opt with no value is refused"
     assert_contains "$out" "$opt requires" "  -> naming the option"
-    out="$("$repo/bin/chopi-proxy.sh" "$opt" "" --no-such-option 2>&1)"; st=$?
+    out="$("$repo/.internal/chopi-proxy.sh" "$opt" "" --no-such-option 2>&1)"; st=$?
     assert_nonzero "$st" "$opt with an empty value is refused"
     assert_contains "$out" "$opt requires" "  -> naming the option, not falling back to the default file"
 done
@@ -513,7 +513,7 @@ echo "process group (chopi-proxy runs in its caller's)"
 # from this script, which has no job control, chopi-proxy shares the script's process group, as
 # under nohup, a pipe, or a service manager.
 no_rules="$TMPDIR/no-such-rules.yaml"
-out="$("$repo/bin/chopi-proxy.sh" --rules "$no_rules" 2>&1)"
+out="$("$repo/.internal/chopi-proxy.sh" --rules "$no_rules" 2>&1)"
 assert_contains "$out" "$no_rules" "chopi-proxy runs in its caller's process group"
 
 
