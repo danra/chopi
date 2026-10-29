@@ -711,7 +711,7 @@ lead_group() {
 }
 
 # Pop a macOS banner with SUBTITLE and MESSAGE, in the background, replacing the last one in
-# GROUP. A click on it opens FILE.
+# GROUP. A click on it opens FILE in the user's editor -- or says on stderr why it couldn't.
 #
 # usage: notify GROUP FILE SUBTITLE MESSAGE
 notify() {
@@ -725,7 +725,27 @@ notify() {
                          --timeout 10 2>/dev/null || true)
         case "$result" in
             @TIMEOUT | @CLOSED | '') ;;
-            *) open "$file" >/dev/null 2>&1 || true ;;
+            *) open_in_gui_editor "$file" >/dev/null || true ;;
         esac
     } &
+}
+
+# Open FILE for the user from a process with no terminal, like the proxy's notifications: in
+# their editor, VISUAL or else EDITOR, when it's one known to open a window of its own, and in the
+# default text editor macOS has for it otherwise -- a terminal editor would have nowhere to show.
+# The setting is split into words as a shell would, its quotes and backslashes included, so a path
+# or an argument with spaces stays whole -- by xargs, which expands nothing. One it can't split, an
+# unterminated quote, is as good as none.
+open_in_gui_editor() {
+    arity 1
+    local file="$1" editor=() word command
+    while IFS= read -r -d '' word; do
+        editor+=("$word")
+    done < <(printf '%s' "${VISUAL:-${EDITOR:-}}" | xargs printf '%s\0' 2>/dev/null)
+    command="${editor[0]:-}"
+    case "${command##*/}" in
+        code|code-insiders|codium|cursor|windsurf|zed|subl|mate|bbedit)
+            "${editor[@]}" "$file" ;;
+        *)  open -t "$file" ;;
+    esac
 }
