@@ -83,8 +83,10 @@ configuration.
 
    Each `chopi` session starts its own outgoing proxy and stops it when the
    command exits. Each refused connection pops a macOS notification naming the
-   host; click it to open the session's proxy log. (If the banners don't appear,
-   allow notifications for your terminal in System Settings -> Notifications.)
+   host; click it while it shows to open the session's proxy log in your editor
+   (`$VISUAL`, else `$EDITOR`) if it's a GUI one like VS Code, and in macOS's
+   default text editor otherwise. (If the banners don't appear, allow
+   notifications for your terminal in System Settings -> Notifications.)
    Hosts matching the known denylist are the exception: their denials log a
    single quiet `deny(known)` line per session, with no notification. The logs
    are kept under `~/Library/Logs/chopi` for two weeks; `chopi --verbose`

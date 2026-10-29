@@ -517,7 +517,7 @@ lead_group() {
 }
 
 # Pop a macOS banner with SUBTITLE and MESSAGE, in the background, replacing the last one in
-# GROUP. A click on it opens FILE.
+# GROUP. A click on it opens FILE in the user's editor -- or says on stderr why it couldn't.
 #
 # The banner waits for its click in a process group of its own, out of reach of whoever stops the
 # caller's, as chopi stops the proxy's once the session ends: alerter handles SIGTERM, even one
@@ -536,8 +536,24 @@ notify() {
                          --timeout 10 2>/dev/null || true)
         case "$result" in
             @TIMEOUT | @CLOSED | '') ;;
-            *) open "$file" >/dev/null 2>&1 || true ;;
+            # The editor gets the signals back the caller may ignore, which it would
+            # otherwise inherit -- and pass on to an editor app it starts.
+            *) ( trap - INT TERM HUP; open_in_gui_editor "$file" >/dev/null ) || true ;;
         esac
     } &
     [[ "$monitor" == *m* ]] || set +m
+}
+
+# Open FILE for the user from a process with no terminal, like the proxy's notifications: in
+# their editor, VISUAL or else EDITOR, when it's one known to open a window of its own, and in the
+# default text editor macOS has for it otherwise -- a terminal editor would have nowhere to show.
+open_in_gui_editor() {
+    arity 1
+    local file="$1" editor
+    read -r -a editor <<< "${VISUAL:-${EDITOR:-}}"
+    case "$(basename -- "${editor[0]:-}")" in
+        code|code-insiders|codium|cursor|windsurf|zed|subl|mate|bbedit)
+            "${editor[@]}" "$file" ;;
+        *)  open -t "$file" ;;
+    esac
 }
