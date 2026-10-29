@@ -193,8 +193,8 @@ notify_reload_failed() {
 }
 
 # Pop a macOS banner with SUBTITLE and MESSAGE, in the background. A click on it opens the log,
-# which has the event in context. Each new banner replaces the session's last one, but not another
-# session's, whose log it opens.
+# which has the event in context, in the user's editor -- or says in the log why it couldn't. Each
+# new banner replaces the session's last one, but not another session's, whose log it opens.
 #
 # usage: notify SUBTITLE MESSAGE
 notify() {
@@ -208,7 +208,9 @@ notify() {
                          --timeout 10 2>/dev/null || true)
         case "$result" in
             @TIMEOUT | @CLOSED | '') ;;
-            *) open "$LOG" >/dev/null 2>&1 || true ;;
+            # The editor gets the signals back the formatter ignores, which it would
+            # otherwise inherit -- and pass on to an editor app it starts.
+            *) ( trap - INT TERM HUP; open_in_gui_editor "$LOG" >/dev/null ) || true ;;
         esac
     } &
 }

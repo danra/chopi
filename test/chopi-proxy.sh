@@ -556,4 +556,27 @@ done
 
 
 # ---------------------------------------------------------------------------
+echo "opening the log from a notification (a GUI editor, else macOS's text editor)"
+# ---------------------------------------------------------------------------
+# Stubs for the editors and open, each recording how it was called.
+mkdir "$TMPDIR/editors"
+for cmd in code vim open; do
+    printf '#!/bin/sh\necho "%s $*" >> "%s"\n' "$cmd" "$TMPDIR/opened" > "$TMPDIR/editors/$cmd"
+    chmod +x "$TMPDIR/editors/$cmd"
+done
+# opened_with VISUAL EDITOR -- how open_in_gui_editor opens the log, given those settings.
+opened_with() {
+    : > "$TMPDIR/opened"
+    ( PATH="$TMPDIR/editors:$PATH" VISUAL="$1" EDITOR="$2" open_in_gui_editor /logs/proxy.log )
+    cat "$TMPDIR/opened"
+}
+
+assert_eq "$(opened_with "" "code -w")" "code -w /logs/proxy.log" "a GUI editor opens it, with its flags"
+assert_eq "$(opened_with "" "$TMPDIR/editors/code")" "code /logs/proxy.log" "  -> named by its path too"
+assert_eq "$(opened_with "code" "vim")" "code /logs/proxy.log" "VISUAL wins EDITOR"
+assert_eq "$(opened_with "" "vim")" "open -t /logs/proxy.log" "a terminal editor gives way to macOS's text editor"
+assert_eq "$(opened_with "" "")" "open -t /logs/proxy.log" "  -> as does none set"
+
+
+# ---------------------------------------------------------------------------
 summary

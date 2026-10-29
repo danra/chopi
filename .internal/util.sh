@@ -398,3 +398,17 @@ is_github_relay_reroute_effective() {
     done
     return 0
 }
+
+# Open FILE for the user from a process with no terminal, like the proxy's notifications: in
+# their editor, VISUAL or else EDITOR, when it's one known to open a window of its own, and in the
+# default text editor macOS has for it otherwise -- a terminal editor would have nowhere to show.
+open_in_gui_editor() {
+    arity 1
+    local file="$1" editor
+    read -r -a editor <<< "${VISUAL:-${EDITOR:-}}"
+    case "$(basename -- "${editor[0]:-}")" in
+        code|code-insiders|codium|cursor|windsurf|zed|subl|mate|bbedit)
+            "${editor[@]}" "$file" ;;
+        *)  open -t "$file" ;;
+    esac
+}
