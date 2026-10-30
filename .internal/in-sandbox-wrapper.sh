@@ -105,18 +105,25 @@ main() {
         echo "$prog: CHOPI_PROXY_CONFIG_FILES is not set" >&2
         return 2
     fi
-    local file at reason
+    local file at links reason hint
     while IFS= read -r file; do
         [ -n "$file" ] || continue
-        proxy_config_changeable_at at "$file" || continue
-        if [ "$at" = "$file" ]; then
+        hint="Keep the proxy's config out of every path the sandbox lets the command write."
+        # Another name for the file, anywhere, is one the probe can't see and the command may write
+        # through. The sandbox keeps the command from making one, but not one made outside it.
+        if [ -f "$file" ] && links="$(stat -L -f %l "$file")" && [ "$links" -gt 1 ]; then
+            reason="the proxy's config file '$file' has $links hard links, which the sandboxed command may write through"
+            hint="Give it a single name, e.g.: cp '$file' '$file.tmp' && mv '$file.tmp' '$file'"
+        elif ! proxy_config_changeable_at at "$file"; then
+            continue
+        elif [ "$at" = "$file" ]; then
             reason="the proxy's config file '$file' is writable by the sandboxed command"
         else
             reason="the proxy's config file '$file' is replaceable by the sandboxed command, which can write in '$at'"
         fi
         refuse_or_warn "$reason" \
             "the sandboxed command could lift its own outgoing limits" \
-            "Keep the proxy's config out of every path the sandbox lets the command write." \
+            "$hint" \
             || return 1
     done <<< "$CHOPI_PROXY_CONFIG_FILES"
     unset CHOPI_PROXY_CONFIG_FILES CHOPI_ALLOW_SELF
