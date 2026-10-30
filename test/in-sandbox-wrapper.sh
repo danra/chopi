@@ -120,6 +120,21 @@ assert_not_contains "$out" "RAN" "  -> and the command does not run"
 assert_eq "$(find "$TMPDIR/ro" -name '.chopi-probe.*')" "" "  -> leaving no probe behind"
 chmod u+w "$TMPDIR/ro/config"   # for the cleanup to remove it
 
+# Unchangeable by its path, but with another name for it anywhere, one the probe can't see, which
+# the command may be able to write through. A file only root can change, in dirs only root can,
+# that already has more than one name: the test can't make such a link itself.
+hard_linked="$(find /usr/bin -type f -links +1 2>/dev/null | head -n 1)"
+if [ -z "$hard_linked" ]; then
+    bad "no hard-linked file in /usr/bin to test the hard-link refusal with"
+else
+    links="$(stat -f %l "$hard_linked")"
+    out="$(CHOPI_PROXY_CONFIG_FILES="$hard_linked" scrubbed "$WRAP" "$cleanup_script" -- \
+        /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+    assert_nonzero "$rc" "a config file with other hard links is refused"
+    assert_contains "$out" "the proxy's config file '$hard_linked' has $links hard links" "  -> naming it"
+    assert_not_contains "$out" "RAN" "  -> and the command does not run"
+fi
+
 missing=/etc/chopi-missing-rules.yaml
 out="$(CHOPI_PROXY_CONFIG_FILES="$missing" scrubbed "$WRAP" "$cleanup_script" -- /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
 assert_zero "$rc" "a config file missing, as an editor's save replaces it, lets the command run"
