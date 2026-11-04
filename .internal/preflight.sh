@@ -12,7 +12,9 @@
 #                                   --worktree target), since that is the dir a custom
 #                                   --config must stay outside of.
 #
-# resolve_proxy_config, run up front, resolves the proxy's config, which it reads all session long.
+# resolve_proxy_config, run up front, resolves the proxy's config, which it reads all session long:
+# the in-sandbox wrapper refuses to run the command where it can write it, as only the sandbox
+# itself knows every path it lets the command write.
 
 _preflight_dir="$(dirname "${BASH_SOURCE[0]}")"
 . "$_preflight_dir/util.sh"
@@ -79,7 +81,8 @@ preflight_config_placement() {
 # Resolve the proxy config file the sandbox config's variable VAR names -- or, when it names none,
 # the default config/DEFAULT the installer creates from config/templates/TEMPLATE -- setting VAR to
 # its real path. chopi hands the proxy that path, which it reads for the whole session, hot-reloading
-# the rules.
+# the rules: resolved once, no symlink on the way can be repointed after the in-sandbox wrapper
+# checks it.
 #
 # usage: resolve_proxy_config VAR DEFAULT TEMPLATE
 resolve_proxy_config() {
