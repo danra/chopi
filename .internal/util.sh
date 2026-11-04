@@ -417,6 +417,26 @@ write_proxy_network_profile() {
     } >"$file"
 }
 
+# Refuse, for REASON and the DETAIL of why it matters, with HINT on what to do about it -- or, with
+# CHOPI_ALLOW_SELF set, only warn.
+#
+# usage: refuse_or_warn REASON DETAIL HINT
+refuse_or_warn() {
+    arity 3
+    local reason="$1" detail="$2" hint="$3"
+    if [ -n "${CHOPI_ALLOW_SELF:-}" ]; then
+        echo "warning: $reason;" >&2
+        echo "         $detail." >&2
+        echo "         continuing anyway (CHOPI_ALLOW_SELF is set)." >&2
+        echo >&2
+    else
+        echo "error: $reason;" >&2
+        echo "       $detail." >&2
+        echo "$hint" >&2
+        return 1
+    fi
+}
+
 # Do github remote URLs resolve to the git relay on PORT under the ambient git config (all
 # scopes, read from the current directory)? The in-sandbox wrapper runs this after exporting
 # chopi's rewrites into the command scope, so it checks exactly the config the sandboxed command

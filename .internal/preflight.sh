@@ -18,22 +18,6 @@ _preflight_dir="$(dirname "${BASH_SOURCE[0]}")"
 . "$_preflight_dir/util.sh"
 unset _preflight_dir
 
-refuse_or_warn() {
-    arity 3
-    local reason="$1" detail="$2" hint="$3"
-    if [ -n "${CHOPI_ALLOW_SELF:-}" ]; then
-        echo "warning: $reason;" >&2
-        echo "         $detail." >&2
-        echo "         continuing anyway (CHOPI_ALLOW_SELF is set)." >&2
-        echo >&2
-    else
-        echo "error: $reason;" >&2
-        echo "       $detail." >&2
-        echo "$hint" >&2
-        return 1
-    fi
-}
-
 # check_listener -- confirm something is listening on 127.0.0.1:PORT, else print an error naming
 # WHAT (e.g. "no outgoing proxy") and HINT, then fail. Liveness only: it confirms something is
 # listening, not that it's ours. We deliberately don't verify the listener's identity because no
