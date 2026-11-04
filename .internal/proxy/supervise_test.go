@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestParseOptionsSplitsChopisFlagsFromSmokescreens(t *testing.T) {
@@ -65,7 +69,7 @@ func TestRelayConfigRendersWithItsEnv(t *testing.T) {
 	writeFile(t, cmd, "#!/bin/sh\necho note >&2\nprintf '%s:%s' \"$1\" \"$CHOPI_TEST_TOKEN\"\n")
 	os.Chmod(cmd, 0o755)
 	config, notes, err := relayConfig{cmd: cmd, allowlist: "/the/allowlist",
-		env: []string{"CHOPI_TEST_TOKEN=t"}}.render()
+		env: []string{"CHOPI_TEST_TOKEN=t"}}.render(context.Background())
 	if err != nil || string(config) != "/the/allowlist:t" || notes != "note" {
 		t.Errorf("rendered %q, notes %q, err %v", config, notes, err)
 	}
@@ -75,10 +79,78 @@ func TestRelayConfigSaysWhyItFailed(t *testing.T) {
 	cmd := filepath.Join(t.TempDir(), "render")
 	writeFile(t, cmd, "#!/bin/sh\necho partial\necho 'no token' >&2\nexit 1\n")
 	os.Chmod(cmd, 0o755)
-	config, notes, err := relayConfig{cmd: cmd, allowlist: "/a"}.render()
+	config, notes, err := relayConfig{cmd: cmd, allowlist: "/a"}.render(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "no token") || config != nil || notes != "" {
 		t.Errorf("rendered %q, notes %q, err %v: want no config, and why", config, notes, err)
 	}
+}
+
+func TestRelayConfigRenderStopsWithItsChildren(t *testing.T) {
+	cmd, pidFile := stuckRender(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	rendered := make(chan error, 1)
+	go func() {
+		_, _, err := relayConfig{cmd: cmd, allowlist: "/a"}.render(ctx)
+		rendered <- err
+	}()
+	pid := awaitPid(t, pidFile)
+	cancel()
+	select {
+	case err := <-rendered:
+		if err == nil {
+			t.Error("a cancelled render succeeded")
+		}
+	case <-time.After(renderCancelGrace + 3*time.Second):
+		t.Fatal("the render outlived its cancel")
+	}
+	if !pidGone(pid) {
+		syscall.Kill(pid, syscall.SIGKILL)
+		t.Fatal("the render's child outlived its cancel")
+	}
+}
+
+func TestStopAllStopsAReloadsRender(t *testing.T) {
+	cmd, pidFile := stuckRender(t)
+	s := newRelaySupervisor(nil, filepath.Join(t.TempDir(), "log"), relayConfig{cmd: cmd, allowlist: "/a"}, nil)
+	reloaded := make(chan error, 1)
+	go func() { reloaded <- s.reload() }()
+	pid := awaitPid(t, pidFile)
+	s.stopAll()
+	// Checked at once, not waited for: stopAll returns only once the render's group is gone.
+	if syscall.Kill(pid, 0) == nil {
+		syscall.Kill(pid, syscall.SIGKILL)
+		t.Fatal("the render's child outlived stopAll")
+	}
+	if err := <-reloaded; err == nil {
+		t.Error("a reload stopped as it rendered succeeded")
+	}
+	if err := s.reload(); err == nil {
+		t.Error("a reload after stopAll succeeded")
+	}
+}
+
+// stuckRender writes a render command whose child waits as gh would at a keychain prompt, holding
+// the output pipe, and writes its pid to pidFile.
+func stuckRender(t *testing.T) (cmd, pidFile string) {
+	dir := t.TempDir()
+	cmd, pidFile = filepath.Join(dir, "render"), filepath.Join(dir, "pid")
+	writeFile(t, cmd, "#!/bin/sh\nsleep 30 &\necho $! >'"+pidFile+"'\nwait\n")
+	os.Chmod(cmd, 0o755)
+	return cmd, pidFile
+}
+
+// awaitPid returns the pid a stuckRender command writes to pidFile once its child has started.
+func awaitPid(t *testing.T, pidFile string) int {
+	t.Helper()
+	var pid int
+	for deadline := time.Now().Add(5 * time.Second); pid == 0; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the render's child never started")
+		}
+		got, _ := os.ReadFile(pidFile)
+		fmt.Sscan(string(got), &pid)
+	}
+	return pid
 }
 
 func TestOutputSinceIsTheRestOnOneLine(t *testing.T) {
