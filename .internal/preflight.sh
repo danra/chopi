@@ -24,7 +24,7 @@ refuse_or_warn() {
         echo "warning: $reason;" >&2
         echo "         $detail." >&2
         echo "         continuing anyway (CHOPI_ALLOW_SELF is set)." >&2
-        echo
+        echo >&2
     else
         echo "error: $reason;" >&2
         echo "       $detail." >&2
