@@ -807,7 +807,7 @@ else
     bad "a broken rules edit did NOT log a failed reload"
 fi
 # In its own group, so the next DENY banner doesn't replace it before the user sees it.
-if wait_for "$alerter_log" "rules reload failed --message Your edit to $(basename -- "$rules") did not take effect --group chopi-proxy-reload-rules"; then
+if wait_for "$alerter_log" "rules reload failed --message Your edit to $(basename -- "$rules") did not take effect --group $(reload_banner_group "$rules" "")"; then
     ok "a broken rules edit notifies that the edit did not take effect"
 else
     bad "a broken rules edit did NOT notify"
@@ -830,7 +830,7 @@ else
     bad "the proxy did NOT reload after the rules were fixed"
 fi
 # Each successful reload withdraws the failure banner; (1) already did once.
-if wait_for_count "$alerter_log" "remove chopi-proxy-reload-rules" 2; then
+if wait_for_count "$alerter_log" "remove $(reload_banner_group "$rules" "")" 2; then
     ok "the fixed rules withdraw the now-stale reload-failure notification"
 else
     bad "the fixed rules did NOT withdraw the reload-failure notification"
@@ -860,7 +860,7 @@ if wait_for "$reload_log" "GITHUB ALLOWLIST RELOAD FAILED"; then
 else
     bad "a broken allowlist edit did NOT log a failed reload"
 fi
-if wait_for "$alerter_log" "GitHub allowlist reload failed --message Your edit to $(basename -- "$empty_github_allow") did not take effect --group chopi-proxy-reload-allowlist"; then
+if wait_for "$alerter_log" "GitHub allowlist reload failed --message Your edit to $(basename -- "$empty_github_allow") did not take effect --group $(reload_banner_group "$empty_github_allow" "$(gh_token_source)")"; then
     ok "a broken allowlist edit notifies that the edit did not take effect"
 else
     bad "a broken allowlist edit did NOT notify"
@@ -874,7 +874,7 @@ if wait_for "$reload_log" "GitHub allowlist reloaded"; then
 else
     bad "the proxy did NOT reload the relays after the allowlist was fixed"
 fi
-if wait_for "$alerter_log" "remove chopi-proxy-reload-allowlist"; then
+if wait_for "$alerter_log" "remove $(reload_banner_group "$empty_github_allow" "$(gh_token_source)")"; then
     ok "the fixed allowlist withdraws the now-stale reload-failure notification"
 else
     bad "the fixed allowlist did NOT withdraw the reload-failure notification"
