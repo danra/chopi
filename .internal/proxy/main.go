@@ -335,8 +335,9 @@ func main() {
 		fail("%v", err)
 	}
 	if notes != "" {
-		// For the user to see as the proxy starts.
-		fmt.Fprintln(os.Stderr, notes)
+		// In the log, for the user to find why authenticated GitHub access fails: an empty
+		// allowlist can be deliberate, so it is no reason to speak up at every start.
+		fmt.Println(notes)
 	}
 	api, err := listenAPIRelay(opts.ghSock)
 	if err != nil {
@@ -405,6 +406,8 @@ func main() {
 	}
 	fmt.Printf("[chopi-smokescreen] outgoing proxy on 127.0.0.1:%d, GitHub relay on 127.0.0.1:%d, "+
 		"GitHub API relay on %s\n", reported.proxy, reported.relay, opts.ghSock)
+	// Up from here on, so anything left to say belongs in the log.
+	syscall.Dup2(1, 2)
 	// Should the log's formatter die, the log is lost from here on, but not the network:
 	// writing to it then fails instead of killing the proxy.
 	signal.Ignore(syscall.SIGPIPE)
