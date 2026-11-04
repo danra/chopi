@@ -605,7 +605,7 @@ is_github_relay_reroute_effective() {
 # reported in DIR/ports. It execs, for its PID to be the proxy's: run it in the background.
 run_chopi_smokescreen() {
     arity 5
-    exec "$SMOKESCREEN_BIN" --relay-log "$5" --gh-sock "$1/gh.sock" --ports-file "$1/ports" \
+    exec "$SMOKESCREEN_BIN" --dir "$1" --relay-log "$5" \
         --github-allowlist "$3" --relay-config "$4" -- \
         --config-file "$CHOPI_DIR/.internal/smokescreen-config.yaml" \
         --egress-acl-file "$2"

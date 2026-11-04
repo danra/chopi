@@ -9,12 +9,12 @@ import (
 )
 
 func TestParseOptionsSplitsChopisFlagsFromSmokescreens(t *testing.T) {
-	opts, err := parseOptions([]string{"--relay-log", "/l", "--gh-sock", "/s", "--ports-file", "/p",
+	opts, err := parseOptions([]string{"--dir", "/d", "--relay-log", "/l",
 		"--github-allowlist", "/a", "--relay-config", "/r", "--", "--config-file", "/c"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opts.relayLog != "/l" || opts.ghSock != "/s" || opts.portsFile != "/p" ||
+	if opts.dir != "/d" || opts.relayLog != "/l" ||
 		opts.allowlist != "/a" || opts.relayConfig != "/r" {
 		t.Errorf("parsed %+v", opts)
 	}
@@ -24,7 +24,7 @@ func TestParseOptionsSplitsChopisFlagsFromSmokescreens(t *testing.T) {
 }
 
 func TestParseOptionsRefuses(t *testing.T) {
-	all := []string{"--relay-log", "/l", "--gh-sock", "/s", "--ports-file", "/p",
+	all := []string{"--dir", "/d", "--relay-log", "/l",
 		"--github-allowlist", "/a", "--relay-config", "/r"}
 	// Each of chopi's flags left out in turn.
 	for i := 0; i < len(all); i += 2 {
@@ -36,7 +36,7 @@ func TestParseOptionsRefuses(t *testing.T) {
 	for _, args := range [][]string{
 		all, // no smokescreen flags
 		append(slices.Clone(all), "--bogus", "1", "--"), // unknown
-		{"--relay-log"}, // no value
+		{"--dir"}, // no value
 	} {
 		if _, err := parseOptions(args); err == nil {
 			t.Errorf("%q: accepted", args)
@@ -107,32 +107,6 @@ func TestReportPortsWritesThemAndNothingElse(t *testing.T) {
 	entries, _ := os.ReadDir(dir)
 	if len(entries) != 1 {
 		t.Errorf("dir holds %d entries, want just the ports file: the temporary must not be left behind", len(entries))
-	}
-}
-
-func TestReadPortsReadsWhatReportPortsWrote(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "ports")
-	if err := reportPorts(path, ports{proxy: 24760, relay: 24761}); err != nil {
-		t.Fatal(err)
-	}
-	if got := readPorts(path); got != (ports{proxy: 24760, relay: 24761}) {
-		t.Errorf("read %v", got)
-	}
-}
-
-func TestReadPortsSkipsWhatIsNoPort(t *testing.T) {
-	dir := t.TempDir()
-	if got := readPorts(filepath.Join(dir, "missing")); got != (ports{}) {
-		t.Errorf("read %v from no file", got)
-	}
-	path := filepath.Join(dir, "ports")
-	writeFile(t, path, "proxy 0\nrelay 70000\nother x\ngit 24762\n")
-	if got := readPorts(path); got != (ports{}) {
-		t.Errorf("read %v, want no port", got)
-	}
-	writeFile(t, path, "relay x\nproxy 24760\n")
-	if got := readPorts(path); got != (ports{proxy: 24760}) {
-		t.Errorf("read %v, want just the proxy's port", got)
 	}
 }
 
