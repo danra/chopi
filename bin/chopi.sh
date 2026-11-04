@@ -14,6 +14,7 @@ SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 . "$SCRIPT_DIR/../.internal/claude-context-reads.sh"
 . "$SCRIPT_DIR/../.internal/write-targets.sh"
 . "$SCRIPT_DIR/../.internal/preflight.sh"
+. "$SCRIPT_DIR/../.internal/session-proxy.sh"
 
 usage="usage: chopi [--config FILE] [--verbose] [--worktree NAME] <executable> [args...]
 
@@ -26,21 +27,24 @@ usage="usage: chopi [--config FILE] [--verbose] [--worktree NAME] <executable> [
 # Every chopi run gets its own private subfolder under TMPDIR (or /tmp), exported into TMPDIR.
 # chopi's mktemp calls all resolve "$TMPDIR", and safehouse forwards TMPDIR to the sandboxed
 # command, so all generated temporaries (except, potentially, generation that doesn't respect TMPDIR
-# in the sandboxed command) are contained in it and cleaned up on exit.
+# in the sandboxed command) are contained in it and cleaned up on exit. The user's own is kept for
+# what outlives the run (see launch_session_proxy).
+CHOPI_USER_TMPDIR="${TMPDIR:-}"
 CHOPI_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/chopi.XXXXXX")" \
     || { echo "chopi: could not create a temp dir for the run" >&2; exit 1; }
 export TMPDIR="$CHOPI_TMPDIR"
 
 chopi_torn_down=""
 
-# On exit (normal or forced), remove the run's temp dir. The in-progress rebase/cherry-pick
-# cleanup runs earlier and INSIDE the sandbox -- in-sandbox-wrapper.sh runs it as its
-# CLEANUP_SCRIPT_PATH so anything it triggers stays confined -- so by the time we get here the
-# sandboxed run, cleanup and all, is already done.
+# On exit (normal or forced), stop the session's proxy and remove the run's temp dir. The
+# in-progress rebase/cherry-pick cleanup runs earlier and INSIDE the sandbox -- in-sandbox-wrapper.sh
+# runs it as its CLEANUP_SCRIPT_PATH so anything it triggers stays confined -- so by the time we
+# get here the sandboxed run, cleanup and all, is already done.
 # shellcheck disable=SC2329  # invoked via the EXIT trap below
 chopi_teardown() {
     [ -n "$chopi_torn_down" ] && return 0
     chopi_torn_down=1
+    stop_session_proxy
     rm -rf "$CHOPI_TMPDIR"
 }
 
@@ -91,6 +95,8 @@ main() {
     local CHOPI_GIT_CONFIG=()
     # shellcheck disable=SC2034 # consumed by validate_write_targets
     local CHOPI_SAFE_WRITE_TARGETS=()
+    local CHOPI_PROXY_RULES=""
+    local CHOPI_GITHUB_ALLOWLIST=""
     if [ ! -r "$config" ]; then
         if [ -n "$config_given" ]; then
             echo "chopi: cannot read sandbox config '$config'" >&2
@@ -101,6 +107,10 @@ main() {
     fi
     # shellcheck source=/dev/null  # can't follow user-supplied config path at lint time
     . "$config"
+
+    # The proxy's config: the sandbox config's, else the defaults the installer creates.
+    : "${CHOPI_PROXY_RULES:=$CHOPI_DIR/config/proxy-rules.yaml}"
+    : "${CHOPI_GITHUB_ALLOWLIST:=$CHOPI_DIR/config/github-allowlist}"
 
     if [ -n "$worktree_given" ]; then
         local wt_out_file
@@ -156,6 +166,15 @@ main() {
         queue_env=(CHOPI_PATCH_QUEUE="$queue_dir" CHOPI_SAFE_WRITE_TARGETS="$targets")
     fi
 
+    # The session's own proxy, which the sandboxed command gets as its only way out. Launched
+    # once the checks that may refuse the session have passed, so a refused session doesn't wait
+    # for it; it starts as chopi goes on with the rest of its setup, and nothing reaches it before
+    # the sandbox starts.
+    launch_session_proxy "$CHOPI_PROXY_RULES" "$CHOPI_GITHUB_ALLOWLIST" "$verbose" \
+        "$CHOPI_USER_TMPDIR" \
+        || { echo "chopi: refusing to run without the proxy" >&2; return 1; }
+    [ -n "$verbose" ] && echo "chopi: the proxy logs to $SESSION_PROXY_LOG" >&2
+
     local context_flags=()
     local cmd_argv=("$@")
     if is_claude_command "$1"; then
@@ -209,15 +228,7 @@ main() {
     ln -s "$wrapper_path" "$cmd_alias" \
         || { echo "chopi: could not create the command-alias symlink" >&2; return 1; }
 
-    # Route GitHub git traffic to the GitHub relay.
-    local relay_pair
-    while IFS= read -r relay_pair; do
-        CHOPI_GIT_CONFIG+=("$relay_pair")
-    done < <(github_relay_git_config "$GITHUB_RELAY_PORT")
-
     local cleanup_script_path="$CHOPI_DIR/.internal/git-protect-cleanup.sh"
-    local wrapper_cmd=("$cmd_alias" "$cleanup_script_path")
-    wrapper_cmd+=("${CHOPI_GIT_CONFIG[@]+"${CHOPI_GIT_CONFIG[@]}"}" --)
     local wrapper_profile
     wrapper_profile="$(mktemp "$TMPDIR/${CHOPI_IN_SANDBOX_WRAPPER_PREFIX}XXXXXX")" \
         || { echo "chopi: could not create a temp file for the in-sandbox wrapper profile" >&2; return 1; }
@@ -240,38 +251,52 @@ main() {
     } > "$wrapper_profile"
     local wrapper_flags=(--append-profile "$wrapper_profile")
 
-    # Point gh at the API relay socket, via a throwaway config dir of our own that leaves the
-    # user's real gh config untouched.
-    local gh_config_dir gh_env_text
-    gh_config_dir="$(mktemp -d "$TMPDIR/chopi-gh-config.XXXXXX")" \
-        || { echo "chopi: could not create a temp dir for the gh relay config" >&2; return 1; }
-    gh_env_text="$(github_relay_gh_env "$gh_config_dir" "$GH_RELAY_SOCK")" \
-        || { echo "chopi: could not write the gh relay config" >&2; return 1; }
-    local gh_env=()
-    readarray -t gh_env <<< "$gh_env_text"
-
-    # Open Seatbelt network holes to the proxy's endpoints.
-    local proxy_net_profile
-    proxy_net_profile="$(mktemp "$TMPDIR/chopi-proxy-net.XXXXXX")" \
-        || { echo "chopi: could not create a temp file for the proxy network profile" >&2; return 1; }
-    write_proxy_network_profile "$proxy_net_profile" "$PROXY_PORT" "$GITHUB_RELAY_PORT" "$GH_RELAY_SOCK" \
-        || return 1
-
     local run_dir_profile
     run_dir_profile="$(mktemp "$TMPDIR/chopi-proxy-run-dir.XXXXXX")" \
         || { echo "chopi: could not create a temp file for the proxy run-dir profile" >&2; return 1; }
     write_proxy_run_dir_profile "$run_dir_profile" "$PROXY_RUN_DIR" || return 1
 
-    local proxy="http://127.0.0.1:$PROXY_PORT"
+    local gh_config_dir
+    gh_config_dir="$(mktemp -d "$TMPDIR/chopi-gh-config.XXXXXX")" \
+        || { echo "chopi: could not create a temp dir for the gh relay config" >&2; return 1; }
+
+    # The rest needs the proxy's endpoints.
+    await_session_proxy || { echo "chopi: refusing to run without the proxy" >&2; return 1; }
+
+    # Route GitHub git traffic to the GitHub relay.
+    local relay_pair
+    while IFS= read -r relay_pair; do
+        CHOPI_GIT_CONFIG+=("$relay_pair")
+    done < <(github_relay_git_config "$SESSION_RELAY_PORT")
+    local wrapper_cmd=("$cmd_alias" "$cleanup_script_path")
+    wrapper_cmd+=("${CHOPI_GIT_CONFIG[@]+"${CHOPI_GIT_CONFIG[@]}"}" --)
+
+    # Point gh at the API relay socket, via a throwaway config dir of our own that leaves the
+    # user's real gh config untouched.
+    local gh_env_text
+    gh_env_text="$(github_relay_gh_env "$gh_config_dir" "$SESSION_GH_SOCK")" \
+        || { echo "chopi: could not write the gh relay config" >&2; return 1; }
+    local gh_env=()
+    readarray -t gh_env <<< "$gh_env_text"
+
+    # Open Seatbelt network holes to the session's proxy endpoints.
+    local proxy_net_profile
+    proxy_net_profile="$(mktemp "$TMPDIR/chopi-proxy-net.XXXXXX")" \
+        || { echo "chopi: could not create a temp file for the proxy network profile" >&2; return 1; }
+    write_proxy_network_profile "$proxy_net_profile" \
+        "$SESSION_PROXY_PORT" "$SESSION_RELAY_PORT" "$SESSION_GH_SOCK" \
+        || return 1
+
+    local proxy="http://127.0.0.1:$SESSION_PROXY_PORT"
 
     if [ -n "$worktree_dir" ]; then
         cd "$worktree_dir" || { echo "chopi: cannot enter worktree '$worktree_dir'" >&2; return 1; }
     fi
 
     # chopi's network profiles are always appended last so that (deny network*) lands after
-    # safehouse's own profile, pinning outgoing traffic to the subsequent holes allowed for the proxy
-    # and the GitHub relay servers. The run-dir profile goes just before them, after every file
-    # grant, so its deny outranks them all.
+    # safehouse's own profile, pinning outgoing traffic to the subsequent holes allowed for the
+    # session's proxy and GitHub relay servers. The run-dir profile goes just before them, after
+    # every file grant, so its deny outranks them all.
     #
     # errexit off around safehouse so a non-zero exit from the sandboxed command is captured
     # and propagated (so `chopi cmd && next` short-circuits) instead of aborting here.
@@ -290,7 +315,7 @@ main() {
         "${CHOPI_EXTRA_ENV[@]+"${CHOPI_EXTRA_ENV[@]}"}" \
         "${queue_env[@]+"${queue_env[@]}"}" \
         CHOPI_DIR="$CHOPI_DIR" \
-        CHOPI_GITHUB_RELAY_PORT="$GITHUB_RELAY_PORT" \
+        CHOPI_GITHUB_RELAY_PORT="$SESSION_RELAY_PORT" \
         HTTP_PROXY="$proxy"  HTTPS_PROXY="$proxy" \
         http_proxy="$proxy"  https_proxy="$proxy" \
         NODE_USE_ENV_PROXY=1 \
@@ -300,6 +325,7 @@ main() {
         "${wrapper_cmd[@]}" \
         "${cmd_argv[@]}"
     { local rc=$?; set +x; } 2>/dev/null
+    stop_session_proxy
 
     if [ -n "$worktree_dir" ] && [ -t 2 ]; then
         {

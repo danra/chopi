@@ -136,13 +136,13 @@ refuses "  -> and so is a directory inside it, which is where the sandbox config
 
 # The proxy's run dir holds the ports that aim each session's network holes.
 mkdir -p "$PROXY_RUN_DIR"
-refuses "chopi-proxy's run directory is refused as a target" \
-    "overlaps chopi-proxy's run directory" "$PROXY_RUN_DIR"
+refuses "the proxy's run directory is refused as a target" \
+    "overlaps the proxy's run directory" "$PROXY_RUN_DIR"
 refuses "  -> and so is a directory holding it" \
-    "overlaps chopi-proxy's run directory" "$TMPDIR/chopi-run"
+    "overlaps the proxy's run directory" "$TMPDIR/chopi-run"
 ln -s "$TMPDIR/chopi-run" "$TMPDIR/chopi-run-link"
 refuses "  -> and so is the run directory reached through a symlink" \
-    "overlaps chopi-proxy's run directory" "$TMPDIR/chopi-run-link/run"
+    "overlaps the proxy's run directory" "$TMPDIR/chopi-run-link/run"
 
 # Inside the workspace is allowed: the profile denies writing to the target to enforce review
 mkdir -p "$work/sub"

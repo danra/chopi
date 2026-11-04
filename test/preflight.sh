@@ -7,8 +7,9 @@
 #   * is_path_within / the workspace-overlap predicate -- if this loosens, a sandboxed
 #     command could be handed read/write to its own sandboxing policy.
 #   * preflight_initial -- the chopi-dir overlap refusal (and its CHOPI_ALLOW_SELF
-#     downgrade), and refusing a run when the GitHub relay's port is dead.
-#   * preflight_config_placement -- refusing a custom --config that lives inside the workspace.
+#     downgrade).
+#   * preflight_config_placement -- refusing a custom --config, or proxy config it names, that
+#     lives inside the workspace.
 #   * rule / the Seatbelt-rule emitter -- its empty-PATH refusal keeps an
 #     accidentally-empty variable from becoming a silently misapplied rule.
 
@@ -19,7 +20,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Exported so the scripts under test leave their temporaries here too.
 TMPDIR="$(mktemp -d)"; export TMPDIR
 trap 'rm -rf "$TMPDIR"' EXIT
-# A run dir of the test's own, not a running chopi-proxy's: util.sh derives its paths from it.
+# A run dir of the test's own, not the user's: util.sh derives PROXY_RUN_DIR from it.
 CHOPI_RUN_DIR="$TMPDIR/chopi"
 
 . "$repo/.internal/util.sh"
@@ -115,16 +116,17 @@ assert_eq "$out" "end" "  -> and writes nothing to stdout"
 tmp="$(mktemp -d)"
 out="$( cd "$tmp" && preflight_initial 2>&1 )"
 assert_not_contains "$out" "overlaps chopi's own directory" "non-overlapping workspace clears the overlap check"
-assert_not_contains "$out" "overlaps chopi-proxy's run directory" "  -> and the run-dir overlap check"
+assert_not_contains "$out" "overlaps the proxy's run directory" "  -> and the run-dir overlap check"
 
 
 # ---------------------------------------------------------------------------
 echo "preflight_initial (run dir/workspace overlap)"
 # ---------------------------------------------------------------------------
-# The run dir holds the ports file that aims chopi's holes and HTTP_PROXY: a workspace reaching it
-# would let the sandboxed command aim the next run's. CHOPI_ALLOW_SELF, for working on chopi
-# itself, has no business relaxing that. The run dir is the run/ chopi-proxy keeps inside
-# CHOPI_RUN_DIR: the rest of CHOPI_RUN_DIR, a shared dir such as /tmp, say, is no concern.
+# The run dir holds each session's proxy dir, whose ports file aims that session's holes and
+# HTTP_PROXY: a workspace reaching it would let the sandboxed command aim another session's.
+# CHOPI_ALLOW_SELF, for working on chopi itself, has no business relaxing that. The run dir is the
+# run/ chopi keeps inside CHOPI_RUN_DIR: the rest of CHOPI_RUN_DIR, a shared dir such as /tmp, say,
+# is no concern.
 # preflight_under DIR ENV... -- preflight_initial run from DIR, with util.sh sourced under ENV.
 preflight_under() {
     local dir="$1"; shift
@@ -134,12 +136,12 @@ preflight_under() {
 }
 work="$(mktemp -d)"; mkdir -p "$work/run/sub" "$work/sub"
 out="$(preflight_under "$work" CHOPI_RUN_DIR="$work")"; st=$?
-assert_contains "$out" "overlaps chopi-proxy's run directory" "refuses when workspace CONTAINS the run dir"
+assert_contains "$out" "overlaps the proxy's run directory" "refuses when workspace CONTAINS the run dir"
 assert_nonzero "$st" "  -> and returns non-zero"
 out="$(preflight_under "$work/run/sub" CHOPI_RUN_DIR="$work")"
-assert_contains "$out" "overlaps chopi-proxy's run directory" "refuses when workspace is INSIDE the run dir"
+assert_contains "$out" "overlaps the proxy's run directory" "refuses when workspace is INSIDE the run dir"
 out="$(preflight_under "$work/sub" CHOPI_RUN_DIR="$work")"
-assert_not_contains "$out" "overlaps chopi-proxy's run directory" \
+assert_not_contains "$out" "overlaps the proxy's run directory" \
     "a workspace beside the run dir, inside CHOPI_RUN_DIR, clears the check"
 out="$(preflight_under "$work" CHOPI_ALLOW_SELF=1 CHOPI_RUN_DIR="$work")"; st=$?
 assert_contains "$out" "error: workspace" "CHOPI_ALLOW_SELF does not downgrade the run-dir overlap"
@@ -219,75 +221,25 @@ assert_eq "$st" 2 "a wrong number of arguments is a hard error (exit 2)"
 
 
 # ---------------------------------------------------------------------------
-echo "where chopi-proxy keeps its socket and ports (out of the sandbox's reach)"
+echo "where the sessions' proxies keep their sockets and ports (out of the sandbox's reach)"
 # ---------------------------------------------------------------------------
-# The ports chopi-proxy reports decide which holes chopi opens: a sandboxed command that could
-# rewrite them -- as it can anything under the login TMPDIR -- would aim the next run's holes,
-# and HTTP_PROXY, at a local service of its choosing.
-# run_paths ENV... -- the socket and ports file util.sh derives under ENV, with TMPDIR set aside
-# and CHOPI_RUN_DIR unset unless ENV sets it.
-run_paths() {
+# The ports a session's proxy reports decide which holes chopi opens: a sandboxed command that could
+# rewrite them -- as it can anything under the login TMPDIR -- would aim the session's holes, and
+# HTTP_PROXY, at a local service of its choosing.
+# run_dir ENV... -- the run dir util.sh derives under ENV, with TMPDIR set aside and CHOPI_RUN_DIR
+# unset unless ENV sets it.
+run_dir() {
     # shellcheck disable=SC2016  # expands in the child bash, against the environment under test
     env -u CHOPI_RUN_DIR TMPDIR=/login-tmp "$@" \
-        bash -c '. "$1/.internal/util.sh"; echo "$GH_RELAY_SOCK $PROXY_PORTS_FILE"' _ "$repo"
+        bash -c '. "$1/.internal/util.sh"; echo "$PROXY_RUN_DIR"' _ "$repo"
 }
-assert_eq "$(run_paths HOME=/home)" \
-    "/home/.chopi/run/chopi-gh-relay.sock /home/.chopi/run/chopi-proxy.ports" \
-    "the socket and ports file live under ~/.chopi/run, not TMPDIR"
-assert_eq "$(run_paths HOME=/home CHOPI_RUN_DIR=/elsewhere)" \
-    "/elsewhere/run/chopi-gh-relay.sock /elsewhere/run/chopi-proxy.ports" \
-    "  -> and CHOPI_RUN_DIR moves both, into a run/ of its own, for a proxy of its own"
-# chopi-proxy runs from chopi's directory and chopi from the workspace: a relative CHOPI_RUN_DIR
-# must name the same dir for both, the one where it was given.
-assert_eq "$(cd /tmp && run_paths HOME=/home CHOPI_RUN_DIR=rel/dir)" \
-    "$(cd /tmp && pwd)/rel/dir/run/chopi-gh-relay.sock $(cd /tmp && pwd)/rel/dir/run/chopi-proxy.ports" \
+assert_eq "$(run_dir HOME=/home)" "/home/.chopi/run" "the run dir is ~/.chopi/run, not under TMPDIR"
+assert_eq "$(run_dir HOME=/home CHOPI_RUN_DIR=/elsewhere)" "/elsewhere/run" \
+    "  -> and CHOPI_RUN_DIR moves it, into a run/ of its own"
+# chopi moves into a worktree, so a relative CHOPI_RUN_DIR is taken from where it was given, lest it
+# name a different dir there.
+assert_eq "$(cd /tmp && run_dir HOME=/home CHOPI_RUN_DIR=rel/dir)" "$(cd /tmp && pwd)/rel/dir/run" \
     "  -> a relative one is taken from the directory it is given in"
-
-
-# ---------------------------------------------------------------------------
-echo "preflight_initial (the ports chopi-proxy reports)"
-# ---------------------------------------------------------------------------
-mkdir -p "$PROXY_RUN_DIR"
-out="$( cd "$tmp" && preflight_initial 2>&1 )"; st=$?
-assert_contains "$out" "no outgoing proxy: no ports reported in $PROXY_PORTS_FILE" \
-    "a proxy that reported no ports is refused, naming where chopi looked"
-assert_nonzero "$st" "  -> and returns non-zero"
-
-printf 'proxy x\nrelay 24761\n' > "$PROXY_PORTS_FILE"
-out="$( cd "$tmp" && preflight_initial 2>&1 )"; st=$?
-assert_contains "$out" "no ports reported" "malformed ports are refused like missing ones"
-assert_nonzero "$st" "  -> and returns non-zero"
-
-out="$( printf 'relay 24761\nproxy 24760\n' > "$PROXY_PORTS_FILE"
-        read_proxy_ports && echo "proxy $PROXY_PORT relay $GITHUB_RELAY_PORT" )"
-assert_eq "$out" "proxy 24760 relay 24761" "read_proxy_ports reads each port by its name"
-
-
-# ---------------------------------------------------------------------------
-echo "preflight_initial (the GitHub relay must be live for every run)"
-# ---------------------------------------------------------------------------
-# Stub `nc` -- inherited into the command-substitution subshell -- so the check is hermetic: it
-# must not depend on a real chopi-proxy being up, nor probe the live ports. The stub echoes its
-# args so we can assert GITHUB_RELAY_PORT (the relay) is probed, not just PROXY_PORT
-# (smokescreen); it reports the proxy port up, and the relay port up (RC 0) or down (RC != 0).
-# relay_probe RC runs preflight_initial under the stub, from a non-overlapping dir.
-relay_probe() {
-    arity 1
-    local rc="$1"
-    # shellcheck disable=SC2329  # nc stub invoked indirectly
-    ( cd "$tmp" && { nc() { echo "nc $*"; [ "$3" = "$PROXY_PORT" ] || return "$rc"; }; preflight_initial; } 2>&1 )
-}
-
-printf 'proxy 24760\nrelay 24761\n' > "$PROXY_PORTS_FILE"
-out="$(relay_probe 1)"; st=$?
-assert_contains "$out" "nc -z 127.0.0.1 24761" "probes the relay port it reports, not just the smokescreen port"
-assert_contains "$out" "no GitHub relay"         "a dead relay is refused with a clear message"
-assert_nonzero "$st" "  -> and returns non-zero"
-
-# The check cleared is all this case pins: past it, preflight_initial goes on to probe
-# host state (the GitHub API relay socket, the safehouse CLI) that a unit test doesn't control.
-out="$(relay_probe 0)"
-assert_not_contains "$out" "no GitHub relay" "a live relay clears the check"
 
 
 # ---------------------------------------------------------------------------

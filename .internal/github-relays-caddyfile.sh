@@ -19,8 +19,8 @@
 # slots in memory, and chopi-smokescreen pipes the result to Caddy over stdin -- so the credentials
 # never touch disk. The
 # listeners are chopi-smokescreen's, opened before Caddy starts and handed to it open: Caddy reads
-# their descriptors from its environment, and the git relay's port, for the redirects it rewrites,
-# too ({$CHOPI_GIT_PORT}).
+# their descriptors from its environment, and the git relay's kernel-picked port, for the redirects
+# it rewrites, too ({$CHOPI_GIT_PORT}).
 #
 # These are reverse proxies, not MITMs: the sandbox reaches them over plaintext loopback HTTP (gh
 # speaks plaintext because chopi sets GH_HOST=github.localhost, dialing the socket via

@@ -27,7 +27,8 @@ const (
 )
 
 // relayStartTimeout bounds Caddy's start, from launch to serving: time enough for macOS to scan
-// a freshly installed Caddy on its first run.
+// a freshly installed Caddy on its first run. chopi sets no deadline of its own for the proxy's
+// start, so a Caddy that never serves fails the session by this one, with its own reason.
 const relayStartTimeout = 25 * time.Second
 
 // relayDrainTimeout bounds the stop of a Caddy a reload replaced, from TERM to exit, before it is
