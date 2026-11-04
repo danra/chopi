@@ -12,9 +12,7 @@ unset _util_dir
 SMOKESCREEN_BIN="$CHOPI_DIR/.internal/proxy/chopi-smokescreen"
 
 PROXY_PORT=4760
-# The GitHub relay's loopback listener. Keep this in sync with the hole hardcoded in
-# .internal/network.sb (a Seatbelt profile can't read these shell vars).
-GITHUB_RELAY_PORT=4761       # git-smart-HTTP -> github.com
+GITHUB_RELAY_PORT=4761       # the git relay's loopback listener: git-smart-HTTP -> github.com
 
 # The Caddy GitHub-API relay's endpoint. Unlike the git relay (a TCP port), gh reaches this over a
 # unix socket: chopi sets GH_HOST=github.localhost so gh addresses the API as plaintext
@@ -355,17 +353,20 @@ github_relay_gh_env() {
         "GH_TOKEN=x-chopi-relay"
 }
 
-# Write the Seatbelt profile re-opening the GitHub API relay's socket SOCK to FILE: network.sb denies
-# unix sockets along with the rest.
+# Write the Seatbelt profile re-opening the proxy's endpoints to FILE: network.sb denies every
+# outgoing connection, so these are the only ones the sandboxed command can make -- the smokescreen
+# forward proxy on PORT, the git relay on RELAY_PORT, and the API relay's socket SOCK.
 #
-# usage: write_proxy_network_profile FILE SOCK
+# usage: write_proxy_network_profile FILE PORT RELAY_PORT SOCK
 write_proxy_network_profile() {
-    arity 2
-    local file="$1" sock
-    sock="$(realpath "$2")" \
-        || { echo "chopi: cannot resolve the GitHub API relay socket path '$2'" >&2; return 1; }
+    arity 4
+    local file="$1" port="$2" relay_port="$3" sock
+    sock="$(realpath "$4")" \
+        || { echo "chopi: cannot resolve the GitHub API relay socket path '$4'" >&2; return 1; }
     {
-        echo ";; chopi: re-open the GitHub API relay's unix socket (network.sb denies unix sockets)."
+        echo ";; chopi: re-open the proxy's endpoints (network.sb denies the rest)."
+        rule 'allow network-outbound' 'remote ip' "localhost:$port"
+        rule 'allow network-outbound' 'remote ip' "localhost:$relay_port"
         rule 'allow network-outbound' literal "$sock"
     } >"$file"
 }

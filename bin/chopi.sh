@@ -250,11 +250,12 @@ main() {
     local gh_env=()
     readarray -t gh_env <<< "$gh_env_text"
 
-    # Open a Seatbelt network hole to the GitHub API relay socket.
+    # Open Seatbelt network holes to the proxy's endpoints.
     local proxy_net_profile
     proxy_net_profile="$(mktemp "$TMPDIR/chopi-proxy-net.XXXXXX")" \
         || { echo "chopi: could not create a temp file for the proxy network profile" >&2; return 1; }
-    write_proxy_network_profile "$proxy_net_profile" "$GH_RELAY_SOCK" || return 1
+    write_proxy_network_profile "$proxy_net_profile" "$PROXY_PORT" "$GITHUB_RELAY_PORT" "$GH_RELAY_SOCK" \
+        || return 1
 
     local proxy="http://127.0.0.1:$PROXY_PORT"
 

@@ -12,7 +12,7 @@ BEL="$(printf '\007')"   # U+0007 BEL: format-deny.jq prefixes an interactive DE
 ESC="$(printf '\033')"   # U+001B ANSI escape: introduces the DENY color code
 set +euo pipefail
 
-header "test/chopi-proxy.sh -- unit tests for bin/chopi-proxy.sh's log logic + proxy-port invariant + github migration refusal + relay reaper + listener ownership"
+header "test/chopi-proxy.sh -- unit tests for bin/chopi-proxy.sh's log logic + network holes + github migration refusal + relay reaper + listener ownership"
 
 # Exported so the scripts under test leave their temporaries here too.
 TMPDIR="$(mktemp -d)"; export TMPDIR
@@ -411,12 +411,19 @@ assert_eq "$(exfiltration_prone_github_allowed_domains "$lookalike_rules")" "" \
 
 
 # ---------------------------------------------------------------------------
-echo "proxy port consistency (network.sb <-> util.sh)"
+echo "the proxy's network holes (network.sb denies, the proxy profile re-opens)"
 # ---------------------------------------------------------------------------
-ports_sb="$(grep -oE 'localhost:[0-9]+' "$repo/.internal/network.sb" | grep -oE '[0-9]+')"
-want_ports="$PROXY_PORT
-$GITHUB_RELAY_PORT"
-assert_eq "$ports_sb" "$want_ports" "network.sb loopback ports match util.sh (smokescreen $PROXY_PORT, GitHub relay $GITHUB_RELAY_PORT)"
+assert_eq "$(grep -c '^[[:space:]]*(allow' "$repo/.internal/network.sb")" "0" \
+    "network.sb opens nothing itself: the proxy profile does"
+
+gh_sock="$TMPDIR/gh sock"
+: > "$gh_sock"
+write_proxy_network_profile "$TMPDIR/net.sb" 24760 24761 "$gh_sock"
+net_rules="$(grep -v '^;' "$TMPDIR/net.sb")"
+assert_eq "$net_rules" '(allow network-outbound (remote ip "localhost:24760"))
+(allow network-outbound (remote ip "localhost:24761"))
+(allow network-outbound (literal "'"$(realpath "$gh_sock")"'"))' \
+    "the proxy profile opens exactly the proxy's two ports and its API relay socket"
 
 
 # ---------------------------------------------------------------------------

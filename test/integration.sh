@@ -705,8 +705,8 @@ fi
 code="$(sandbox_curl --max-time 15 --noproxy '*' "https://$ALLOWED_HOST")"
 assert_not_contains "$code" "200"                  "a direct outgoing connection bypassing the proxy is blocked by the sandbox"
 
-# (4) Outgoing connections are pinned to the allowed proxy ports SPECIFICALLY: a loopback port
-# that network.sb does not allow (it allows 4760-4761) is blocked by Seatbelt. Offline-safe.
+# (4) Outgoing connections are pinned to the proxy ports SPECIFICALLY: any other loopback port is
+# blocked by Seatbelt. Offline-safe.
 code="$(sandbox_curl --max-time 15 --proxy "http://127.0.0.1:9999" "https://$ALLOWED_HOST")"
 assert_not_contains "$code" "200"                  "an outgoing connection to a non-allowlisted loopback port is blocked by the sandbox"
 
