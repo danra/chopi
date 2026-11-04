@@ -2,31 +2,27 @@
 // library and extended to hot-reload the --egress-acl-file rules, and the supervisor of the
 // session's GitHub relays, served by Caddy.
 //
-//	chopi-smokescreen --relay-log FILE --gh-sock PATH --ports-file FILE --github-allowlist FILE
+//	chopi-smokescreen --dir DIR --relay-log FILE --github-allowlist FILE
 //	                  --relay-config CMD -- SMOKESCREEN_FLAGS...
 //
 //   - Smokescreen's flags and log output are identical to the standalone smokescreen binary's,
 //     but for where it listens: --listen-ip and --listen-port are ignored.
 //   - The rules file is polled for changes, with a new valid rules set immediately
 //     and atomically swapped in.
-//   - Every listener is opened here -- smokescreen's own and the git relay's, each on a loopback
-//     port: the one it had in the last run where free, else one the kernel picks; and the API
-//     relay's on the unix socket PATH -- so no other process can take one first. Smokescreen
-//     serves its own; Caddy, started with its config on stdin and its output in the --relay-log
-//     FILE, inherits the relays'.
+//   - Every listener is opened here, on a loopback port the kernel picks, or the unix socket
+//     DIR/gh.sock, so no other process can take it first. Smokescreen serves its own; Caddy, started
+//     with its config on stdin and its output in the --relay-log FILE, inherits the relays'.
 //   - Caddy's config is CMD's output, run on the --github-allowlist FILE. GH_TOKEN and
 //     GITHUB_TOKEN, where set, are CMD's alone: taken out of the environment everything else gets.
 //   - The allowlist is polled for changes, as the rules are, and on one, a Caddy on the new config
 //     replaces the one serving, on the same listeners: their ports and socket path don't change.
 //     The one replaced finishes the requests it has. A config that fails to render, or a Caddy
 //     that fails to start on it, keeps the one serving.
-//   - Once smokescreen listens and Caddy serves, the ports are reported in the --ports-file FILE,
-//     for chopi to learn them from, and to know the proxy is up, and a line says where on stdout.
-//     They are also recorded in FILE.last, which outlives the proxy, for its next run to reclaim.
-//     Until then, errors go to stderr, for chopi to show; from then on, everything goes to stdout,
-//     the log.
-//   - The proxy stops on TERM or HUP, removing the socket and the ports file; if the Caddy serving
-//     exits, it stops too, so nothing is left serving half the session. Caddy is stopped with it.
+//   - Once smokescreen listens and Caddy serves, the ports are reported in DIR/ports, for chopi
+//     to learn them from, and to know the proxy is up, and a line says where on stdout. Until then,
+//     errors go to stderr, for chopi to show; from then on, everything goes to stdout, the log.
+//   - The proxy stops on TERM or HUP; if the Caddy serving exits, it stops too, so nothing is left
+//     serving half the session. Caddy is stopped with it.
 
 package main
 
@@ -39,6 +35,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -165,40 +162,10 @@ func useListener(conf *smokescreen.Config, listener *net.TCPListener) {
 	conf.Port = uint16(portOf(listener))
 }
 
-// listenLoopback listens on loopback port, or, for 0, on one the kernel picks. Loopback only: both
-// the proxy and the relays would be open to the LAN on a wildcard address.
-func listenLoopback(port int) (*net.TCPListener, error) {
-	return net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port})
-}
-
-// listenLoopbackPorts opens a loopback listener for each of preferred: on that port where it is
-// free, else on one the kernel picks. Keeping its ports keeps a restarted proxy reachable from the
-// chopi sessions already running: their sandbox's holes, and their HTTP_PROXY, name the ports they
-// started with. All the preferred ports are taken before the kernel picks any, so it can't hand one
-// of them to another listener of ours.
-func listenLoopbackPorts(preferred []int) ([]*net.TCPListener, error) {
-	listeners := make([]*net.TCPListener, len(preferred))
-	for i, port := range preferred {
-		if port != 0 {
-			listeners[i], _ = listenLoopback(port)
-		}
-	}
-	for i := range listeners {
-		if listeners[i] != nil {
-			continue
-		}
-		listener, err := listenLoopback(0)
-		if err != nil {
-			for _, l := range listeners {
-				if l != nil {
-					l.Close()
-				}
-			}
-			return nil, err
-		}
-		listeners[i] = listener
-	}
-	return listeners, nil
+// listenLoopback listens on a loopback port the kernel picks. Loopback only: both the proxy and the
+// relays would be open to the LAN on a wildcard address.
+func listenLoopback() (*net.TCPListener, error) {
+	return net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 }
 
 func main() {
@@ -242,14 +209,11 @@ func main() {
 	holder.current.Store(rules)
 	conf.EgressACL = holder
 
-	// On the ports of the last run, where they are free.
-	last := readPorts(lastPortsFile(opts.portsFile))
-	listeners, err := listenLoopbackPorts([]int{last.proxy, last.relay})
+	proxyListener, err := listenLoopback()
 	if err != nil {
 		fail("can't listen: %v", err)
 	}
-	useListener(conf, listeners[0])
-	reported := ports{proxy: int(conf.Port), relay: portOf(listeners[1])}
+	useListener(conf, proxyListener)
 	// Checked here, as smokescreen would only as it starts: a config it refuses is a reason the
 	// session can't start, for chopi to show.
 	if err := conf.Validate(); err != nil {
@@ -266,25 +230,23 @@ func main() {
 		// allowlist can be deliberate, so it is no reason to speak up at every start.
 		fmt.Println(notes)
 	}
-	api, err := listenAPIRelay(opts.ghSock)
+	gitListener, err := listenLoopback()
+	if err != nil {
+		fail("can't listen: git relay: %v", err)
+	}
+	ghSock := filepath.Join(opts.dir, "gh.sock")
+	api, err := listenAPIRelay(ghSock)
 	if err != nil {
 		fail("can't listen: %v", err)
 	}
-	relaySup := newRelaySupervisor(&relays{git: listeners[1], api: api}, opts.relayLog, relayConf,
+	relaySup := newRelaySupervisor(&relays{git: gitListener, api: api}, opts.relayLog, relayConf,
 		conf.Log.WithField("allowlist", opts.allowlist))
+	reported := ports{proxy: int(conf.Port), relay: portOf(gitListener)}
 	stop := stopSignals()
 
-	// Leave no socket or ports file behind: they were ours.
-	cleanup := func() {
-		os.Remove(opts.ghSock)
-		os.Remove(opts.portsFile)
-	}
-
-	// Stop the proxy with STATUS, Caddy with it: the socket and ports file go once nothing serves
-	// them.
+	// Stop the proxy with STATUS, Caddy with it.
 	exit := func(status int) {
 		relaySup.stopAll()
-		cleanup()
 		os.Exit(status)
 	}
 	// Both servers start at once: smokescreen serves its listener right away, as Caddy starts.
@@ -324,15 +286,12 @@ func main() {
 	case <-stop:
 		exit(0)
 	}
-	// The last ports first: remembered past the proxy's stop, for its next start to take again.
-	for _, path := range []string{lastPortsFile(opts.portsFile), opts.portsFile} {
-		if err := reportPorts(path, reported); err != nil {
-			complain("can't write the ports to %s: %v", path, err)
-			exit(1)
-		}
+	if err := reportPorts(filepath.Join(opts.dir, "ports"), reported); err != nil {
+		complain("can't report the ports: %v", err)
+		exit(1)
 	}
 	fmt.Printf("[chopi-smokescreen] outgoing proxy on 127.0.0.1:%d, GitHub relay on 127.0.0.1:%d, "+
-		"GitHub API relay on %s\n", reported.proxy, reported.relay, opts.ghSock)
+		"GitHub API relay on %s\n", reported.proxy, reported.relay, ghSock)
 	// Up from here on, so anything left to say belongs in the log.
 	syscall.Dup2(1, 2)
 	// Should the log's formatter die, the log is lost from here on, but not the session's
