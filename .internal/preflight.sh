@@ -11,6 +11,8 @@
 #   * preflight_config_placement -- deferred until chopi has resolved the workspace (the
 #                                   --worktree target), since that is the dir a custom
 #                                   --config must stay outside of.
+#
+# resolve_proxy_config, run up front, resolves the proxy's config, which it reads all session long.
 
 _preflight_dir="$(dirname "${BASH_SOURCE[0]}")"
 . "$_preflight_dir/util.sh"
@@ -91,4 +93,34 @@ preflight_config_placement() {
             "Keep the sandbox config outside the workspace you're sandboxing." \
             || return 1
     fi
+}
+
+# Resolve the proxy config file the sandbox config's variable VAR names -- or, when it names none,
+# the default config/DEFAULT the installer creates from config/templates/TEMPLATE -- setting VAR to
+# its real path. chopi hands the proxy that path, which it reads for the whole session, hot-reloading
+# the rules.
+#
+# usage: resolve_proxy_config VAR DEFAULT TEMPLATE
+resolve_proxy_config() {
+    arity 3
+    local var="$1" default="$CHOPI_DIR/config/$2" template="$CHOPI_DIR/config/templates/$3"
+    local path resolved
+    path="${!var}"
+    case "$path" in
+        '') if [ ! -e "$default" ]; then
+                echo "chopi: no $2 at $default" >&2
+                echo "Run the installer to create it from the template:  $CHOPI_DIR/install.sh" >&2
+                echo "or copy it manually:  cp \"$template\" \"$default\"" >&2
+                return 1
+            fi
+            path="$default" ;;
+        /*) ;;
+        *)  echo "chopi: $var must be an absolute path, got '$path'" >&2
+            return 1 ;;
+    esac
+    # Checked apart from realpath: GNU's, often first on PATH, resolves a path that doesn't exist.
+    [ -f "$path" ] || { echo "chopi: no $var file at '$path'" >&2; return 1; }
+    resolved="$(realpath "$path" 2>/dev/null)" \
+        || { echo "chopi: cannot resolve $var path '$path'" >&2; return 1; }
+    printf -v "$var" '%s' "$resolved"
 }

@@ -108,9 +108,8 @@ main() {
     # shellcheck source=/dev/null  # can't follow user-supplied config path at lint time
     . "$config"
 
-    # The proxy's config: the sandbox config's, else the defaults the installer creates.
-    : "${CHOPI_PROXY_RULES:=$CHOPI_DIR/config/proxy-rules.yaml}"
-    : "${CHOPI_GITHUB_ALLOWLIST:=$CHOPI_DIR/config/github-allowlist}"
+    resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml || return 1
+    resolve_proxy_config CHOPI_GITHUB_ALLOWLIST github-allowlist github-allowlist.template || return 1
 
     if [ -n "$worktree_given" ]; then
         local wt_out_file
