@@ -34,13 +34,14 @@
 	}
 }
 
-# GitHub git site start. Its port is CHOPI_GIT_PORT in Caddy's environment, set where Caddy is
-# started: the config is rendered before the port is known.
+# GitHub git site start
 http://127.0.0.1:{$CHOPI_GIT_PORT} {
 	# The site address host above only MATCHES requests; it does not bind the listener.
 	# Without an explicit bind Caddy listens on ALL interfaces, where a LAN client sending
-	# "Host: 127.0.0.1" would reach the credentialed routes.
-	bind 127.0.0.1
+	# "Host: 127.0.0.1" would reach the credentialed routes. The listener is the one
+	# chopi-smokescreen opened on 127.0.0.1 and handed to Caddy open, on descriptor CHOPI_GIT_FD,
+	# at the port in CHOPI_GIT_PORT.
+	bind fd/{$CHOPI_GIT_FD}
 
 	map {http.request.header.Content-Encoding} {content_encoding} {
 		gzip gzip

@@ -169,12 +169,9 @@ done
 # - Allowed connections and the known noise are dropped
 # - Every other line passes through. notify_deny and notify_reload manage the macOS banners.
 format_smokescreen_log() {
-    # This runs in a process substitution, which inherits the launching shell's job table
-    # (the caddy pipeline, the reaper). Those are not this shell's children, so their
-    # entries stay "running" forever, and once the pid counter wraps, a per-line fork
-    # landing on a recycled pid from one of them makes bash print a "forked pid N appears
-    # in running job 0" warning into the log. Drop the inherited entries.
-    disown -a
+    # A Ctrl-C reaches this formatter too. It ignores it, and stop signals generally, and finishes
+    # on its own instead, once chopi-smokescreen's output ends, so its last words still show.
+    trap '' INT TERM HUP
     local is_interactive=false
     [ -t 1 ] && is_interactive=true
     classify_log "$is_interactive" "$SCRIPT_NAME" notify_deny notify_reload "$VERBOSE"
@@ -258,27 +255,23 @@ fi
 # (if set, resolve_gh_token already read it above).
 unset GH_TOKEN GITHUB_TOKEN
 
-if ! start_github_relay "$CADDYFILE_TEXT" "$CADDY_LOG"; then
-    echo "error: the GitHub relay did not come up on 127.0.0.1:$GITHUB_RELAY_PORT." >&2
-    if [ -f "$CADDY_LOG" ]; then
-        echo "Its log:" >&2
-        sed 's/^/  /' "$CADDY_LOG" >&2
-    fi
-    kill "${CADDY_PID:-}" 2>/dev/null || true
+# The API relay's socket: clear one a crashed prior run left, but not one that still answers, a
+# running chopi-proxy's.
+if sock_has_listener "$GH_RELAY_SOCK"; then
+    echo "error: a running GitHub API relay already owns $GH_RELAY_SOCK" >&2
     exit 1
 fi
-CADDYFILE_TEXT=""
+rm -f "$GH_RELAY_SOCK"
 
-# Tie Caddy's lifetime to smokescreen's.
-start_relay_reaper $$ "$CADDY_PID" "$TMPDIR" "$GH_RELAY_SOCK"
-
-# Start smokescreen
-echo "[$SCRIPT_NAME] GitHub relay on 127.0.0.1:$GITHUB_RELAY_PORT, GitHub API relay on $GH_RELAY_SOCK" >&2
-echo "[$SCRIPT_NAME]   relay log: $CADDY_LOG" >&2
-echo "[$SCRIPT_NAME] starting outgoing proxy on 127.0.0.1:$PROXY_PORT (Ctrl-C to stop)" >&2
-# exec keeps our pid for smokescreen: callers waiting on its port (test/integration.sh) pass
-# wait_for_listener this script's pid as the listener's own.
-exec "$SMOKESCREEN_BIN" --config-file ./.internal/smokescreen-config.yaml \
-              --listen-ip 127.0.0.1 --listen-port "$PROXY_PORT" \
-              --egress-acl-file "$RULES" \
-              > >(format_smokescreen_log) 2>&1
+echo "[$SCRIPT_NAME] relay log: $CADDY_LOG" >&2
+echo "[$SCRIPT_NAME] starting the outgoing proxy and the GitHub relays (Ctrl-C to stop)" >&2
+# chopi-smokescreen opens the listeners, serves the proxy, and starts Caddy on the relays' config,
+# handed over stdin: printf is a builtin, so the baked GitHub token doesn't appear in any process's
+# argv. It says where it serves once up. We stay, for Caddy to go with chopi-smokescreen however
+# it goes; a Ctrl-C reaches it as a TERM from us.
+lead_group "$SMOKESCREEN_BIN" \
+    --relay-log "$CADDY_LOG" --git-port "$GITHUB_RELAY_PORT" --gh-sock "$GH_RELAY_SOCK" -- \
+    --config-file ./.internal/smokescreen-config.yaml \
+    --listen-ip 127.0.0.1 --listen-port "$PROXY_PORT" \
+    --egress-acl-file "$RULES" \
+    < <(printf '%s' "$CADDYFILE_TEXT") > >(format_smokescreen_log) 2>&1

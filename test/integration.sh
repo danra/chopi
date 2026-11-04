@@ -61,7 +61,7 @@ fi
 # ---------------------------------------------------------------------------
 vartmp="$(cd /var/tmp && pwd -P)" || { echo "error: cannot resolve /var/tmp" >&2; exit 1; }
 base="$(mktemp -d "$vartmp/chopi-itest.XXXXXX")" || { echo "error: mktemp failed" >&2; exit 1; }
-trap 'if [ -n "${proxy_pid:-}" ]; then kill "$proxy_pid" 2>/dev/null || true; wait "$proxy_pid" 2>/dev/null || true; fi; rm -rf "$base" "$TMPDIR"' EXIT
+trap 'if [ -n "${proxy_pid:-}" ]; then stop_proxy "$proxy_pid"; fi; rm -rf "$base" "$TMPDIR"' EXIT
 
 ws="$base/workspace"            # the sandbox workspace (read/write granted, as the workdir)
 outside="$base/outside"         # sibling of the workspace -> reliably denied
@@ -161,8 +161,38 @@ wait_for() {
     wait_for_count "$f" "$pat" 1
 }
 
+# start_proxy LOG ARGS... -- start chopi-proxy with ARGS in the background, logging to LOG; $! is
+# its PID. It starts as a terminal starts it, in a process group of its own (set -m): without job
+# control, bash starts a background command with INT ignored, past any trap's reach.
+start_proxy() {
+    local log="$1"; shift
+    set -m
+    "$repo/bin/chopi-proxy.sh" "$@" > "$log" 2>&1 &
+    set +m
+}
+
+# stop_proxy PID -- stop the chopi-proxy PID as a Ctrl-C would: an INT to its whole process group.
+stop_proxy() {
+    arity 1
+    kill -INT -- "-$1" 2>/dev/null || true
+    wait "$1" 2>/dev/null || true
+}
+
+# wait_for_proxy PID LOG -- wait (~30s) for the chopi-proxy PID to say, in LOG, that it serves;
+# fails if it exits first.
+wait_for_proxy() {
+    arity 2
+    local pid="$1" log="$2" _
+    for _ in {1..300}; do
+        grep -qF '[chopi-smokescreen] outgoing proxy on ' "$log" 2>/dev/null && return 0
+        kill -0 "$pid" 2>/dev/null || return 1
+        sleep 0.1
+    done
+    return 1
+}
+
 # Poll ~5s for child PID to exit and reap it: returns 0 with its exit status in
-# WAIT_FOR_EXIT_RC. On timeout kills PID, reaps it, and returns 1.
+# WAIT_FOR_EXIT_RC. On timeout stops PID's process group, reaps it, and returns 1.
 wait_for_exit() {
     arity 1
     local pid="$1" _
@@ -174,8 +204,7 @@ wait_for_exit() {
         fi
         sleep 0.1
     done
-    kill "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
+    stop_proxy "$pid"
     return 1
 }
 
@@ -199,7 +228,7 @@ nonempty_github_allow="$base/config/itest-github-allowlist-nonempty"
 printf 'soundradix/*\n' > "$nonempty_github_allow"
 refuse_log="$base/refuse.log"
 
-GH_TOKEN='' "$repo/bin/chopi-proxy.sh" --rules "$rules" --github-allowlist "$nonempty_github_allow" > "$refuse_log" 2>&1 &
+GH_TOKEN='' start_proxy "$refuse_log" --rules "$rules" --github-allowlist "$nonempty_github_allow"
 refuse_pid=$!
 
 if ! wait_for_exit "$refuse_pid"; then
@@ -230,7 +259,7 @@ exfil_github_allow="$base/config/itest-github-allowlist-exfil"
 : > "$exfil_github_allow"
 exfil_log="$base/exfil-refuse.log"
 
-"$repo/bin/chopi-proxy.sh" --rules "$exfil_rules" --github-allowlist "$exfil_github_allow" > "$exfil_log" 2>&1 &
+start_proxy "$exfil_log" --rules "$exfil_rules" --github-allowlist "$exfil_github_allow"
 exfil_pid=$!
 
 if ! wait_for_exit "$exfil_pid"; then
@@ -248,9 +277,10 @@ fi
 # The override: the same rules only warn with CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1,
 # and the proxy comes up.
 override_log="$base/exfil-override.log"
-CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1 "$repo/bin/chopi-proxy.sh" --rules "$exfil_rules" --github-allowlist "$exfil_github_allow" > "$override_log" 2>&1 &
+CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1 start_proxy "$override_log" \
+    --rules "$exfil_rules" --github-allowlist "$exfil_github_allow"
 override_pid=$!
-if wait_for_listener "$PROXY_PORT" "$override_pid"; then
+if wait_for_proxy "$override_pid" "$override_log"; then
     ok "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1 lets the proxy start"
     assert_contains "$(cat "$override_log")" "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY is set" \
         "  -> with the refusal downgraded to a warning"
@@ -258,8 +288,7 @@ else
     bad "the proxy did not come up with CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1"
     sed 's/^/  /' "$override_log" >&2 || true
 fi
-kill "$override_pid" 2>/dev/null || true
-wait "$override_pid" 2>/dev/null || true
+stop_proxy "$override_pid"
 # Free the ports for the real proxy below (Caddy exits ~0.2s after smokescreen).
 for _ in {1..50}; do
     first_listening_port "$PROXY_PORT" "$GITHUB_RELAY_PORT" >/dev/null || break
@@ -276,10 +305,10 @@ empty_github_allow="$base/config/itest-github-allowlist-empty"
 : > "$empty_github_allow"
 
 # The stub alerter goes first on the proxy's PATH; jq/nc/etc. stay reachable via the rest.
-PATH="$alerter_stub:$PATH" "$repo/bin/chopi-proxy.sh" --rules "$rules" --github-allowlist "$empty_github_allow" > "$proxy_log" 2>&1 &
+PATH="$alerter_stub:$PATH" start_proxy "$proxy_log" --rules "$rules" --github-allowlist "$empty_github_allow"
 proxy_pid=$!
 
-if ! wait_for_listener "$PROXY_PORT" "$proxy_pid"; then
+if ! wait_for_proxy "$proxy_pid" "$proxy_log"; then
     echo "error: the test proxy did not come up on 127.0.0.1:$PROXY_PORT" >&2
     echo "--- proxy.log ---" >&2; cat "$proxy_log" >&2
     exit 1
