@@ -8,7 +8,7 @@
 # github-relay-*.caddy (git) and github-api-relay-*.caddy (API) fragments next to this script:
 # two loopback reverse-proxy listeners,
 #
-#   :GITHUB_RELAY_PORT (TCP)      git-smart-HTTP -> github.com
+#   :{$CHOPI_GIT_PORT} (TCP)      git-smart-HTTP -> github.com
 #   GH_RELAY_SOCK (unix socket)   gh REST API    -> api.github.com / uploads.github.com
 #
 # with the credentialed routes included only when the allowlist has entries, and a catch-all
@@ -17,7 +17,8 @@
 #
 # chopi-proxy.sh renders this, fills the @@CHOPI_AUTH@@ / @@CHOPI_API_AUTH@@ credential slots and
 # the @@CHOPI_GH_SOCK@@ socket-path slot in memory, and pipes the result to Caddy over stdin -- so
-# they never touch disk.
+# they never touch disk. Caddy reads the git relay's port from its environment
+# ({$CHOPI_GIT_PORT}).
 #
 # These are reverse proxies, not MITMs: the sandbox reaches them over plaintext loopback HTTP (gh
 # speaks plaintext because chopi sets GH_HOST=github.localhost, dialing the socket via
@@ -142,7 +143,6 @@ emit_caddyfile() {
     deny_auth_push="$(deny_pkt git-receive-pack "$auth_msg")"
 
     fill_slots "$text" \
-        @@GITPORT@@ "$GITHUB_RELAY_PORT" \
         @@ALLOWLIST_REGEX@@ "$allowlist_regex" \
         @@DENY_PKT_FETCH@@ "$deny_fetch" \
         @@DENY_PKT_PUSH@@ "$deny_push" \

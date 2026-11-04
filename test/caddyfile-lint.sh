@@ -32,6 +32,9 @@ printf 'owner/repo\n' > "$WORK/allow-populated"
 # here is the one caddy is handed in production. The path is TMPDIR-derived, so fill with one
 # holding whitespace, which a TMPDIR may legally hold.
 sock="$WORK/tmp dir/chopi-gh-relay.sock"
+# The git relay's port comes from Caddy's environment, as start_github_relay sets it. Not the
+# default port, so the checks below tell the environment's from one baked in.
+export CHOPI_GIT_PORT=24761
 
 for cf in github-populated github-empty; do
     text="$(cat "$WORK/$cf")"
@@ -60,13 +63,20 @@ for cf in github-populated github-empty; do
     listeners="$(grep -oE '"listen":\[[^]]*\]' "$WORK/json" | grep -oE '"[^"]*"' | grep -v '^"listen"$' | tr -d '"')"
     while IFS= read -r addr; do
         case "$addr" in
-            "127.0.0.1:$GITHUB_RELAY_PORT" | "unix/$sock") ;;
+            "127.0.0.1:$CHOPI_GIT_PORT" | "unix/$sock") ;;
             *)
                 echo "the $cf render binds an unexpected listener '$addr':" >&2
                 grep -oE '"listen":\[[^]]*\]' "$WORK/json" >&2
                 exit 1 ;;
         esac
     done <<< "$listeners"
+    # A GitHub redirect (a renamed repo) is rewritten back through the relay, on the same port.
+    # shellcheck disable=SC2016  # a Caddy regex replacement, not this shell's expansion
+    if ! grep -qF '"http://127.0.0.1:'"$CHOPI_GIT_PORT"'/$1"' "$WORK/json"; then
+        echo "the $cf render does not rewrite GitHub redirects to the relay's port:" >&2
+        grep -oE '"Location":[^]]*\]' "$WORK/json" >&2
+        exit 1
+    fi
 done
 
 echo "caddy relay configs: valid"

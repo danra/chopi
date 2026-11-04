@@ -40,7 +40,8 @@ cf="$WORK/populated"
 render 'soundradix/*' 'acme/tool' 'acme/tool.js' > "$cf"
 
 echo "-- structure --"
-assert_contains "$(cat "$cf")" "http://127.0.0.1:$GITHUB_RELAY_PORT"  "GitHub relay listens on GITHUB_RELAY_PORT"
+# shellcheck disable=SC2016  # a Caddyfile env placeholder, which Caddy expands, not this shell
+assert_contains "$(cat "$cf")" 'http://127.0.0.1:{$CHOPI_GIT_PORT}'  "GitHub relay serves the port Caddy is started with"
 assert_contains "$(cat "$cf")" 'bind 127.0.0.1'         "git listener binds loopback explicitly"
 assert_contains "$(cat "$cf")" '@@CHOPI_AUTH@@'         "git route carries the credential slot (caller-filled)"
 assert_contains "$(cat "$cf")" 'acme/tool\.js'          "dots in repo names are regex-escaped"

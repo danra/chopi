@@ -467,8 +467,9 @@ start_github_relay() {
     fi
     rm -f "$GH_RELAY_SOCK"
     # Feed the config to Caddy over a pipe (--config -): printf is a builtin, so the baked GitHub
-    # token doesn't appear in any process's argv.
-    printf '%s' "$caddyfile_text" | caddy run --adapter caddyfile --config - > "$log" 2>&1 &
+    # token doesn't appear in any process's argv. The git relay's port it reads from its environment.
+    printf '%s' "$caddyfile_text" \
+        | CHOPI_GIT_PORT="$GITHUB_RELAY_PORT" caddy run --adapter caddyfile --config - > "$log" 2>&1 &
     CADDY_PID=$!
     wait_for_listener "$GITHUB_RELAY_PORT" "$CADDY_PID"
 }
