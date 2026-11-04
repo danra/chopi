@@ -86,8 +86,8 @@ if [ -n "$uninstall" ]; then
     exit 0
 fi
 
-if busy_port="$(first_listening_port "$PROXY_PORT" "$GITHUB_RELAY_PORT")"; then
-    echo "error: chopi-proxy (or something else) is currently running and listening on port $busy_port." >&2
+if sock_has_listener "$GH_RELAY_SOCK"; then
+    echo "error: chopi-proxy is currently running (its GitHub API relay answers at $GH_RELAY_SOCK)." >&2
     echo "Shut it down, then re-run this script." >&2
     exit 1
 fi

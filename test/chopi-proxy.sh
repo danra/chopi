@@ -458,7 +458,7 @@ done
 
 
 # ---------------------------------------------------------------------------
-echo "make_private_dir (chopi-proxy's run dir is ours alone)"
+echo "make_private_dir (the run dir holding the token-bearing socket is ours alone)"
 # ---------------------------------------------------------------------------
 perms() { stat -f %Lp "$1"; }
 priv="$TMPDIR/private"

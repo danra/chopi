@@ -11,7 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -29,8 +31,8 @@ const relayStartTimeout = 25 * time.Second
 // options are chopi's own flags, given before "--" and smokescreen's flags.
 type options struct {
 	relayLog  string // Caddy's output
-	gitPort   int    // the git relay's loopback port, or 0 for one the kernel picks
 	ghSock    string // the API relay's unix socket
+	portsFile string // where the ports are reported once the proxy is up
 	smokeArgs []string
 }
 
@@ -40,20 +42,18 @@ func parseOptions(args []string) (options, error) {
 	fs := flag.NewFlagSet("chopi-smokescreen", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&opts.relayLog, "relay-log", "", "")
-	fs.IntVar(&opts.gitPort, "git-port", -1, "")
 	fs.StringVar(&opts.ghSock, "gh-sock", "", "")
+	fs.StringVar(&opts.portsFile, "ports-file", "", "")
 	if err := fs.Parse(args); err != nil {
 		return opts, err
-	}
-	if opts.gitPort > 65535 {
-		return opts, fmt.Errorf("--git-port: not a port: %d", opts.gitPort)
 	}
 	// Parsing stops at "--" or at the first non-flag; only the former starts smokescreen's.
 	if rest := len(args) - fs.NArg(); rest > 0 && args[rest-1] == "--" {
 		opts.smokeArgs = fs.Args()
 	}
-	if opts.relayLog == "" || opts.gitPort < 0 || opts.ghSock == "" || opts.smokeArgs == nil {
-		return opts, errors.New("usage: chopi-smokescreen --relay-log FILE --git-port PORT --gh-sock PATH -- SMOKESCREEN_FLAGS...")
+	if opts.relayLog == "" || opts.ghSock == "" || opts.portsFile == "" || opts.smokeArgs == nil {
+		return opts, errors.New("usage: chopi-smokescreen --relay-log FILE --gh-sock PATH " +
+			"--ports-file FILE -- SMOKESCREEN_FLAGS...")
 	}
 	return opts, nil
 }
@@ -71,25 +71,19 @@ func portOf(l *net.TCPListener) int { return l.Addr().(*net.TCPAddr).Port }
 // maxSocketPath is the longest unix socket path macOS binds: sun_path's 104 bytes, NUL included.
 const maxSocketPath = 103
 
-// listenRelays opens the git relay's listener on 127.0.0.1:gitPort -- or, for 0, a port the kernel
-// picks -- and the API relay's on the unix socket sock.
-func listenRelays(gitPort int, sock string) (*relays, error) {
+// listenAPIRelay opens the API relay's listener on the unix socket sock.
+func listenAPIRelay(sock string) (*net.UnixListener, error) {
 	if len(sock) > maxSocketPath {
 		return nil, fmt.Errorf("API relay: the socket path %s is %d bytes, past the %d macOS allows: "+
-			"a shorter TMPDIR makes it fit", sock, len(sock), maxSocketPath)
-	}
-	git, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: gitPort})
-	if err != nil {
-		return nil, fmt.Errorf("git relay: %w", err)
+			"a shorter CHOPI_RUN_DIR makes it fit", sock, len(sock), maxSocketPath)
 	}
 	api, err := net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"})
 	if err != nil {
-		git.Close()
 		return nil, fmt.Errorf("API relay: %w", err)
 	}
 	// Caddy serves on the socket from here on; closing this copy must leave its path in place.
 	api.SetUnlinkOnClose(false)
-	return &relays{git: git, api: api}, nil
+	return api, nil
 }
 
 // startCaddy starts Caddy on the relays' listeners, with its config on stdin -- never in argv,
@@ -165,6 +159,65 @@ func awaitCaddy(port int) <-chan error {
 		answered <- err
 	}()
 	return answered
+}
+
+// writeAtomically writes content to path, whole or not at all: it is written beside path and
+// renamed over it, so a reader polling for path never sees it partly written.
+func writeAtomically(path, content string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}
+
+// ports are the proxy's and the git relay's ports, as reported to chopi.
+type ports struct {
+	proxy, relay int
+}
+
+// reportPorts writes the ports to path, one "NAME PORT" line each, for chopi to learn them from,
+// and to know the proxy is up.
+func reportPorts(path string, p ports) error {
+	return writeAtomically(path, fmt.Sprintf("proxy %d\nrelay %d\n", p.proxy, p.relay))
+}
+
+// lastPortsFile is where the ports reported in portsFile are recorded for the proxy's next run: kept
+// beside it, but left as the proxy stops, unlike portsFile, which says the proxy is up.
+func lastPortsFile(portsFile string) string {
+	return portsFile + ".last"
+}
+
+// readPorts reads the ports reportPorts wrote to path: zero for a port missing, invalid, or in a
+// file missing or unreadable.
+func readPorts(path string) ports {
+	var p ports
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return p
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		var name string
+		var port int
+		if n, _ := fmt.Sscan(line, &name, &port); n != 2 || port <= 0 || port > 65535 {
+			continue
+		}
+		switch name {
+		case "proxy":
+			p.proxy = port
+		case "relay":
+			p.relay = port
+		}
+	}
+	return p
 }
 
 // stopSignals are the signals that stop the proxy: a Ctrl-C's INT, a TERM, and a closing

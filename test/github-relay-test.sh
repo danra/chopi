@@ -35,12 +35,15 @@ set -uo pipefail
 
 _test_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
-# A private TMPDIR, exported so the processes under test leave their temporaries here too. Created
-# before sourcing util.sh, which derives GH_RELAY_SOCK from it, so the socket this test creates and
-# removes is its own. Trap it now so an early skip still cleans up (the fuller trap, which also kills
-# caddy, comes after the skip guards).
+# A private TMPDIR, exported so the processes under test leave their temporaries here too. Trap it
+# now so an early skip still cleans up (the fuller trap, which also stops the relays, comes after the
+# skip guards).
 TMPDIR="$(mktemp -d)"; export TMPDIR
 trap 'rm -rf "$TMPDIR"' EXIT
+# The test's own relay socket and ports file, rather than a running chopi-proxy's: util.sh derives
+# both from CHOPI_RUN_DIR.
+# shellcheck disable=SC2034  # read by util.sh
+CHOPI_RUN_DIR="$TMPDIR"
 
 . "$_test_dir/../.internal/util.sh"
 . "$_test_dir/lib.sh"
@@ -73,30 +76,18 @@ trap cleanup EXIT
 printf 'version: v1\nservices: []\ndefault:\n  name: default\n  action: enforce\n  allowed_domains: []\n' \
     > "$WORK/rules.yaml"
 
-# The test's own relay socket, rather than a running chopi-proxy's.
-GH_RELAY_SOCK="$WORK/gh.sock"
+mkdir -p "$PROXY_RUN_DIR"
 
-# start_relays CONFIG LOG -- start the relays as chopi-proxy does, on the Caddy config CONFIG, but on
-# ports the kernel picks, so a running chopi-proxy doesn't stand in the way; logging to LOG (and
-# caddy to LOG.caddy, which LOG quotes if caddy fails to start). Sets RELAY_PID, CADDY_PID and
-# GITHUB_RELAY_PORT once they serve, or fails.
+# start_relays CONFIG LOG -- start the relays as chopi-proxy does, on the Caddy config CONFIG,
+# logging to LOG (and caddy to LOG.caddy, which LOG quotes if caddy fails to start). Sets RELAY_PID,
+# CADDY_PID, GITHUB_RELAY_PORT and git_url once they serve, or fails.
 start_relays() {
-    local config="$1" log="$2" _
-    "$SMOKESCREEN_BIN" --relay-log "$log.caddy" --git-port 0 --gh-sock "$GH_RELAY_SOCK" -- \
-        --config-file "$CHOPI_DIR/.internal/smokescreen-config.yaml" \
-        --listen-ip 127.0.0.1 --listen-port 0 \
-        --egress-acl-file "$WORK/rules.yaml" < <(printf '%s' "$config") >>"$log" 2>&1 &
+    local config="$1" log="$2"
+    run_chopi_smokescreen "$WORK/rules.yaml" "$log.caddy" < <(printf '%s' "$config") >>"$log" 2>&1 &
     RELAY_PID=$!
-    for _ in {1..300}; do
-        GITHUB_RELAY_PORT="$(sed -nE 's/^\[chopi-smokescreen\] outgoing proxy on .*, GitHub relay on 127\.0\.0\.1:([0-9]+),.*/\1/p' "$log")"
-        if [ -n "$GITHUB_RELAY_PORT" ]; then
-            CADDY_PID="$(pgrep -P "$RELAY_PID" -x caddy)"
-            return 0
-        fi
-        kill -0 "$RELAY_PID" 2>/dev/null || return 1
-        sleep 0.1
-    done
-    return 1
+    wait_for_proxy_ports "$RELAY_PID" || return 1
+    CADDY_PID="$(pgrep -P "$RELAY_PID" -x caddy)"
+    git_url="http://127.0.0.1:$GITHUB_RELAY_PORT"
 }
 
 # A denied git operation must fail, not hang on a credential prompt.
@@ -124,8 +115,6 @@ fi
 if ! start_relays "$caddy_cfg" "$WORK/caddy.log"; then
     bad "caddy failed to start"; sed 's/^/      /' "$WORK/caddy.log"; summary; exit 1
 fi
-
-git_url="http://127.0.0.1:$GITHUB_RELAY_PORT"
 
 # 0. the relay must listen on loopback only: a caddy site-address host is a Host matcher,
 #    not a bind, so without an explicit bind caddy listens on all interfaces -- where a LAN
@@ -452,7 +441,6 @@ bogus_cfg="${bogus_cfg//@@CHOPI_API_AUTH@@/Bearer bogus}"
 if ! start_relays "$bogus_cfg" "$WORK/caddy-bogus.log"; then
     bad "caddy failed to restart for the rejected-credential test"; sed 's/^/      /' "$WORK/caddy-bogus.log"
 else
-    git_url="http://127.0.0.1:$GITHUB_RELAY_PORT"   # the relaunch's own port
     if git -C "$WORK/pushsrc" push -q "$git_url/octocat/Hello-World" HEAD:refs/heads/chopi-e2e 2>"$WORK/e5"; then
         bad "push with a rejected credential unexpectedly succeeded"
     elif grep -q 'remote error: chopi: GitHub rejected the relay credential' "$WORK/e5"; then

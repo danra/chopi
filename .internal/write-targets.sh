@@ -125,7 +125,7 @@ validate_write_target() {
         echo "$prog: safe write target overlaps the patch queue: $path" >&2
         return 1
     fi
-    # chopi-proxy's run dir is out of the sandbox's reach; an approved patch must not be a way in.
+    # Its ports aim each run's network holes; an approved patch must not be the way to rewrite them.
     if overlaps_proxy_run_dir "$path"; then
         echo "$prog: safe write target overlaps chopi-proxy's run directory: $path" >&2
         return 1

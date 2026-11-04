@@ -12,7 +12,12 @@ SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 
 usage() {
     cat <<EOF
-usage: $SCRIPT_NAME [--rules FILE] [--github-allowlist FILE] [--verbose]   # listens on 127.0.0.1:$PROXY_PORT
+usage: $SCRIPT_NAME [--rules FILE] [--github-allowlist FILE] [--verbose]
+
+The outgoing proxy and the GitHub git relay listen on 127.0.0.1, on the ports of the last run
+where free, else on ones the kernel picks, reported in $PROXY_PORTS_FILE once they serve, for
+chopi to find them. Running chopi sessions keep the ports they started with, so they survive a
+restart only on the same ports.
 
   --rules FILE       use FILE as the proxy rules instead of the default
                      config/proxy-rules.yaml
@@ -52,11 +57,6 @@ while [ "$#" -gt 0 ]; do
 done
 
 cd "$CHOPI_DIR"
-
-if busy_port="$(first_listening_port "$PROXY_PORT" "$GITHUB_RELAY_PORT")"; then
-    echo "error: something is already listening on 127.0.0.1:$busy_port" >&2
-    exit 1
-fi
 
 if [ ! -x "$SMOKESCREEN_BIN" ]; then
     echo "Can't run chopi's proxy. Build it with the installer ($CHOPI_DIR/install.sh)" >&2
@@ -255,27 +255,29 @@ fi
 # (if set, resolve_gh_token already read it above).
 unset GH_TOKEN GITHUB_TOKEN
 
-# The API relay's socket: clear one a crashed prior run left, but not one that still answers, a
-# running chopi-proxy's.
+# The API relay's socket and the ports file: clear the ones a crashed prior run left, but not a
+# socket that still answers, a running chopi-proxy's.
 if sock_has_listener "$GH_RELAY_SOCK"; then
     echo "error: a running GitHub API relay already owns $GH_RELAY_SOCK" >&2
     exit 1
 fi
-rm -f "$GH_RELAY_SOCK"
-
-# The run dir, out of the sandbox's reach, is ours alone.
+# The socket serves GitHub with our credential, so its dir is ours alone.
 mkdir -p "$CHOPI_RUN_DIR"
 make_private_dir "$PROXY_RUN_DIR" || exit 1
+rm -f "$GH_RELAY_SOCK" "$PROXY_PORTS_FILE"
+
+# chopi-smokescreen clears these as it stops, but not if it dies (a SIGKILL, a crash): left, the
+# ports would point the next chopi session at whatever later takes them.
+trap 'rm -rf "$TMPDIR"; rm -f "$PROXY_PORTS_FILE" "$GH_RELAY_SOCK"' EXIT
 
 echo "[$SCRIPT_NAME] relay log: $CADDY_LOG" >&2
 echo "[$SCRIPT_NAME] starting the outgoing proxy and the GitHub relays (Ctrl-C to stop)" >&2
 # chopi-smokescreen opens the listeners, serves the proxy, and starts Caddy on the relays' config,
 # handed over stdin: printf is a builtin, so the baked GitHub token doesn't appear in any process's
-# argv. It says where it serves once up. We stay, for Caddy to go with chopi-smokescreen however
-# it goes; a Ctrl-C reaches it as a TERM from us.
-lead_group "$SMOKESCREEN_BIN" \
-    --relay-log "$CADDY_LOG" --git-port "$GITHUB_RELAY_PORT" --gh-sock "$GH_RELAY_SOCK" -- \
-    --config-file ./.internal/smokescreen-config.yaml \
-    --listen-ip 127.0.0.1 --listen-port "$PROXY_PORT" \
-    --egress-acl-file "$RULES" \
-    < <(printf '%s' "$CADDYFILE_TEXT") > >(format_smokescreen_log) 2>&1
+# argv. It reports its ports once up, and says where it serves. We stay, for Caddy to go with
+# chopi-smokescreen however it goes; a Ctrl-C reaches it as a TERM from us. Staying, we drop the
+# token first, before the log formatter forks: no long-lived shell of ours keeps a copy.
+exec 3< <(printf '%s' "$CADDYFILE_TEXT")
+CADDYFILE_TEXT=""
+lead_group run_chopi_smokescreen "$RULES" "$CADDY_LOG" \
+    <&3 3<&- > >(format_smokescreen_log) 2>&1

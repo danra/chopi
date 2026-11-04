@@ -23,8 +23,8 @@ prompt_text() { arity 0; cat "${CLAUDE_ARGV_WITH_CHOPI_PROMPT[2]}"; }
 # ---------------------------------------------------------------------------
 echo "the prompt contents"
 # ---------------------------------------------------------------------------
-assert_contains "$chopi_claude_prompt" "$PROXY_PORT"        "the document names the proxy port"
-assert_contains "$chopi_claude_prompt" "$GITHUB_RELAY_PORT" "  -> and the GitHub relay port"
+assert_contains "$chopi_claude_prompt" "HTTP_PROXY"              "the document says where to find the proxy port"
+assert_contains "$chopi_claude_prompt" "CHOPI_GITHUB_RELAY_PORT" "  -> and the GitHub relay port"
 assert_contains "$chopi_claude_prompt" "CHOPI_DIR" "the document names the marker chopi sets in the environment"
 
 

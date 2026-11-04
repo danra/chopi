@@ -11,33 +11,35 @@ unset _util_dir
 
 SMOKESCREEN_BIN="$CHOPI_DIR/.internal/proxy/chopi-smokescreen"
 
-PROXY_PORT=4760
-GITHUB_RELAY_PORT=4761       # the git relay's loopback listener: git-smart-HTTP -> github.com
+# The outgoing proxy's and the GitHub relay's loopback ports: the kernel picks them as chopi-proxy
+# first starts, and a restart takes them again where free (recorded in PROXY_PORTS_FILE.last), and
+# read_proxy_ports reads them from PROXY_PORTS_FILE.
+PROXY_PORT=""
+GITHUB_RELAY_PORT=""         # git-smart-HTTP -> github.com
 
 # The Caddy GitHub-API relay's endpoint. Unlike the git relay (a TCP port), gh reaches this over a
 # unix socket: chopi sets GH_HOST=github.localhost so gh addresses the API as plaintext
 # http://api.github.localhost/... (no CA needed), and gh's http_unix_socket config dials this path
 # instead of resolving that name. The relay therefore sees the cleartext API request and scopes it
-# to the same allowlist as git. Per-user under TMPDIR; chopi.sh opens a Seatbelt hole to this exact
-# path. Computed from the login-canonical TMPDIR -- before the entry scripts repoint TMPDIR to their
-# private self-cleaning dirs -- so chopi-proxy.sh and chopi.sh can share it.
-_gh_tmp="${TMPDIR:-/tmp}"
-GH_RELAY_SOCK="${_gh_tmp%/}/chopi-gh-relay.sock"
-unset _gh_tmp
-
-# chopi-proxy's run dir, which chopi-proxy.sh and chopi.sh share: run/ under ~/.chopi. The sandbox
-# can neither read nor write it (write_proxy_run_dir_profile): it is for what chopi-proxy keeps that
-# aims the sandbox's own network holes. Setting CHOPI_RUN_DIR gives a chopi-proxy, and the chopi
-# runs started under it, a run dir of their own, as the tests do: its run/, which chopi-proxy and
-# chopi make private (make_private_dir), leaving the dir CHOPI_RUN_DIR names as it is. A relative
-# one is taken from where it is given: chopi-proxy moves into chopi's directory and chopi into a
-# worktree, so left relative it would name a different dir for each.
+# to the same allowlist as git. chopi.sh opens a Seatbelt hole to this exact path.
+#
+# It and the ports file live in PROXY_RUN_DIR, which chopi-proxy.sh and chopi.sh share: run/ under
+# ~/.chopi, which the sandbox can neither read nor write. Not under TMPDIR, which it can write: the
+# ports decide which holes chopi opens, so a sandboxed command that rewrote them would aim the next
+# run's holes, and HTTP_PROXY, at a local service of its choosing. Setting CHOPI_RUN_DIR gives a
+# chopi-proxy, and the chopi runs started under it, a proxy of their own, as the tests do: its run/,
+# which chopi-proxy makes private (make_private_dir), leaving the dir CHOPI_RUN_DIR names as it is.
+# A relative one is taken from where it is given: chopi-proxy moves into chopi's directory and chopi
+# into a worktree, so left relative it would name a different dir for each.
 CHOPI_RUN_DIR="${CHOPI_RUN_DIR:-$HOME/.chopi}"
 case "$CHOPI_RUN_DIR" in
     /*) ;;
     *) CHOPI_RUN_DIR="$PWD/$CHOPI_RUN_DIR" ;;
 esac
 PROXY_RUN_DIR="${CHOPI_RUN_DIR%/}/run"
+GH_RELAY_SOCK="$PROXY_RUN_DIR/chopi-gh-relay.sock"
+# Where chopi-proxy reports its ports once it serves, and removes them as it stops.
+PROXY_PORTS_FILE="$PROXY_RUN_DIR/chopi-proxy.ports"
 
 # mktemp name prefixes of chopi's per-invocation temporaries (created under the private
 # TMPDIR); shared so the tests assert on the same names chopi creates.
@@ -254,8 +256,8 @@ overlaps_chopi_dir() {
     overlapping_dirs "$real" "$CHOPI_DIR"
 }
 
-# Does path $1 reach chopi-proxy's run dir, in either direction? Nothing a session can write may
-# reach it.
+# Does path $1 reach chopi-proxy's run dir, in either direction? Its ports file aims each run's
+# network holes and HTTP_PROXY, so nothing a session can write may reach it.
 overlaps_proxy_run_dir() {
     arity 1
     overlapping_dirs "$(realpath_or_self "$1")" "$(realpath_or_self "$PROXY_RUN_DIR")"
@@ -376,11 +378,13 @@ github_relay_gh_env() {
 }
 
 # Write the Seatbelt profile denying the sandboxed command any access to chopi-proxy's run dir
-# RUN_DIR to FILE: it is for what aims the sandbox's own network holes. Preflight keeps the
+# RUN_DIR to FILE. Its ports file aims each run's network holes and HTTP_PROXY, so a command that
+# rewrote it would aim the next session's at a local port of its choosing. Preflight keeps the
 # workspace off it, but other grants can cover it too: an --add-dirs path, a safe write target
 # (readable), or a CHOPI_RUN_DIR under a dir safehouse grants, like TMPDIR. Appended after every
 # file grant, so that among matching filtered rules this deny comes last and wins. Its ancestors
-# are pinned so the dir can't be renamed away and replaced.
+# are pinned so the dir can't be renamed away and replaced. Connecting to the API relay's socket
+# in it is a network operation, which the proxy's network profile allows on its own.
 #
 # usage: write_proxy_run_dir_profile FILE RUN_DIR
 write_proxy_run_dir_profile() {
@@ -389,7 +393,7 @@ write_proxy_run_dir_profile() {
     run_dir="$(realpath "$2")" \
         || { echo "chopi: cannot resolve chopi-proxy's run directory '$2'" >&2; return 1; }
     {
-        echo ";; chopi: chopi-proxy's run dir stays out of reach."
+        echo ";; chopi: chopi-proxy's run dir, whose ports aim the network holes, stays out of reach."
         rule 'deny file-read* file-write*' subpath "$run_dir"
         pin_ancestries / "$(dirname "$run_dir")"
     } >"$file"
@@ -444,17 +448,33 @@ sock_has_listener() {
     curl -s -o /dev/null --max-time 2 --unix-socket "$1" http://sock/ 2>/dev/null
 }
 
-# Print the first of the given 127.0.0.1 ports that already has a listener and return 0; print
-# nothing and return 1 when all are free. Callers decide what a busy port means (error vs. skip).
-first_listening_port() {
-    local port
-    for port in "$@"; do
-        if port_has_listener "$port"; then
-            printf '%s' "$port"
-            return 0
-        fi
-    done
-    return 1
+# Set PROXY_PORT and GITHUB_RELAY_PORT from PROXY_PORTS_FILE, one "NAME PORT" line each, as
+# chopi-proxy reports them once it serves. Fails, setting neither, when the file is missing or
+# malformed.
+read_proxy_ports() {
+    arity 0
+    local name port proxy="" relay=""
+    [ -f "$PROXY_PORTS_FILE" ] || return 1
+    while read -r name port; do
+        case "$name" in
+            proxy) proxy="$port" ;;
+            relay) relay="$port" ;;
+        esac
+    done <"$PROXY_PORTS_FILE"
+    [[ "$proxy" =~ ^[0-9]+$ && "$relay" =~ ^[0-9]+$ ]] || return 1
+    PROXY_PORT="$proxy"
+    GITHUB_RELAY_PORT="$relay"
+}
+
+# run_chopi_smokescreen RULES RELAY_LOG -- run chopi's proxy and the GitHub relays, on the rules
+# file RULES, with Caddy's config on stdin and its output in RELAY_LOG; the API relay on
+# GH_RELAY_SOCK, and the ports reported in PROXY_PORTS_FILE. It execs, for its PID to be the
+# proxy's: run it in the background.
+run_chopi_smokescreen() {
+    arity 2
+    exec "$SMOKESCREEN_BIN" --relay-log "$2" --gh-sock "$GH_RELAY_SOCK" --ports-file "$PROXY_PORTS_FILE" -- \
+        --config-file "$CHOPI_DIR/.internal/smokescreen-config.yaml" \
+        --egress-acl-file "$1"
 }
 
 # Make dir $1, in an existing parent, a directory only we can reach: created so if missing, else

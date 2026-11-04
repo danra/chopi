@@ -6,10 +6,10 @@
 # only learns the dir the command will actually run in partway through setup:
 #   * preflight_initial          -- runnable up front: the workspace doesn't overlap chopi's
 #                                   own dir (a confined command must not reach the policy
-#                                   that confines it) or chopi-proxy's run dir (kept out of
-#                                   its reach too), the proxy-side services (both loopback
-#                                   ports and the GitHub API relay socket) are up, and the
-#                                   safehouse CLI is on PATH.
+#                                   that confines it) or chopi-proxy's run dir (whose ports
+#                                   aim the holes), the proxy-side services (both loopback
+#                                   ports, as chopi-proxy reports them, and the GitHub API relay
+#                                   socket) are up, and the safehouse CLI is on PATH.
 #   * preflight_config_placement -- deferred until chopi has resolved the workspace (the
 #                                   --worktree target), since that is the dir a custom
 #                                   --config must stay outside of.
@@ -66,11 +66,11 @@ preflight_initial() {
             || return 1
     fi
 
-    # chopi-proxy's run dir is for what aims this run's network holes, so the sandboxed command
+    # The ports file in the run dir aims this run's holes and HTTP_PROXY, so the sandboxed command
     # must not reach it. Not a CHOPI_ALLOW_SELF matter: working on chopi needs no access to it.
     if overlaps_proxy_run_dir "$workspace_dir"; then
-        echo "error: workspace '$workspace_dir' overlaps chopi-proxy's run directory ('$PROXY_RUN_DIR')," >&2
-        echo "       which the sandboxed command must not reach." >&2
+        echo "error: workspace '$workspace_dir' overlaps chopi-proxy's run directory ('$PROXY_RUN_DIR');" >&2
+        echo "       the sandboxed command could rewrite the ports that aim its own network holes." >&2
         echo "Run chopi from a workspace that neither holds nor sits inside $PROXY_RUN_DIR, or point" >&2
         echo "CHOPI_RUN_DIR (for both chopi-proxy and chopi) elsewhere." >&2
         return 1
@@ -78,9 +78,16 @@ preflight_initial() {
 
     # The outgoing proxy must already be running in its own terminal. We deliberately
     # don't start it here, so it stays in the foreground where you can watch refused
-    # connections and stop it to edit the list of allowed domains.
+    # connections and stop it to edit the list of allowed domains. It reports the ports the
+    # kernel picked for it once it serves.
+    if ! read_proxy_ports; then
+        echo "error: no outgoing proxy: no ports reported in $PROXY_PORTS_FILE" >&2
+        echo "Start it first in a separate terminal, in this same environment (a proxy started" >&2
+        echo "under a different CHOPI_RUN_DIR reports them elsewhere):  chopi-proxy" >&2
+        return 1
+    fi
     check_listener "$PROXY_PORT" "no outgoing proxy" \
-        "Start it first in a separate terminal:  chopi-proxy" || return 1
+        "$PROXY_PORTS_FILE is stale; (re)start it in a separate terminal:  chopi-proxy" || return 1
 
     check_listener "$GITHUB_RELAY_PORT" "no GitHub relay" \
         "It runs alongside the outgoing proxy; (re)start both in a separate terminal:  chopi-proxy" || return 1
@@ -88,7 +95,7 @@ preflight_initial() {
     if ! sock_has_listener "$GH_RELAY_SOCK"; then
         echo "error: no GitHub API relay listening at $GH_RELAY_SOCK" >&2
         echo "Start chopi-proxy in this same environment first (a proxy started under a" >&2
-        echo "different TMPDIR binds a different socket path)." >&2
+        echo "different CHOPI_RUN_DIR binds a different socket path)." >&2
         return 1
     fi
 

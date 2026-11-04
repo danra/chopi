@@ -171,11 +171,12 @@ to modify some configuration.
 
 ## Landmines
 
-- **Never run `lsof`, `pkill`, or `fuser -k` against ports 4760 or 4761.** From inside the
-  sandbox those resolve to *your own* process, not the host's proxy, so you kill your own
-  session. You cannot restart the host proxy from in here either. The proxy is your only
-  gateway to Anthropic's servers, so under normal circumstances, the fact you're reading
-  this message means the proxy is up.
+- **Never run `lsof`, `pkill`, or `fuser -k` against the proxy ports** (the one in
+  `HTTP_PROXY`, and the GitHub relay's in `CHOPI_GITHUB_RELAY_PORT`). From inside the sandbox
+  those resolve to *your own* process, not the host's proxy, so you kill your own session.
+  You cannot restart the host proxy from in here either. The proxy is your only gateway to
+  Anthropic's servers, so under normal circumstances, the fact you're reading this message
+  means the proxy is up.
 - **Do not run `chopi` or `sandbox-exec` from inside the sandbox.** Seatbelt does not nest;
   it will fail in confusing ways.
 - **Do not leave a rebase or cherry-pick in progress.** chopi aborts any sequenced

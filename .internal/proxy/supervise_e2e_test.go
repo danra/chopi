@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"net"
@@ -86,20 +85,24 @@ func fakeCaddy() {
 }
 
 type supervisorRun struct {
-	cmd    *exec.Cmd
-	sock   string
-	state  string
-	stderr *strings.Builder
-	ports  chan map[string]int // the ports the ready line names, once it's out
-	exited chan struct{}
+	cmd       *exec.Cmd
+	sock      string
+	portsFile string
+	state     string
+	stderr    *strings.Builder
+	exited    chan struct{}
 }
-
-// readyLine is the line the supervisor says it serves with, on stdout.
-var readyLine = "[chopi-smokescreen] outgoing proxy on 127.0.0.1:%d, GitHub relay on 127.0.0.1:%d, GitHub API relay on %s"
 
 // startSupervisor runs chopi-smokescreen, on ports the kernel picks, with a fake caddy behaving as
 // caddyPlan says.
 func startSupervisor(t *testing.T, caddyPlan string) *supervisorRun {
+	t.Helper()
+	return startSupervisorIn(t, supervisorDir(t), caddyPlan)
+}
+
+// supervisorDir makes a dir for supervisors to run in, one after another: its fake caddy, rules,
+// and run dir.
+func supervisorDir(t *testing.T) string {
 	t.Helper()
 	exe, err := os.Executable()
 	if err != nil {
@@ -112,49 +115,45 @@ func startSupervisor(t *testing.T, caddyPlan string) *supervisorRun {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(tmp) })
-	bin := filepath.Join(tmp, "bin")
-	state := filepath.Join(tmp, "state")
-	for _, d := range []string{bin, state} {
-		if err := os.Mkdir(d, 0o700); err != nil {
+	for _, d := range []string{"bin", "state"} {
+		if err := os.Mkdir(filepath.Join(tmp, d), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	writeFile(t, filepath.Join(bin, "caddy"), "#!/bin/sh\nCHOPI_TEST_ROLE=caddy exec '"+exe+"' \"$@\"\n")
-	os.Chmod(filepath.Join(bin, "caddy"), 0o755)
+	caddy := filepath.Join(tmp, "bin", "caddy")
+	writeFile(t, caddy, "#!/bin/sh\nCHOPI_TEST_ROLE=caddy exec '"+exe+"' \"$@\"\n")
+	os.Chmod(caddy, 0o755)
+	writeFile(t, filepath.Join(tmp, "rules.yaml"), rulesAllowing("example.com"))
+	return tmp
+}
+
+// startSupervisorIn runs chopi-smokescreen in tmp, a supervisorDir, as startSupervisor does.
+func startSupervisorIn(t *testing.T, tmp, caddyPlan string) *supervisorRun {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(tmp, "bin")
+	state := filepath.Join(tmp, "state")
 	rules := filepath.Join(tmp, "rules.yaml")
-	writeFile(t, rules, rulesAllowing("example.com"))
 	config, err := filepath.Abs("../smokescreen-config.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	run := &supervisorRun{sock: filepath.Join(tmp, "gh.sock"), state: state, stderr: &strings.Builder{},
-		ports: make(chan map[string]int, 1), exited: make(chan struct{})}
-	run.cmd = exec.Command(exe, "--relay-log", filepath.Join(tmp, "caddy.log"), "--git-port", "0",
-		"--gh-sock", run.sock, "--",
-		"--config-file", config, "--listen-ip", "127.0.0.1", "--listen-port", "0",
-		"--egress-acl-file", rules)
+	run := &supervisorRun{sock: filepath.Join(tmp, "gh.sock"), portsFile: filepath.Join(tmp, "ports"),
+		state: state, stderr: &strings.Builder{}, exited: make(chan struct{})}
+	run.cmd = exec.Command(exe, "--relay-log", filepath.Join(tmp, "caddy.log"),
+		"--gh-sock", run.sock, "--ports-file", run.portsFile, "--",
+		"--config-file", config, "--egress-acl-file", rules)
 	run.cmd.Env = append(os.Environ(), "CHOPI_TEST_ROLE=supervisor", "CHOPI_TEST_STATE="+state,
 		"CHOPI_TEST_CADDY="+caddyPlan, "PATH="+bin+":"+os.Getenv("PATH"))
 	run.cmd.Stdin = strings.NewReader("THE CADDY CONFIG")
 	run.cmd.Stderr = run.stderr
-	stdout, err := run.cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := run.cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	go func() {
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			var proxy, relay int
-			var sock string
-			if n, _ := fmt.Sscanf(scanner.Text(), readyLine, &proxy, &relay, &sock); n == 3 {
-				run.ports <- map[string]int{"proxy": proxy, "relay": relay}
-			}
-		}
-	}()
 	go func() {
 		run.cmd.Wait()
 		close(run.exited)
@@ -168,19 +167,22 @@ func startSupervisor(t *testing.T, caddyPlan string) *supervisorRun {
 	return run
 }
 
-// awaitPorts waits for the supervisor to say it serves, and where, failing the test if it exits
-// first.
-func (run *supervisorRun) awaitPorts(t *testing.T) map[string]int {
+// awaitPorts waits for the supervisor to report its ports, failing the test if it exits first.
+func (run *supervisorRun) awaitPorts(t *testing.T) ports {
 	t.Helper()
-	select {
-	case ports := <-run.ports:
-		return ports
-	case <-run.exited:
-		t.Fatalf("the supervisor exited before serving (stderr: %s)", run.stderr)
-	case <-time.After(20 * time.Second):
-		t.Fatal("the supervisor did not say it serves")
+	deadline := time.After(20 * time.Second)
+	for {
+		if _, err := os.Stat(run.portsFile); err == nil {
+			return readPorts(run.portsFile)
+		}
+		select {
+		case <-run.exited:
+			t.Fatalf("the supervisor exited before reporting its ports (stderr: %s)", run.stderr)
+		case <-deadline:
+			t.Fatal("the supervisor did not report its ports")
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
-	return nil
 }
 
 func (run *supervisorRun) awaitExit(t *testing.T) int {
@@ -230,10 +232,11 @@ func get(t *testing.T, client *http.Client, url string) string {
 }
 
 func TestSupervisorServesAndStopsOnINT(t *testing.T) {
+	t.Parallel()
 	run := startSupervisor(t, "")
-	ports := run.awaitPorts(t)
+	up := run.awaitPorts(t)
 
-	if got := get(t, directClient, fmt.Sprintf("http://127.0.0.1:%d/", ports["relay"])); got != fmt.Sprintf("git port %d", ports["relay"]) {
+	if got := get(t, directClient, fmt.Sprintf("http://127.0.0.1:%d/", up.relay)); got != fmt.Sprintf("git port %d", up.relay) {
 		t.Errorf("the git relay answers %q: caddy must serve it, knowing its port", got)
 	}
 	viaSocket := &http.Client{Transport: &http.Transport{Proxy: nil,
@@ -241,7 +244,7 @@ func TestSupervisorServesAndStopsOnINT(t *testing.T) {
 	if got := get(t, viaSocket, "http://api.github.localhost/"); got != "api" {
 		t.Errorf("the API relay's socket answers %q: caddy must serve it", got)
 	}
-	if conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", ports["proxy"])); err != nil {
+	if conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", up.proxy)); err != nil {
 		t.Errorf("the outgoing proxy doesn't listen: %v", err)
 	} else {
 		conn.Close()
@@ -261,9 +264,28 @@ func TestSupervisorServesAndStopsOnINT(t *testing.T) {
 	if _, err := os.Stat(run.sock); !os.IsNotExist(err) {
 		t.Errorf("the API relay's socket is left behind (%v)", err)
 	}
+	if _, err := os.Stat(run.portsFile); !os.IsNotExist(err) {
+		t.Errorf("the ports file is left behind, naming ports nothing serves (%v)", err)
+	}
+}
+
+// Running chopi sessions are confined to the ports they started with: a restart must keep them.
+func TestSupervisorRestartsOnTheSamePorts(t *testing.T) {
+	t.Parallel()
+	tmp := supervisorDir(t)
+	run := startSupervisorIn(t, tmp, "")
+	before := run.awaitPorts(t)
+	run.cmd.Process.Signal(syscall.SIGINT)
+	run.awaitExit(t)
+
+	after := startSupervisorIn(t, tmp, "").awaitPorts(t)
+	if after != before {
+		t.Errorf("ports %v after a restart, were %v: running sessions lose the proxy", after, before)
+	}
 }
 
 func TestSupervisorStopsCaddyOnTERM(t *testing.T) {
+	t.Parallel()
 	run := startSupervisor(t, "")
 	run.awaitPorts(t)
 	run.cmd.Process.Signal(syscall.SIGTERM)
@@ -307,15 +329,17 @@ func TestSupervisorKillsACaddyThatWontStop(t *testing.T) {
 }
 
 func TestSupervisorStopsOnceCaddyExits(t *testing.T) {
+	t.Parallel()
 	run := startSupervisor(t, "die")
-	ports := run.awaitPorts(t)
-	get(t, directClient, fmt.Sprintf("http://127.0.0.1:%d/", ports["relay"]))
+	up := run.awaitPorts(t)
+	get(t, directClient, fmt.Sprintf("http://127.0.0.1:%d/", up.relay))
 	if status := run.awaitExit(t); status == 0 {
 		t.Error("exit status 0 after caddy died: nothing is left serving the relays")
 	}
 }
 
 func TestSupervisorReportsACaddyThatFailsToStart(t *testing.T) {
+	t.Parallel()
 	run := startSupervisor(t, "fail")
 	if status := run.awaitExit(t); status == 0 {
 		t.Fatal("exit status 0 for a caddy that failed to start")
@@ -324,9 +348,7 @@ func TestSupervisorReportsACaddyThatFailsToStart(t *testing.T) {
 		!strings.Contains(run.stderr.String(), "caddy says: bad config") {
 		t.Errorf("stderr %q, want the failure and caddy's log", run.stderr)
 	}
-	select {
-	case <-run.ports:
-		t.Error("said it serves, for a proxy that didn't start")
-	default:
+	if _, err := os.Stat(run.portsFile); !os.IsNotExist(err) {
+		t.Error("ports reported for a proxy that didn't start")
 	}
 }

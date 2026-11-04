@@ -134,7 +134,7 @@ refuses "chopi's own directory is refused as a target" \
 refuses "  -> and so is a directory inside it, which is where the sandbox config lives" \
     "overlaps chopi's directory" "$CHOPI_DIR/config"
 
-# The proxy's run dir is out of the sandbox's reach.
+# The proxy's run dir holds the ports that aim each session's network holes.
 mkdir -p "$PROXY_RUN_DIR"
 refuses "chopi-proxy's run directory is refused as a target" \
     "overlaps chopi-proxy's run directory" "$PROXY_RUN_DIR"
