@@ -63,10 +63,10 @@ func parseOptions(args []string) (options, error) {
 	if rest := len(args) - fs.NArg(); rest > 0 && args[rest-1] == "--" {
 		opts.smokeArgs = fs.Args()
 	}
-	if opts.dir == "" || opts.parent <= 0 || opts.relayLog == "" || opts.allowlist == "" ||
-		opts.relayConfig == "" || opts.smokeArgs == nil {
-		return opts, errors.New("usage: chopi-smokescreen --dir DIR --parent PID --relay-log FILE " +
-			"--github-allowlist FILE --relay-config CMD -- SMOKESCREEN_FLAGS...")
+	if opts.dir == "" || opts.parent <= 0 || opts.relayLog == "" ||
+		opts.allowlist == "" || opts.relayConfig == "" || opts.smokeArgs == nil {
+		return opts, errors.New("usage: chopi-smokescreen --dir DIR --parent PID " +
+			"--relay-log FILE --github-allowlist FILE --relay-config CMD -- SMOKESCREEN_FLAGS...")
 	}
 	return opts, nil
 }

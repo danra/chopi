@@ -532,17 +532,18 @@ is_github_relay_reroute_effective() {
     return 0
 }
 
-# run_chopi_smokescreen DIR PARENT RULES ALLOWLIST RENDER RELAY_LOG -- run a session's proxy and its
-# GitHub relays, on the rules file RULES, with Caddy's config the output of RENDER run on ALLOWLIST,
-# again on each edit to it, and Caddy's output in RELAY_LOG; the API relay on DIR/gh.sock, and the
-# ports reported in DIR/ports; stopping once process PARENT exits. It execs, for its PID to be the
-# proxy's: run it in the background.
+# run_chopi_smokescreen DIR PARENT RULES ALLOWLIST RENDER RELAY_LOG -- run a session's proxy and
+# its GitHub relays, on the rules file RULES, with Caddy's config the output of RENDER run on
+# ALLOWLIST, again on each edit to it, and Caddy's output in RELAY_LOG; the API relay on DIR/gh.sock,
+# and the ports reported in DIR/ports; stopping once process PARENT exits. It execs, for its PID to
+# be the proxy's: run it in the background.
 run_chopi_smokescreen() {
     arity 6
-    exec "$SMOKESCREEN_BIN" --dir "$1" --parent "$2" --relay-log "$6" \
-        --github-allowlist "$4" --relay-config "$5" -- \
+    local dir="$1" parent="$2" rules="$3" allowlist="$4" render="$5" relay_log="$6"
+    exec "$SMOKESCREEN_BIN" --dir "$dir" --parent "$parent" --relay-log "$relay_log" \
+        --github-allowlist "$allowlist" --relay-config "$render" -- \
         --config-file "$CHOPI_DIR/.internal/smokescreen-config.yaml" \
-        --egress-acl-file "$3"
+        --egress-acl-file "$rules"
 }
 
 # Make dir $1, in an existing parent, a directory only we can reach: created so if missing, else
