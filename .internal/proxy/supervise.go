@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -117,11 +118,19 @@ type relayConfig struct {
 	env            []string
 }
 
+// renderCancelGrace bounds how long a cancelled render's output pipes are waited on, once its
+// process group is TERMed, before they are closed on whatever still holds them.
+const renderCancelGrace = 2 * time.Second
+
 // render returns the relays' config, with any notes cmd had for the user on stderr -- or, failing,
-// an error with what cmd said on stderr: why.
-func (c relayConfig) render() (config []byte, notes string, err error) {
-	cmd := exec.Command(c.cmd, c.allowlist)
+// an error with what cmd said on stderr: why. Cancelling ctx TERMs cmd's whole process group: what
+// it waits on, like gh at a keychain prompt for the token, is a child of its own.
+func (c relayConfig) render(ctx context.Context) (config []byte, notes string, err error) {
+	cmd := exec.CommandContext(ctx, c.cmd, c.allowlist)
 	cmd.Env = append(os.Environ(), c.env...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
+	cmd.WaitDelay = renderCancelGrace
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	config, err = cmd.Output()
@@ -170,15 +179,23 @@ type relaySupervisor struct {
 	mu      sync.Mutex
 	live    map[*caddyProc]bool // every Caddy running: starting, serving, or finishing up once replaced
 	serving *caddyProc
-	stopped bool // by stopAll: no Caddy starts from then on
+	stopped bool // by stopAll: no Caddy starts from then on, nor a render
+
+	// A reload's render, maybe at a keychain prompt, is stopped by stopAll, which cancels it and
+	// waits for it: its process group is its own, out of reach of a stop of ours.
+	stopRenders context.CancelFunc
+	renderCtx   context.Context
+	rendering   sync.WaitGroup
 
 	failed     chan struct{} // closed once the serving Caddy exits unasked
 	failedOnce sync.Once
 }
 
 func newRelaySupervisor(r *relays, logPath string, config relayConfig, file *configFile, log *logrus.Entry) *relaySupervisor {
+	renderCtx, stopRenders := context.WithCancel(context.Background())
 	return &relaySupervisor{relays: r, logPath: logPath, config: config, file: file, log: log,
-		live: map[*caddyProc]bool{}, failed: make(chan struct{})}
+		live: map[*caddyProc]bool{}, failed: make(chan struct{}),
+		renderCtx: renderCtx, stopRenders: stopRenders}
 }
 
 // start starts a Caddy on the relays' listeners, with config on stdin -- never in argv, as it
@@ -289,7 +306,15 @@ func (s *relaySupervisor) serve(proc *caddyProc) (replaced *caddyProc) {
 // is, unless that is the config it already serves (a save with no edit). On failure, the serving
 // Caddy stays.
 func (s *relaySupervisor) reload() error {
-	config, notes, err := s.config.render()
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return errors.New("the proxy is stopping")
+	}
+	s.rendering.Add(1)
+	s.mu.Unlock()
+	config, notes, err := s.config.render(s.renderCtx)
+	s.rendering.Done()
 	if err != nil {
 		return err
 	}
@@ -332,7 +357,8 @@ func (s *relaySupervisor) reloadIfChanged(lastMod time.Time, warned bool) (time.
 	return applyIfChanged(s.log, s.file, allowlistReloaded, allowlistReloadFailed, lastMod, warned, s.reload)
 }
 
-// stopAll stops every Caddy running, at once, returning once they have all exited.
+// stopAll stops every Caddy running, and any reload's render, at once, returning once they have
+// all exited.
 func (s *relaySupervisor) stopAll() {
 	s.mu.Lock()
 	s.serving = nil // stopping it now is asked
@@ -342,6 +368,7 @@ func (s *relaySupervisor) stopAll() {
 		procs = append(procs, proc)
 	}
 	s.mu.Unlock()
+	s.stopRenders()
 	var wg sync.WaitGroup
 	for _, proc := range procs {
 		wg.Add(1)
@@ -351,6 +378,7 @@ func (s *relaySupervisor) stopAll() {
 		}(proc)
 	}
 	wg.Wait()
+	s.rendering.Wait()
 }
 
 // writeAtomically writes content to path, whole or not at all: it is written beside path and
@@ -387,10 +415,9 @@ func reportPorts(path string, p ports) error {
 	return writeAtomically(path, fmt.Sprintf("proxy %d\nrelay %d\n", p.proxy, p.relay), 0o600)
 }
 
-// stopSignals are the signals that stop the proxy: chopi's TERM as the session ends, and a
-// closing terminal's HUP.
-func stopSignals() <-chan os.Signal {
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGTERM, syscall.SIGHUP)
-	return ch
+// stopSignals returns a context done once the proxy is asked to stop: by chopi's TERM as the
+// session ends, or a closing terminal's HUP.
+func stopSignals() context.Context {
+	ctx, _ := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGHUP)
+	return ctx
 }

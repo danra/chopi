@@ -240,6 +240,8 @@ func listenLoopback() (*net.TCPListener, error) {
 }
 
 func main() {
+	// Caught from the start, for a stop asked as the proxy starts to stop the render too, below.
+	stop := stopSignals()
 	opts, err := parseOptions(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "chopi-smokescreen:", err)
@@ -294,8 +296,12 @@ func main() {
 	}
 	// Its time first, for an edit made as it renders to be taken up once the relays serve.
 	allowlistMod := modTime(opts.allowlist)
-	initialConfig, notes, err := relayConf.render()
+	initialConfig, notes, err := relayConf.render(stop)
 	if err != nil {
+		if stop.Err() != nil {
+			// Asked to stop as it rendered, maybe at a keychain prompt: nothing else is up yet.
+			os.Exit(0)
+		}
 		fail("%v", err)
 	}
 	if notes != "" {
@@ -315,7 +321,6 @@ func main() {
 	relaySup := newRelaySupervisor(&relays{git: gitListener, api: api}, opts.relayLog, relayConf,
 		allowlistFile, conf.Log.WithField("allowlist", opts.allowlist))
 	reported := ports{proxy: int(conf.Port), relay: portOf(gitListener)}
-	stop := stopSignals()
 
 	// Stop the proxy with STATUS, Caddy with it.
 	exit := func(status int) {
@@ -356,7 +361,7 @@ func main() {
 	case <-smokescreenExited:
 		complain("smokescreen stopped as it started; see the log")
 		exit(1)
-	case <-stop:
+	case <-stop.Done():
 		exit(0)
 	}
 	if err := reportPorts(filepath.Join(opts.dir, "ports"), reported); err != nil {
@@ -379,7 +384,7 @@ func main() {
 		exit(1)
 	case <-smokescreenExited:
 		exit(1)
-	case <-stop:
+	case <-stop.Done():
 		exit(0)
 	}
 }
