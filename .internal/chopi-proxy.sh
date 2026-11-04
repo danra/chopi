@@ -16,14 +16,18 @@ set -euo pipefail
 SCRIPT_NAME="${BASH_SOURCE[0]##*/}"
 SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 
-. "$SCRIPT_DIR/util.sh"
-
 PROXY_DIR=""
 LOG=""
 PARENT_PID=""
 RULES=""
 GITHUB_ALLOWLIST=""
 VERBOSE=false
+# The --dir, which chopi made for us, is ours to remove, however we exit: only once what we lead is
+# gone, as chopi-smokescreen and Caddy keep their temporaries, and the API relay's socket, in it.
+# Set first thing, so a stop signal from here on, before lead_group passes it on, removes it too.
+trap '[ -z "$PROXY_DIR" ] || rm -rf "$PROXY_DIR"' EXIT
+trap 'exit 143' TERM HUP INT
+
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --dir)              PROXY_DIR="${2:-}" ;;
@@ -37,6 +41,8 @@ while [ "$#" -gt 0 ]; do
     # A last option given no value leaves it empty, for the check below to refuse.
     shift 2 || break
 done
+
+. "$SCRIPT_DIR/util.sh"
 
 if [ -z "$PROXY_DIR" ] || [ -z "$LOG" ] || [ -z "$PARENT_PID" ] \
     || [ -z "$RULES" ] || [ -z "$GITHUB_ALLOWLIST" ]; then
@@ -179,9 +185,8 @@ run_smokescreen() {
 # to the log from here on, as does the formatter's: both outlive the startup, whose stderr chopi
 # reads only then -- the shell's word of how chopi-smokescreen ended, a crash's say, would be lost
 # there. We stay, for Caddy to go with chopi-smokescreen however it goes; chopi's stop signal
-# reaches it as a TERM from us. Its temporaries, Caddy's among them, go in its private dir, which
-# chopi removes as the session ends -- but only theirs: an editor opened from a notification can
-# outlive the session, and so must the TMPDIR it's given.
-TMPDIR="$PROXY_DIR" lead_group run_smokescreen "$PROXY_DIR" "$RULES" \
+# reaches it as a TERM from us. Its temporaries, Caddy's among them, go in our private dir, which we
+# remove once it is gone (see the EXIT trap above).
+TMPDIR="$PROXY_DIR" lead_group run_smokescreen "$PROXY_DIR" "$PARENT_PID" "$RULES" \
     "$GITHUB_ALLOWLIST" "$CHOPI_DIR/.internal/github-relays-config.sh" "$CADDY_LOG" \
     4>&2 2>&1 > >(unset GH_TOKEN GITHUB_TOKEN; format_smokescreen_log 2>&1)

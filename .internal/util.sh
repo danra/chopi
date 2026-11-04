@@ -429,16 +429,17 @@ is_github_relay_reroute_effective() {
     return 0
 }
 
-# run_chopi_smokescreen DIR RULES ALLOWLIST RENDER RELAY_LOG -- run a session's proxy and its GitHub
-# relays, on the rules file RULES, with Caddy's config the output of RENDER run on ALLOWLIST, again
-# on each edit to it, and Caddy's output in RELAY_LOG; the API relay on DIR/gh.sock, and the ports
-# reported in DIR/ports. It execs, for its PID to be the proxy's: run it in the background.
+# run_chopi_smokescreen DIR PARENT RULES ALLOWLIST RENDER RELAY_LOG -- run a session's proxy and its
+# GitHub relays, on the rules file RULES, with Caddy's config the output of RENDER run on ALLOWLIST,
+# again on each edit to it, and Caddy's output in RELAY_LOG; the API relay on DIR/gh.sock, and the
+# ports reported in DIR/ports; stopping once process PARENT exits. It execs, for its PID to be the
+# proxy's: run it in the background.
 run_chopi_smokescreen() {
-    arity 5
-    exec "$SMOKESCREEN_BIN" --dir "$1" --relay-log "$5" \
-        --github-allowlist "$3" --relay-config "$4" -- \
+    arity 6
+    exec "$SMOKESCREEN_BIN" --dir "$1" --parent "$2" --relay-log "$6" \
+        --github-allowlist "$4" --relay-config "$5" -- \
         --config-file "$CHOPI_DIR/.internal/smokescreen-config.yaml" \
-        --egress-acl-file "$2"
+        --egress-acl-file "$3"
 }
 
 # Make dir $1, in an existing parent, a directory only we can reach: created so if missing, else
