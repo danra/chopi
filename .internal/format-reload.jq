@@ -9,8 +9,9 @@
 #              -- loud like a DENY (ANSI-red marker + BEL when interactive): the user's
 #              edit did NOT take effect, and the proxy keeps enforcing the previous rules.
 #
-# The msg strings matched here are emitted by .internal/proxy/main.go (reloadIfChanged);
-# keep the two in sync.
+# The msg strings matched here are emitted by .internal/proxy/main.go (reloadIfChanged),
+# and classify_log (.internal/classify-log.sh) matches them on the raw line to fire its
+# reload hook; keep all three in sync.
 #
 # Inputs:
 #   $is_interactive (bool)   colorize the failure marker and prefix the BEL

@@ -28,7 +28,7 @@ echo "log classifier (connection-request / deny-host / format-deny / format-misc
 classify() {
     arity 1
     local is_interactive="$1"
-    classify_log "$is_interactive" "chopi-proxy.sh" "" false
+    classify_log "$is_interactive" "chopi-proxy.sh" "" "" false
 }
 
 out="$(printf '%s\n' '{"allow":false,"requested_host":"evil.com","time":"T"}' | classify false)"
@@ -97,7 +97,7 @@ out="$(
     set -euo pipefail
     FORMAT_MISC_FILTER="$poison_filter"
     printf '%s\n' 'POISON-LINE' '{"allow":false,"requested_host":"late.example","time":"T"}' \
-        | classify_log false "chopi-proxy.sh" "" false
+        | classify_log false "chopi-proxy.sh" "" "" false
 )"
 assert_contains "$out" "[chopi-proxy.sh] DENY  late.example  @ T" \
     "a jq failure on one line does not abort the loop and silence later DENYs (under set -e)"
@@ -113,7 +113,7 @@ echo "verbose mode (--verbose: nothing dropped or replaced)"
 classify_verbose() {
     arity 1
     local is_interactive="$1"
-    classify_log "$is_interactive" "chopi-proxy.sh" "" true
+    classify_log "$is_interactive" "chopi-proxy.sh" "" "" true
 }
 
 deny_raw='{"allow":false,"requested_host":"evil.com","time":"T"}'
@@ -167,9 +167,9 @@ assert_eq "$out" "[chopi-proxy.sh] DENY  tele.example:443  @ T2" "a deny with an
 
 # The deny hook (the macOS notification in the live proxy) fires for unknown denies only.
 record_deny() { arity 1; printf 'HOOK:%s\n' "$1"; }
-out="$(printf '%s\n' "$known_deny" | classify_log false "chopi-proxy.sh" record_deny false)"
+out="$(printf '%s\n' "$known_deny" | classify_log false "chopi-proxy.sh" record_deny "" false)"
 assert_not_contains "$out" "HOOK:" "known deny does NOT fire the deny hook (no notification)"
-out="$(printf '%s\n' "$unknown_deny" | classify_log false "chopi-proxy.sh" record_deny false)"
+out="$(printf '%s\n' "$unknown_deny" | classify_log false "chopi-proxy.sh" record_deny "" false)"
 assert_contains "$out" "HOOK:tele.example:443" "unknown deny still fires the deny hook"
 
 # Once per host per session: a repeat is silent, a different host gets its own line.
@@ -210,7 +210,7 @@ out="$(
     # shellcheck disable=SC2030 # deliberately subshell-local: the real filter must survive for later tests
     KNOWN_DENY_FILTER="$poison_filter"
     printf '%s\n' "$known_deny" '{"allow":false,"requested_host":"late.example","time":"T"}' \
-        | classify_log false "chopi-proxy.sh" "" false
+        | classify_log false "chopi-proxy.sh" "" "" false
 )"
 assert_eq "$out" "[chopi-proxy.sh] DENY  tele.example:443  @ T
 [chopi-proxy.sh] DENY  late.example  @ T" \
@@ -246,6 +246,13 @@ out="$(printf '%s\n' '{"level":"error","msg":"egress ACL reload failed; keeping 
 assert_eq "$out" "[chopi-proxy.sh] RULES RELOAD FAILED (previous rules kept)  ?  @ T" \
     "a failed reload missing the error field still surfaces loud"
 
+# The reload-failure hook (the macOS notification in the live proxy) fires for failures only.
+record_reload_fail() { arity 0; printf 'HOOK:reload-failed\n'; }
+out="$(printf '%s\n' "$reload_fail" | classify_log false "chopi-proxy.sh" "" record_reload_fail false)"
+assert_contains "$out" "HOOK:reload-failed" "a failed reload fires the reload-failure hook"
+out="$(printf '%s\n' "$reload_ok" | classify_log false "chopi-proxy.sh" "" record_reload_fail false)"
+assert_not_contains "$out" "HOOK:" "  -> a successful one doesn't"
+
 out="$(printf '%s\n' "$reload_ok" | classify_verbose false)"
 assert_eq "$out" "$reload_ok
 [chopi-proxy.sh] rules reloaded  @ T" "verbose rules reload -> raw line, then the formatted line after it"
@@ -259,7 +266,7 @@ out="$(
     # shellcheck disable=SC2030 # deliberately subshell-local
     FORMAT_RELOAD_FILTER="$poison_filter"
     printf '%s\n' "$reload_ok" '{"allow":false,"requested_host":"late.example","time":"T"}' \
-        | classify_log false "chopi-proxy.sh" "" false
+        | classify_log false "chopi-proxy.sh" "" "" false
 )"
 assert_eq "$out" "$reload_ok
 [chopi-proxy.sh] DENY  late.example  @ T" \

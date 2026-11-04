@@ -780,6 +780,12 @@ if wait_for "$proxy_log" "RULES RELOAD FAILED"; then
 else
     bad "a broken rules edit did NOT log a failed reload"
 fi
+# In its own group, so the next DENY banner doesn't replace it before the user sees it.
+if wait_for "$alerter_log" "rules reload failed --message Your edit to $(basename -- "$rules") did not take effect --group chopi-proxy-reload"; then
+    ok "a broken rules edit notifies that the edit did not take effect"
+else
+    bad "a broken rules edit did NOT notify"
+fi
 code="$(sandbox_curl --max-time 20 "https://$OTHER_DENIED_HOST")"
 assert_not_contains "$code" "200"                  "after a failed reload the previous rules still refuse other hosts"
 # ...and the host the last good edit ALLOWED stays allowed.
