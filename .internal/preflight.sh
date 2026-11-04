@@ -12,7 +12,9 @@
 #                                   --worktree target), since that is the dir a custom
 #                                   --config must stay outside of.
 #
-# resolve_proxy_config, run up front, resolves the proxy's config, which it reads all session long.
+# resolve_proxy_config, run up front, resolves the proxy's config, which it reads all session long:
+# chopi's Seatbelt profile keeps the command from changing it, by its real path (see
+# write_proxy_config_profile).
 
 _preflight_dir="$(dirname "${BASH_SOURCE[0]}")"
 . "$_preflight_dir/util.sh"
@@ -98,13 +100,15 @@ preflight_config_placement() {
 # Resolve the proxy config file the sandbox config's variable VAR names -- or, when it names none,
 # the default config/DEFAULT the installer creates from config/templates/TEMPLATE -- setting VAR to
 # its real path. chopi hands the proxy that path, which it reads for the whole session, hot-reloading
-# the rules.
+# the rules: resolved once, as Seatbelt matches the real path, no symlink on the way can be
+# repointed past the profile denying changes to it. A configured one must be in PROXY_CONFIG_DIR,
+# where every session's command is kept from changing it, not just this session's.
 #
 # usage: resolve_proxy_config VAR DEFAULT TEMPLATE
 resolve_proxy_config() {
     arity 3
     local var="$1" default="$CHOPI_DIR/config/$2" template="$CHOPI_DIR/config/templates/$3"
-    local path resolved
+    local path resolved config_dir
     path="${!var}"
     case "$path" in
         '') if [ ! -e "$default" ]; then
@@ -122,5 +126,29 @@ resolve_proxy_config() {
     [ -f "$path" ] || { echo "chopi: no $var file at '$path'" >&2; return 1; }
     resolved="$(realpath "$path" 2>/dev/null)" \
         || { echo "chopi: cannot resolve $var path '$path'" >&2; return 1; }
+    config_dir="$(realpath_or_self "$PROXY_CONFIG_DIR")"
+    if [ "$path" != "$default" ] && ! is_path_within "$resolved" "$config_dir"; then
+        echo "chopi: $var must be in $PROXY_CONFIG_DIR, got '$path'" >&2
+        echo "Every session keeps its command from changing what is there; elsewhere, another session's" >&2
+        echo "could rewrite it, lifting this session's limits. Move it there, and point $var at it." >&2
+        return 1
+    fi
     printf -v "$var" '%s' "$resolved"
+}
+
+# Refuse a proxy config FILE with another name, anywhere: one the profile denying changes to it, by
+# its path, can't see, which the sandboxed command may write the live rules through. The sandbox
+# keeps the command from making one, but not one made outside it.
+#
+# usage: preflight_proxy_config_links FILE
+preflight_proxy_config_links() {
+    arity 1
+    local file="$1" links
+    links="$(/usr/bin/stat -L -f %l "$file")" \
+        || { echo "chopi: cannot read the link count of the proxy's config file '$file'" >&2; return 1; }
+    [ "$links" -gt 1 ] || return 0
+    refuse_or_warn \
+        "the proxy's config file '$file' has $links hard links, which the sandboxed command may write through" \
+        "the sandboxed command could lift its own outgoing limits" \
+        "Give it a single name, e.g.: cp '$file' '$file.tmp' && mv '$file.tmp' '$file'"
 }

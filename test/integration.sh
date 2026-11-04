@@ -21,9 +21,11 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 # A private TMPDIR, exported so the scripts under test leave their temporaries here too. It is the
 # CHOPI_RUN_DIR too, so the sessions' proxies this test starts keep their dirs in it, not the user's
 # run dir; trap it now so an early skip still cleans up (the rest of the fixtures, and the fuller
-# trap, come after the skip guards below).
+# trap, come after the skip guards below). The run dir is canonical, as the custom proxy config in
+# it is: chopi hands the proxy its real path, which names the config's reload banners, for the
+# assertions below to name alike.
 TMPDIR="$(mktemp -d)"; export TMPDIR
-CHOPI_RUN_DIR="$TMPDIR"; export CHOPI_RUN_DIR
+CHOPI_RUN_DIR="$(cd "$TMPDIR" && pwd -P)"; export CHOPI_RUN_DIR
 trap 'rm -rf "$TMPDIR"' EXIT
 
 . "$repo/.internal/util.sh"
@@ -71,10 +73,12 @@ alerter_stub="$base/bin"        # a recording `alerter` shim on the proxy's PATH
 claudebin="$base/claudebin"     # a stand-in `claude` for the Claude-context cases
 codexbin="$base/codexbin"       # a stand-in `codex` for checking Chopi's argv
 cfg="$base/config/sandbox.sh"   # minimal sandbox config, OUTSIDE the workspace
-rules="$base/config/itest-rules.yaml"
-empty_github_allow="$base/config/itest-github-allowlist-empty"
+# Custom proxy config must be in PROXY_CONFIG_DIR, here under the test's CHOPI_RUN_DIR.
+rules="$PROXY_CONFIG_DIR/itest-rules.yaml"
+empty_github_allow="$PROXY_CONFIG_DIR/itest-github-allowlist-empty"
 alerter_log="$base/alerter-calls.log"
-mkdir -p "$ws" "$outside" "$alerter_stub" "$claudebin" "$codexbin" "$base/config" "$base/home"
+mkdir -p "$ws" "$outside" "$alerter_stub" "$claudebin" "$codexbin" "$base/config" "$base/home" \
+    "$PROXY_CONFIG_DIR"
 
 # Fixture HOME under $base, automatically cleaned-up and avoids dirtying actual ~
 # Belongs in /var/tmp for the same reason $base does; under $TMPDIR, safehouse's blanket
@@ -220,7 +224,7 @@ set +e
 # ---------------------------------------------------------------------------
 echo "the session's proxy refuses a populated allowlist with no GitHub token"
 # ---------------------------------------------------------------------------
-nonempty_github_allow="$base/config/itest-github-allowlist-nonempty"
+nonempty_github_allow="$PROXY_CONFIG_DIR/itest-github-allowlist-nonempty"
 printf 'soundradix/*\n' > "$nonempty_github_allow"
 write_cfg "$base/config/no-token.sh" "CHOPI_GITHUB_ALLOWLIST=\"$nonempty_github_allow\""
 out="$(GH_TOKEN='' chopi_cfg "$base/config/no-token.sh" /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
@@ -232,7 +236,7 @@ assert_not_contains "$out" "RAN"                  "  -> and the command does not
 # ---------------------------------------------------------------------------
 echo "the session's proxy refuses rules that allow github.com/api.github.com (pre-relay leftovers)"
 # ---------------------------------------------------------------------------
-exfil_rules="$base/config/itest-rules-exfil.yaml"
+exfil_rules="$PROXY_CONFIG_DIR/itest-rules-exfil.yaml"
 cat > "$exfil_rules" <<EOF
 version: v1
 services: []

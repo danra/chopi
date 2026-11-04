@@ -108,8 +108,13 @@ main() {
     # shellcheck source=/dev/null  # can't follow user-supplied config path at lint time
     . "$config"
 
-    resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml || return 1
-    resolve_proxy_config CHOPI_GITHUB_ALLOWLIST github-allowlist github-allowlist.template || return 1
+    local proxy_config proxy_config_var
+    for proxy_config in "${PROXY_CONFIGS[@]}"; do
+        # shellcheck disable=SC2086 # its words are resolve_proxy_config's arguments
+        resolve_proxy_config $proxy_config || return 1
+        read -r proxy_config_var _ <<< "$proxy_config"
+        preflight_proxy_config_links "${!proxy_config_var}" || return 1
+    done
 
     if [ -n "$worktree_given" ]; then
         local wt_out_file
@@ -254,6 +259,10 @@ main() {
     run_dir_profile="$(mktemp "$TMPDIR/chopi-proxy-run-dir.XXXXXX")" \
         || { echo "chopi: could not create a temp file for the proxy run-dir profile" >&2; return 1; }
     write_proxy_run_dir_profile "$run_dir_profile" "$PROXY_RUN_DIR" || return 1
+    local proxy_config_profile
+    proxy_config_profile="$(mktemp "$TMPDIR/chopi-proxy-config.XXXXXX")" \
+        || { echo "chopi: could not create a temp file for the proxy config profile" >&2; return 1; }
+    write_proxy_config_profile "$proxy_config_profile" || return 1
 
     local gh_config_dir
     gh_config_dir="$(mktemp -d "$TMPDIR/chopi-gh-config.XXXXXX")" \
@@ -294,8 +303,8 @@ main() {
 
     # chopi's network profiles are always appended last so that (deny network*) lands after
     # safehouse's own profile, pinning outgoing traffic to the subsequent holes allowed for the
-    # session's proxy and GitHub relay servers. The run-dir profile goes just before them, after
-    # every file grant, so its deny outranks them all.
+    # session's proxy and GitHub relay servers. The run-dir and proxy config profiles go just
+    # before them, after every file grant, so their denies outrank them all.
     #
     # errexit off around safehouse so a non-zero exit from the sandboxed command is captured
     # and propagated (so `chopi cmd && next` short-circuits) instead of aborting here.
@@ -308,6 +317,7 @@ main() {
         "${protection_flags[@]}" \
         "${wrapper_flags[@]}" \
         --append-profile "$run_dir_profile" \
+        --append-profile "$proxy_config_profile" \
         --append-profile "$CHOPI_DIR/.internal/network.sb" \
         --append-profile "$proxy_net_profile" \
         -- \

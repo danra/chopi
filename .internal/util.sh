@@ -25,6 +25,18 @@ case "$CHOPI_RUN_DIR" in
     *) CHOPI_RUN_DIR="$PWD/$CHOPI_RUN_DIR" ;;
 esac
 PROXY_RUN_DIR="${CHOPI_RUN_DIR%/}/run"
+# PROXY_CONFIG_DIR is where a custom proxy config -- CHOPI_PROXY_RULES, CHOPI_GITHUB_ALLOWLIST -- must
+# be: config/ under ~/.chopi, which every session keeps the sandboxed command from changing, whatever
+# config it reads itself (see proxy_config_paths). A session's own config alone wouldn't do: its
+# command could rewrite another session's, which that session's proxy hot-reloads.
+PROXY_CONFIG_DIR="${CHOPI_RUN_DIR%/}/config"
+# The proxy's config files, each as the words VAR DEFAULT TEMPLATE: the sandbox config's variable
+# naming a custom one, else config/DEFAULT, which the installer creates from config/templates/
+# TEMPLATE. What chopi resolves and what every session protects both come from here.
+PROXY_CONFIGS=(
+    "CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml"
+    "CHOPI_GITHUB_ALLOWLIST github-allowlist github-allowlist.template"
+)
 
 # mktemp name prefixes of chopi's per-invocation temporaries (created under the private
 # TMPDIR); shared so the tests assert on the same names chopi creates.
@@ -257,6 +269,20 @@ overlaps_proxy_run_dir() {
     overlapping_dirs "$(realpath_or_self "$1")" "$(realpath_or_self "$PROXY_RUN_DIR")"
 }
 
+# Does path $1 reach any session's proxy config (proxy_config_paths), in either direction? Printing
+# the config it reaches. The proxies hot-reload it, so nothing that changes it unreviewed may reach it.
+overlaps_proxy_config() {
+    arity 1
+    local config
+    while IFS= read -r config; do
+        if overlapping_dirs "$1" "$config"; then
+            printf '%s' "$config"
+            return 0
+        fi
+    done < <(proxy_config_paths)
+    return 1
+}
+
 # Print the GitHub token the environment sets, as it is: GH_TOKEN, then GITHUB_TOKEN. A SET variable
 # wins even when empty -- an explicit GH_TOKEN='' means "no token, don't fall back to gh auth" --
 # hence the "+x" tests. Fails when neither is set, leaving the token to gh's stored login.
@@ -400,6 +426,44 @@ write_proxy_run_dir_profile() {
         echo ";; chopi: the proxy's run dir, whose ports aim the network holes, stays out of reach."
         rule 'deny file-read* file-write*' subpath "$run_dir"
         pin_ancestries / "$(dirname "$run_dir")"
+    } >"$file"
+}
+
+# Print the real paths of every proxy config any session may read, one per line: PROXY_CONFIG_DIR,
+# where a custom one must be (see resolve_proxy_config), and the default files, which may link
+# elsewhere. Every session keeps its command from changing them all, as a safe write target must
+# not overlap them, whichever config the session reads itself.
+proxy_config_paths() {
+    arity 0
+    local config default
+    realpath_or_self "$PROXY_CONFIG_DIR"
+    for config in "${PROXY_CONFIGS[@]}"; do
+        read -r _ default _ <<< "$config"
+        realpath_or_self "$CHOPI_DIR/config/$default"
+    done
+}
+
+# Write the Seatbelt profile denying the sandboxed command any change to the proxies' config to FILE
+# (proxy_config_paths): a command that could rewrite rules or a GitHub allowlist could lift its own
+# outgoing limits, or another session's, mid-session even, as the proxies hot-reload them. Whatever
+# grant covers one -- the workspace, the sandbox config's, safehouse's own, a trusted .safehouse's --
+# this deny, appended after every file grant, comes last among the matching rules and wins: nothing
+# in them can be written, removed, or have another put in its place. Their ancestors are pinned, so
+# none can be renamed away and replaced, nor made where missing. Reading is left as granted. Another
+# name for a config file, a hard link, which these rules can't see, chopi refuses before launch (see
+# preflight_proxy_config_links).
+#
+# usage: write_proxy_config_profile FILE
+write_proxy_config_profile() {
+    arity 1
+    local file="$1" paths=() path
+    readarray -t paths < <(proxy_config_paths)
+    {
+        echo ";; chopi: the proxies' config, which sets the sessions' outgoing limits, stays unchangeable."
+        for path in "${paths[@]}"; do
+            rule 'deny file-write*' subpath "$path"
+        done
+        pin_ancestries / "${paths[@]%/*}"
     } >"$file"
 }
 
