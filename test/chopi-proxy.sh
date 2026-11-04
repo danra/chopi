@@ -527,4 +527,27 @@ assert_contains "$out" "$no_rules" "a missing rules file is named on stderr"
 
 
 # ---------------------------------------------------------------------------
+echo "reload banner groups (shared by the sessions whose reloads of a file can't differ)"
+# ---------------------------------------------------------------------------
+# token_source ENV... -- gh_token_source under ENV, with GH_TOKEN and GITHUB_TOKEN unset unless
+# ENV sets them.
+token_source() {
+    # shellcheck disable=SC2016  # expands in the child bash, against the environment under test
+    env -u GH_TOKEN -u GITHUB_TOKEN "$@" \
+        bash -c '. "$1/.internal/util.sh"; gh_token_source' _ "$repo"
+}
+assert_eq "$(token_source)" "gh" "no token in the environment: gh's"
+assert_eq "$(token_source GH_TOKEN=t1)" "env" "a GH_TOKEN: the environment's"
+assert_eq "$(token_source GITHUB_TOKEN=t1)" "env" "  -> a GITHUB_TOKEN too"
+assert_eq "$(token_source GH_TOKEN=' ' GITHUB_TOKEN=t1)" "none" \
+    "  -> an empty GH_TOKEN is none, taking precedence as resolve_gh_token takes it"
+assert_eq "$(reload_banner_group /x/allow env)" "$(reload_banner_group /x/allow env)" \
+    "sessions reading the same file with the same token source share a group"
+assert_not_eq "$(reload_banner_group /x/allow env)" "$(reload_banner_group /x/allow none)" \
+    "  -> but not with a different one, whose reload can fail where theirs succeeds"
+assert_not_eq "$(reload_banner_group /x/allow env)" "$(reload_banner_group /y/allow env)" \
+    "  -> nor with a different file"
+
+
+# ---------------------------------------------------------------------------
 summary

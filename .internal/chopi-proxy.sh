@@ -158,11 +158,14 @@ notify_deny() {
 # the other's last edit.
 #
 # usage: notify_reload ok|failed rules|allowlist
+RULES_RELOAD_GROUP="$(reload_banner_group "$RULES" "")"
+ALLOWLIST_RELOAD_GROUP="$(reload_banner_group "$GITHUB_ALLOWLIST" "$(gh_token_source)")"
 notify_reload() {
     arity 2
-    local group="chopi-proxy-reload-$2" file="$RULES" subtitle='rules reload failed'
+    local file="$RULES" subtitle='rules reload failed' group="$RULES_RELOAD_GROUP"
     if [ "$2" = allowlist ]; then
         file="$GITHUB_ALLOWLIST" subtitle='GitHub allowlist reload failed'
+        group="$ALLOWLIST_RELOAD_GROUP"
     fi
     case "$1" in
         failed) notify "$group" "$LOG" "$subtitle" "Your edit to ${file##*/} did not take effect" ;;

@@ -322,22 +322,33 @@ overlaps_proxy_config() {
     return 1
 }
 
-# Resolve the GitHub token the relay authenticates with, following gh's own source precedence:
-# GH_TOKEN, then GITHUB_TOKEN, then gh's stored login. A SET variable wins even when empty -- an
-# explicit GH_TOKEN='' means "no token, don't fall back to gh auth" -- hence the "+x" tests. Trimmed,
-# as stray whitespace from a paste would corrupt the Basic credential. Runs on the host only; the
-# token never enters the sandbox. Shared with the relay smoke test, so it resolves the same token.
+# Print the GitHub token the environment sets, as it is: GH_TOKEN, then GITHUB_TOKEN. A SET variable
+# wins even when empty -- an explicit GH_TOKEN='' means "no token, don't fall back to gh auth" --
+# hence the "+x" tests. Fails when neither is set, leaving the token to gh's stored login.
+env_gh_token() {
+    arity 0
+    if [ -n "${GH_TOKEN+x}" ]; then
+        printf '%s' "$GH_TOKEN"
+    elif [ -n "${GITHUB_TOKEN+x}" ]; then
+        printf '%s' "$GITHUB_TOKEN"
+    else
+        return 1
+    fi
+}
+
+# Resolve the GitHub token the relay authenticates with, following gh's own source precedence: the
+# environment's (env_gh_token), else gh's stored login. Trimmed, as stray whitespace from a paste
+# would corrupt the Basic credential. Runs on the host only; the token never enters the sandbox.
+# Shared with the relay smoke test, so it resolves the same token.
 resolve_gh_token() {
     arity 0
     local token
-    if [ -n "${GH_TOKEN+x}" ]; then
-        token="$GH_TOKEN"
-    elif [ -n "${GITHUB_TOKEN+x}" ]; then
-        token="$GITHUB_TOKEN"
-    elif command -v gh >/dev/null 2>&1; then
-        token="$(gh auth token 2>/dev/null || true)"
-    else
-        token=""
+    if ! token="$(env_gh_token)"; then
+        if command -v gh >/dev/null 2>&1; then
+            token="$(gh auth token 2>/dev/null || true)"
+        else
+            token=""
+        fi
     fi
     trim_into token "$token"
     printf '%s' "$token"
@@ -578,6 +589,34 @@ write_proxy_network_profile() {
         rule 'allow network-outbound' 'remote ip' "localhost:$relay_port"
         rule 'allow network-outbound' literal "$sock"
     } >"$file"
+}
+
+# The macOS banner group of the proxy's reload failures for config file FILE, the rules or the
+# GitHub allowlist: one per file, shared by the proxy of every session reading it. They all reload
+# the same edit, so a broken one shows a single banner, rather than one per session, and the next
+# good one withdraws it, whichever session's proxy reloads it first. That holds only among sessions
+# whose reloads of FILE can't differ: a non-empty KEY sets apart those that can -- the allowlist's
+# render depends on where the session takes its GitHub token from (gh_token_source).
+#
+# usage: reload_banner_group FILE KEY
+reload_banner_group() {
+    arity 2
+    local hash
+    hash="$(md5 -q -s "$1${2:+
+$2}")"
+    printf 'chopi-proxy-reload-%s' "${hash:0:12}"
+}
+
+# Where resolve_gh_token takes the GitHub token from, which decides whether the relays' config
+# renders for a non-empty allowlist: "env" for a non-empty one in the environment (env_gh_token),
+# "none" for an empty one, which resolve_gh_token takes as it is, and "gh" for gh's own, the same
+# for every session. Its value alone matters to nothing a reload checks, so it is no part of this.
+gh_token_source() {
+    arity 0
+    local token
+    token="$(env_gh_token)" || { echo gh; return; }
+    trim_into token "$token"
+    if [ -n "$token" ]; then echo env; else echo none; fi
 }
 
 # Do github remote URLs resolve to the git relay on PORT under the ambient git config (all
