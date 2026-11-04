@@ -104,6 +104,10 @@ assert_contains "$out" "overlaps chopi's own directory" "refuses when workspace 
 out="$( cd "$repo" && { CHOPI_ALLOW_SELF=1; preflight_initial; } 2>&1 )"
 assert_contains "$out" "warning:"          "CHOPI_ALLOW_SELF downgrades overlap to a warning"
 assert_contains "$out" "continuing anyway" "CHOPI_ALLOW_SELF proceeds past the overlap check"
+# stdout belongs to the sandboxed command (`chopi cmd > out`): the warning must not touch it. The
+# trailing marker keeps the command substitution from stripping a stray newline.
+out="$( cd "$repo" && { CHOPI_ALLOW_SELF=1; preflight_initial; } 2>/dev/null; echo end )"
+assert_eq "$out" "end" "  -> and writes nothing to stdout"
 
 tmp="$(mktemp -d)"
 out="$( cd "$tmp" && preflight_initial 2>&1 )"
