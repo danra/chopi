@@ -10,7 +10,8 @@
 #     chopi's own dir) are denied.
 #   * network: an allowed host is reachable THROUGH the proxy; a host that's not allowed
 #     is refused by the proxy (and the denial is logged + notified); any direct outgoing connection
-#     that bypasses the proxy, or aims at a non-allowlisted loopback port, is blocked by Seatbelt.
+#     that bypasses the proxy, or aims at a non-allowlisted loopback port -- another session's
+#     proxy included -- is blocked by Seatbelt. A session's proxy stops with the session.
 #   * rules hot reload: an edit to the rules file takes effect while the session runs; a
 #     broken edit is refused loudly and the previous rules stay in effect.
 
@@ -62,9 +63,9 @@ done
 # ---------------------------------------------------------------------------
 vartmp="$(cd /var/tmp && pwd -P)" || { echo "error: cannot resolve /var/tmp" >&2; exit 1; }
 base="$(mktemp -d "$vartmp/chopi-itest.XXXXXX")" || { echo "error: mktemp failed" >&2; exit 1; }
-# The background session below runs while a dir of its own in the workspace exists, so removing
-# the fixtures ends it if still running: it ignores INT, as background commands here do. It, and
-# its proxy, are then waited for.
+# The background sessions below each run while a dir of theirs in the workspace exists, so removing
+# the fixtures ends any still running: they ignore INT, as background commands here do. They, and
+# their proxies, are then waited for.
 trap 'rm -rf "$base" "$TMPDIR"; wait' EXIT
 
 ws="$base/workspace"            # the sandbox workspace (read/write granted, as the workdir)
@@ -159,10 +160,13 @@ write_test_rules
 
 # alerter shim: record each invocation (so we can prove the denial-notification path fired)
 # instead of popping a real macOS banner per DENY. First on PATH, which chopi passes on to the
-# sessions' proxies; jq/nc/etc. stay reachable via the rest.
+# sessions' proxies; jq/nc/etc. stay reachable via the rest. It records only after a second, as
+# a banner stays up a while: by then its session has ended and stopped the proxy, which must
+# leave the notification be.
 : > "$alerter_log"
 cat > "$alerter_stub/alerter" <<EOF
 #!/bin/sh
+sleep 1
 printf '%s\n' "\$*" >> "$alerter_log"
 exit 0
 EOF
@@ -266,6 +270,89 @@ assert_zero     "$rc"        "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESP
 assert_contains "$out" "RAN" "  -> the command runs"
 assert_contains "$out" "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY is set" \
     "  -> with the refusal downgraded to a warning the user sees"
+
+
+# ---------------------------------------------------------------------------
+echo "the proxy config stays out of the sandboxed command's reach to change, wherever it is"
+# ---------------------------------------------------------------------------
+# upper_case_name FILE -- FILE, its name in upper case: the same file on a case-insensitive volume.
+upper_case_name() {
+    arity 1
+    printf '%s/%s' "${1%/*}" "$(basename "$1" | tr '[:lower:]' '[:upper:]')"
+}
+
+# config_tamper FILE -- what a sandboxed command manages of every way of changing FILE: writing it,
+# removing it, putting another in its place, by a rename or a link, or by a name differing only in
+# case, and renaming its dir away, to put another in its place. Each says _OK or _FAIL.
+config_tamper() {
+    arity 1
+    local file="$1" dir="${1%/*}" upper
+    upper="$(upper_case_name "$file")"
+    printf '%s' "
+    (echo 1 >> '$file') 2>/dev/null && echo WRITE_OK || echo WRITE_FAIL
+    (echo 1 >> '$upper') 2>/dev/null && echo CASE_OK || echo CASE_FAIL
+    rm -f '$file' 2>/dev/null && echo RM_OK || echo RM_FAIL
+    echo 1 > '$dir/other' 2>/dev/null
+    mv -f '$dir/other' '$file' 2>/dev/null && echo REPLACE_OK || echo REPLACE_FAIL
+    ln '$file' '$dir/link' 2>/dev/null && echo LINK_OK || echo LINK_FAIL
+    mv '$dir' '$dir.moved' 2>/dev/null && echo MOVE_OK || echo MOVE_FAIL
+    echo RAN"
+}
+
+# assert_config_kept OUT FILE ORIG WHERE -- the session OUT, tampering with FILE, which was ORIG,
+# ran and changed nothing of it.
+assert_config_kept() {
+    arity 4
+    local out="$1" file="$2" orig="$3" where="$4"
+    assert_contains "$out" "RAN"         "chopi runs a command with the proxy rules $where"
+    assert_contains "$out" "WRITE_FAIL"  "  -> it can't write them"
+    # On a case-sensitive volume, the name in another case is another file, for the command to make.
+    if [ "$(upper_case_name "$file")" -ef "$file" ]; then
+        assert_contains "$out" "CASE_FAIL" "  -> by another case of their name either"
+    else
+        echo "  SKIP writing them by another case of their name (a case-sensitive volume)"
+    fi
+    assert_contains "$out" "RM_FAIL"     "  -> or remove them"
+    assert_contains "$out" "REPLACE_FAIL" "  -> or put others in their place"
+    assert_contains "$out" "LINK_FAIL"   "  -> or hard-link them, to write them through the link"
+    assert_contains "$out" "MOVE_FAIL"   "  -> or rename their dir away"
+    assert_eq "$(cat "$file")" "$orig"   "  -> the rules are as written"
+}
+
+# Custom proxy config elsewhere -- in the workspace, say -- is refused: another session's command,
+# in the same workspace, could rewrite it, lifting this session's limits.
+mkdir -p "$ws/config"
+cp "$rules" "$ws/config/rules.yaml"
+write_cfg "$base/config/rules-inside.sh" "CHOPI_PROXY_RULES=\"$ws/config/rules.yaml\""
+out="$(chopi_cfg "$base/config/rules-inside.sh" /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_nonzero      "$rc"                                  "chopi refuses proxy rules outside the config dir"
+assert_contains     "$out" "must be in $PROXY_CONFIG_DIR"  "  -> saying where they must be"
+assert_not_contains "$out" "RAN"                           "  -> and the command does not run"
+rm -rf "$ws/config"
+
+# In the config dir, under a grant covering it, read-only: the command is the file's owner, free to
+# make it writable.
+other_rules="$PROXY_CONFIG_DIR/itest-rules-other.yaml"
+cp "$rules" "$other_rules"; chmod a-w "$other_rules"
+write_cfg "$base/config/rules-granted.sh" \
+    "CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro \"$claudebin:$codexbin\" --add-dirs \"$PROXY_CONFIG_DIR\" )" \
+    "CHOPI_PROXY_RULES=\"$other_rules\""
+out="$(chopi_cfg "$base/config/rules-granted.sh" /bin/sh -c \
+    "chmod u+w '$other_rules' 2>/dev/null && echo CHMOD_OK || echo CHMOD_FAIL
+    $(config_tamper "$other_rules")" 2>&1)"
+assert_config_kept "$out" "$other_rules" "$(cat "$rules")" "read-only in the config dir, granted to the command"
+assert_contains "$out" "CHMOD_FAIL" "  -> nor make them writable"
+
+# Another session's: a command whose session reads other rules can't change these either.
+chmod u+w "$other_rules"
+out="$(chopi_cfg "$base/config/rules-granted.sh" /bin/sh -c "$(config_tamper "$rules")" 2>&1)"
+assert_config_kept "$out" "$rules" "$(cat "$other_rules")" "another session reads, under the same grant"
+
+write_cfg "$base/config/rules-relative.sh" "CHOPI_PROXY_RULES=rules.yaml"
+out="$(chopi_cfg "$base/config/rules-relative.sh" /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_nonzero      "$rc"                              "chopi refuses relative proxy rules paths"
+assert_contains     "$out" "must be an absolute path"  "  -> saying why"
+assert_not_contains "$out" "RAN"                       "  -> and the command does not run"
 
 
 # ---------------------------------------------------------------------------
@@ -724,6 +811,39 @@ assert_nonzero  "$rc"       "in-sandbox gh api graphql is refused"
 assert_contains "$api_deny" 'not an allowed API operation' "  -> gh reached the relay through its socket and displays the deny"
 assert_contains "$api_deny" 'HTTP 403'                     "  -> as the relay's own 403"
 
+# (6) Each session has a proxy of its own, which another session cannot reach. A first session
+# reports its proxy and waits; a second one, started meanwhile, tries going out through it.
+handoff="$ws/handoff"; mkdir -p "$handoff"
+# shellcheck disable=SC2016  # expands in the sandboxed shell, not here
+chopi_t /bin/sh -c 'printf "%s\n" "$HTTP_PROXY" > handoff/proxy;
+    for _ in $(seq 1 300); do [ -d handoff ] || exit 0; sleep 0.1; done' >/dev/null 2>&1 &
+first_session=$!
+for _ in {1..150}; do [ -s "$handoff/proxy" ] && break; sleep 0.1; done
+first_proxy="$(cat "$handoff/proxy" 2>/dev/null)"
+if [ -n "$first_proxy" ]; then
+    # shellcheck disable=SC2016  # expands in the sandboxed shell, not here
+    second_proxy="$(chopi_t /bin/sh -c 'printf "%s" "$HTTP_PROXY"' 2>/dev/null)"
+    assert_not_contains "$second_proxy" "$first_proxy" "concurrent sessions each get a proxy of their own"
+    # The CONNECT's code (curl takes the last -w), as a reachable proxy's deny, 407, leaves
+    # http_code at 000 too.
+    code="$(sandbox_curl -w '%{http_connect}' --max-time 15 --proxy "$first_proxy" "https://$DENIED_HOST")"
+    assert_eq "$code" "000" "  -> and a session cannot reach another session's proxy"
+else
+    bad "the first session did not report its proxy"
+fi
+rm -rf "$handoff"
+wait "$first_session"
+
+# (7) A session's proxy stops with the session.
+first_port="${first_proxy##*:}"
+if [ -n "$first_port" ]; then
+    for _ in {1..100}; do nc -z 127.0.0.1 "$first_port" 2>/dev/null || break; sleep 0.1; done
+    if nc -z 127.0.0.1 "$first_port" 2>/dev/null; then
+        bad "a session's proxy keeps running after the session ends (port $first_port)"
+    else
+        ok "a session's proxy stops with the session"
+    fi
+fi
 
 
 # ---------------------------------------------------------------------------

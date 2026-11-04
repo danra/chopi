@@ -5,6 +5,15 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Exported so the scripts under test leave their temporaries here too.
+TMPDIR="$(mktemp -d)"; export TMPDIR
+trap 'rm -rf "$TMPDIR"' EXIT
+# The sessions' dirs go in a run dir of the test's own, not the user's: util.sh derives
+# PROXY_RUN_DIR from it.
+# shellcheck disable=SC2034  # read by util.sh
+CHOPI_RUN_DIR="$TMPDIR/chopi"
+
 . "$repo/.internal/util.sh"
 . "$repo/test/lib.sh"
 . "$repo/.internal/classify-log.sh"
@@ -13,11 +22,7 @@ BEL="$(printf '\007')"   # U+0007 BEL: format-deny.jq prefixes an interactive DE
 ESC="$(printf '\033')"   # U+001B ANSI escape: introduces the DENY color code
 set +euo pipefail
 
-header "test/chopi-proxy.sh -- unit tests for the proxy's log logic + github migration refusal + session network holes"
-
-# Exported so the scripts under test leave their temporaries here too.
-TMPDIR="$(mktemp -d)"; export TMPDIR
-trap 'rm -rf "$TMPDIR"' EXIT
+header "test/chopi-proxy.sh -- unit tests for the proxy's log logic + github migration refusal + session network holes + session proxy lifecycle"
 
 
 # ---------------------------------------------------------------------------
@@ -464,6 +469,173 @@ assert_contains "$run_dir_rules" '(deny file-write* (literal "'"$(dirname "$run_
     "  -> and pins its ancestors, so it can't be renamed away and replaced"
 assert_not_contains "$run_dir_rules" '(literal "/")' \
     "  -> up to, not including, the root"
+
+
+# ---------------------------------------------------------------------------
+echo "the proxies' config is out of the sandbox's reach to change, whatever else is granted"
+# ---------------------------------------------------------------------------
+# A stand-in chopi dir, its default config linking elsewhere, and a config dir that doesn't exist.
+config_t="$TMPDIR/home dir"
+mkdir -p "$config_t/chopi/config" "$config_t/dotfiles"
+config_t="$(realpath "$config_t")"   # as the profile has them, through the TMPDIR's symlinks
+: > "$config_t/dotfiles/rules.yaml"
+ln -s "$config_t/dotfiles/rules.yaml" "$config_t/chopi/config/proxy-rules.yaml"
+: > "$config_t/chopi/config/github-allowlist"
+( CHOPI_DIR="$config_t/chopi" PROXY_CONFIG_DIR="$config_t/.chopi/config"
+  write_proxy_config_profile "$TMPDIR/config.sb" )
+config_rules="$(grep -v '^;' "$TMPDIR/config.sb")"
+assert_contains "$config_rules" '(deny file-write* (subpath "'"$config_t/.chopi/config"'"))' \
+    "the profile denies changing anything in the custom config dir, any session's"
+assert_contains "$config_rules" '(deny file-write* (subpath "'"$config_t/dotfiles/rules.yaml"'"))' \
+    "  -> and the default rules, where they link"
+assert_contains "$config_rules" '(deny file-write* (subpath "'"$config_t/chopi/config/github-allowlist"'"))' \
+    "  -> and the default allowlist"
+assert_not_contains "$config_rules" 'file-read' "  -> leaving reading them as granted"
+assert_contains "$config_rules" '(deny file-write* (literal "'"$config_t/.chopi"'"))' \
+    "  -> and pins their ancestors, so none can be renamed away and replaced, nor made where missing"
+assert_eq "$(grep -c "(literal \"$config_t\")" "$TMPDIR/config.sb")" 1 \
+    "  -> each once, however many paths it holds"
+assert_not_contains "$config_rules" '(literal "/")' \
+    "  -> up to, not including, the root"
+
+
+# ---------------------------------------------------------------------------
+echo "session proxy lifecycle (launch, await the ports it reports, stop)"
+# ---------------------------------------------------------------------------
+# Hermetic: a stub stands in for chopi-proxy.sh, reporting made-up ports in its --dir, so
+# nothing binds a real port. The stub's behavior comes from STUB_PLAN: "up" starts a child standing
+# in for Caddy (its pid left in stub-child), reports the ports, and stays up until killed;
+# "warn" does the same after a warning on stderr; "garbled" reports a port that isn't one; "fail"
+# exits 1 with a reason on stderr; "crash" exits 1 with its reason only in the log, as smokescreen
+# would; "warn-crash" warns on stderr first; "starting" stays at its startup, as
+# chopi-proxy.sh is at its checks; and "slow" takes a while before going on as "up". It records the
+# TMPDIR it was started with.
+stub="$TMPDIR/stub-proxy.sh"
+cat > "$stub" <<EOF
+#!/usr/bin/env bash
+printf 'TMPDIR=%s\\n' "\${TMPDIR-<unset>}" >> "$TMPDIR/stub-args"
+# Owning its dir as chopi-proxy.sh does.
+dir=""
+trap '[ -z "\$dir" ] || rm -rf "\$dir"' EXIT
+trap 'exit 143' TERM HUP
+while [ "\$#" -gt 0 ]; do
+    case "\$1" in
+        --log) log="\$2" ;;
+        --dir) dir="\$2" ;;
+    esac
+    case "\$1" in
+        --log|--parent|--dir|--rules|--github-allowlist) printf '%s=%s\n' "\$1" "\$2" >> "$TMPDIR/stub-args"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+case "\$STUB_PLAN" in
+    fail)  echo "the proxy says why" >&2; exit 1 ;;
+    warn|warn-crash) echo "a warning for the user" >&2 ;;
+esac
+case "\$STUB_PLAN" in
+    crash|warn-crash) echo "smokescreen says why" >> "\$log"; exit 1 ;;
+    starting) while :; do sleep 0.05; done ;;
+    slow) sleep 1.5 ;;
+esac
+if [ "\$STUB_PLAN" = garbled ]; then relay="not a port"; else relay=24761; fi
+# Led as chopi-proxy.sh leads chopi-smokescreen, with a stand-in Caddy beside it.
+. "$repo/.internal/util.sh"
+lead_group sh -c 'sleep 30 & echo \$! > "\$1"; printf "proxy 24760\\nrelay %s\\n" "\$3" > "\$2/ports"
+    exec sleep 30' sh "$TMPDIR/stub-child" "\$dir" "\$relay"
+EOF
+chmod +x "$stub"
+CHOPI_PROXY_SCRIPT="$stub"
+CHOPI_PROXY_LOG_DIR="$TMPDIR/logs"
+# The TMPDIR chopi was started with, before it took one of its own.
+user_tmpdir="$TMPDIR/user tmp"
+
+# start_proxy_with PLAN [USER_TMPDIR] -- start a session proxy under the stub.
+start_proxy_with() {
+    : > "$TMPDIR/stub-args"
+    STUB_PLAN="$1" launch_session_proxy "$TMPDIR/rules.yaml" "$TMPDIR/allowlist" "" \
+        "${2-$user_tmpdir}" && await_session_proxy
+}
+
+# Not in a $(...): the proxy must outlive the call, as it does in chopi, and a job started under job
+# control in a command substitution is killed on leaving it.
+start_proxy_with up 2>"$TMPDIR/start.err"; st=$?
+assert_zero "$st" "the proxy starts"
+assert_eq "$(cat "$TMPDIR/start.err")" "" "  -> quietly"
+assert_eq "$SESSION_PROXY_PORT" 24760 "  -> its port the one it reports"
+assert_eq "$SESSION_RELAY_PORT" 24761 "  -> and the relay's"
+assert_eq "$SESSION_GH_SOCK" "$SESSION_PROXY_DIR/gh.sock" "  -> and the API relay's socket"
+assert_contains "$(cat "$TMPDIR/stub-args")" "--rules=$TMPDIR/rules.yaml" "  -> passing the configured rules"
+assert_contains "$(cat "$TMPDIR/stub-args")" "--github-allowlist=$TMPDIR/allowlist" "  -> and the configured allowlist"
+assert_contains "$(cat "$TMPDIR/stub-args")" "--log=$CHOPI_PROXY_LOG_DIR/proxy-" "  -> logging under the log dir"
+pid="$SESSION_PROXY_PID" dir="$SESSION_PROXY_DIR" child="$(cat "$TMPDIR/stub-child")"
+kill -0 "$pid" 2>/dev/null
+assert_zero $? "  -> and stays up"
+assert_contains "$(cat "$TMPDIR/stub-args")" "--dir=$dir" "  -> with a dir of its own"
+assert_eq "$(dirname "$dir")" "$PROXY_RUN_DIR" "  -> in the run dir, out of the sandbox's reach"
+# Not chopi's TMPDIR, which goes with the session: an editor a banner opens can outlive it.
+assert_contains "$(cat "$TMPDIR/stub-args")" "TMPDIR=$user_tmpdir"$'\n' "  -> with the TMPDIR chopi was started with"
+stop_session_proxy
+assert_pid_exits "$pid" "stop_session_proxy stops it"
+# chopi-proxy.sh stops what it leads with it, Caddy included.
+assert_pid_exits "$child" "  -> and its children too"
+assert_absent "$dir" "  -> which removes its dir"
+
+# A proxy gone on its own, and reaped, leaves its pid free for reuse: signalling its group then
+# could reach an unrelated process. Its stand-in Caddy, left behind in the group, stands in for
+# that process.
+start_proxy_with up 2>/dev/null
+pid="$SESSION_PROXY_PID" dir="$SESSION_PROXY_DIR" child="$(cat "$TMPDIR/stub-child")"
+kill -KILL "$pid"; wait "$pid" 2>/dev/null
+stop_session_proxy
+sleep 0.2
+kill -0 "$child" 2>/dev/null
+assert_zero $? "stop_session_proxy signals nothing once the proxy is gone"
+kill "$child" 2>/dev/null
+rm -rf "$dir"
+
+start_proxy_with up "" 2>/dev/null
+assert_contains "$(cat "$TMPDIR/stub-args")" "TMPDIR=<unset>" "a proxy of a chopi started with no TMPDIR gets none"
+stop_session_proxy
+
+start_proxy_with warn 2>"$TMPDIR/start.err"; st=$?
+assert_zero "$st" "a proxy that warns as it starts still starts"
+assert_contains "$(cat "$TMPDIR/start.err")" "a warning for the user" "  -> showing the warning"
+stop_session_proxy
+
+# Stopped while still starting, as chopi stops it when its own setup fails or the user hits Ctrl-C.
+STUB_PLAN=starting launch_session_proxy "$TMPDIR/rules.yaml" "$TMPDIR/allowlist" "" ""
+pid="$SESSION_PROXY_PID" dir="$SESSION_PROXY_DIR"
+sleep 0.2
+stop_session_proxy
+assert_pid_exits "$pid" "stop_session_proxy stops a proxy still starting"
+assert_absent "$dir" "  -> which removes its dir"
+
+# Slower to start than chopi waits quietly for, as on a keychain prompt for the GitHub token.
+CHOPI_PROXY_START_NOTICE_SECS=1 start_proxy_with slow 2>"$TMPDIR/start.err"; st=$?
+assert_zero "$st" "a proxy slow to start still starts"
+assert_contains "$(cat "$TMPDIR/start.err")" "chopi: waiting for the proxy to start" "  -> saying what chopi waits on"
+assert_eq "$(grep -c 'waiting for the proxy' "$TMPDIR/start.err")" 1 "  -> once"
+stop_session_proxy
+
+out="$(start_proxy_with fail 2>&1)"; st=$?
+assert_nonzero "$st" "a proxy that fails to start fails the start"
+assert_contains "$out" "the proxy says why" "  -> showing the proxy's reason"
+assert_not_contains "$out" "its log:" "  -> without the log, which has nothing on it"
+
+out="$(start_proxy_with crash 2>&1)"; st=$?
+assert_nonzero "$st" "a proxy that dies with its reason in its log fails the start"
+assert_contains "$out" "smokescreen says why" "  -> showing the log's tail"
+
+out="$(start_proxy_with warn-crash 2>&1)"; st=$?
+assert_nonzero "$st" "a proxy that warns, then dies with its reason in its log, fails the start"
+assert_contains "$out" "a warning for the user" "  -> showing the warning"
+assert_contains "$out" "smokescreen says why" "  -> and the log's tail too"
+
+out="$(start_proxy_with garbled 2>&1)"; st=$?
+assert_nonzero "$st" "a proxy reporting a malformed port fails the start"
+assert_contains "$out" "malformed ports" "  -> saying so"
+kill "$(cat "$TMPDIR/stub-child")" 2>/dev/null
+
 
 
 # ---------------------------------------------------------------------------
