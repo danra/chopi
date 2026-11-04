@@ -2,7 +2,7 @@
 // library and extended to hot-reload the --egress-acl-file rules, and the supervisor of the
 // session's GitHub relays, served by Caddy.
 //
-//	chopi-smokescreen --dir DIR --relay-log FILE --github-allowlist FILE
+//	chopi-smokescreen --dir DIR --parent PID --relay-log FILE --github-allowlist FILE
 //	                  --relay-config CMD -- SMOKESCREEN_FLAGS...
 //
 //   - Smokescreen's flags and log output are identical to the standalone smokescreen binary's,
@@ -21,8 +21,8 @@
 //   - Once smokescreen listens and Caddy serves, the ports are reported in DIR/ports, for chopi
 //     to learn them from, and to know the proxy is up, and a line says where on stdout. Until then,
 //     errors go to stderr, for chopi to show; from then on, everything goes to stdout, the log.
-//   - The proxy stops on TERM or HUP; if the Caddy serving exits, it stops too, so nothing is left
-//     serving half the session. Caddy is stopped with it.
+//   - The proxy stops once process PID (chopi) exits, or on TERM or HUP; if the Caddy serving
+//     exits, it stops too, so nothing is left serving half the session. Caddy is stopped with it.
 
 package main
 
@@ -240,12 +240,19 @@ func listenLoopback() (*net.TCPListener, error) {
 }
 
 func main() {
-	// Caught from the start, for a stop asked as the proxy starts to stop the render too, below.
+	// Caught from the start, a stop asked as the proxy starts still ends it in order: the render
+	// cancelled, Caddy stopped.
 	stop := stopSignals()
 	opts, err := parseOptions(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "chopi-smokescreen:", err)
 		os.Exit(2)
+	}
+	// Done once the proxy is asked to stop, or chopi is gone: watched from the start too, as the
+	// render below may wait on a keychain prompt, long after chopi is gone.
+	stop, err = watchExit(stop, opts.parent)
+	if err != nil {
+		fail("can't watch process %d: %v", opts.parent, err)
 	}
 	// The token is for rendering the relays' config, not for smokescreen or Caddy.
 	relayConf := relayConfig{cmd: opts.relayConfig, allowlist: opts.allowlist,
@@ -299,7 +306,7 @@ func main() {
 	initialConfig, notes, err := relayConf.render(stop)
 	if err != nil {
 		if stop.Err() != nil {
-			// Asked to stop as it rendered, maybe at a keychain prompt: nothing else is up yet.
+			// Stopped as it rendered, maybe at a keychain prompt: nothing else is up yet.
 			os.Exit(0)
 		}
 		fail("%v", err)
@@ -322,7 +329,8 @@ func main() {
 		allowlistFile, conf.Log.WithField("allowlist", opts.allowlist))
 	reported := ports{proxy: int(conf.Port), relay: portOf(gitListener)}
 
-	// Stop the proxy with STATUS, Caddy with it.
+	// Stop the proxy with STATUS, Caddy with it. The dir is chopi-proxy.sh's to remove, once we
+	// are gone.
 	exit := func(status int) {
 		relaySup.stopAll()
 		os.Exit(status)
