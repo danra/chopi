@@ -287,8 +287,11 @@ func TestSupervisorServesAndStopsOnINT(t *testing.T) {
 	if config, _ := os.ReadFile(filepath.Join(run.state, "caddy-config")); string(config) != "THE CADDY CONFIG" {
 		t.Errorf("caddy got config %q, want the render's output", config)
 	}
-	if !strings.Contains(run.stderr.String(), "render says: a note") {
-		t.Errorf("stderr %q, want the render's note, for the user to see as the proxy starts", run.stderr)
+	if log, _ := os.ReadFile(run.logFile); !strings.Contains(string(log), "render says: a note") {
+		t.Errorf("the log lacks the render's note:\n%s", log)
+	}
+	if strings.Contains(run.stderr.String(), "render says: a note") {
+		t.Errorf("stderr %q: a session that starts says nothing", run.stderr)
 	}
 	if token, _ := os.ReadFile(filepath.Join(run.state, "render-token")); string(token) != "the-token" {
 		t.Errorf("the render got GH_TOKEN %q, want the supervisor's", token)
