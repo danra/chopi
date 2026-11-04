@@ -5,7 +5,7 @@
 # Sourced (never run directly). Each session runs its own chopi-proxy.sh, on loopback ports the
 # kernel picks, for the sandbox to reach through the holes write_proxy_network_profile
 # opens, and stops it when the session ends. The proxy logs to a file of its own under
-# CHOPI_PROXY_LOG_DIR, kept after the session for inspection.
+# CHOPI_PROXY_LOG_DIR, kept after the session for a while for inspection.
 
 _session_proxy_dir="$(dirname "${BASH_SOURCE[0]}")"
 . "$_session_proxy_dir/util.sh"
@@ -13,6 +13,9 @@ unset _session_proxy_dir
 
 CHOPI_PROXY_SCRIPT="$CHOPI_DIR/.internal/chopi-proxy.sh"
 CHOPI_PROXY_LOG_DIR="$HOME/Library/Logs/chopi"
+# Days a log is kept past its last change. The proxy touches its logs hourly while it runs, so a
+# running session's log is never one of them.
+CHOPI_PROXY_LOG_KEEP_DAYS=14
 
 # Set by launch_session_proxy and await_session_proxy: the session's proxy, its log and temp dir,
 # and its endpoints -- the smokescreen forward proxy's port (HTTP_PROXY), the git relay's port, and
@@ -37,6 +40,10 @@ launch_session_proxy() {
         echo "chopi: cannot create the proxy log dir $CHOPI_PROXY_LOG_DIR" >&2
         return 1
     fi
+    # Delete logs past their retention, in the background so the session's startup doesn't wait.
+    # The subshell detaches it from chopi's jobs, so nothing waits for it later either.
+    ( find "$CHOPI_PROXY_LOG_DIR" -name 'proxy-*.log' -mtime "+$CHOPI_PROXY_LOG_KEEP_DAYS" \
+        -delete >/dev/null 2>&1 & )
     local now
     printf -v now '%(%Y%m%d-%H%M%S)T' -1
     SESSION_PROXY_LOG="$CHOPI_PROXY_LOG_DIR/proxy-$now-$$.log"

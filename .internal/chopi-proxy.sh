@@ -248,11 +248,12 @@ run_smokescreen() {
 # the startup, whose stderr chopi reads only then -- the shell's word of how chopi-smokescreen
 # ended, a crash's say, would be lost there. We stay, leading the process group chopi stops the
 # proxy by, for Caddy to go with chopi-smokescreen however it goes; a stop signal reaches it as a
-# TERM from us. Staying, we drop the token first, before the log formatter forks: no long-lived
-# shell of ours keeps a copy. Its temporaries, Caddy's among them, go in its private dir, removed
-# once the parent exits -- but only theirs: an editor opened from a notification can outlive the
-# session, and so must the TMPDIR it's given.
+# TERM from us. chopi-smokescreen keeps the logs fresh, for their retention not to take a running
+# session's. Staying, we drop the token first, before the log formatter forks: no long-lived shell
+# of ours keeps a copy. Its temporaries, Caddy's among them, go in its private dir, removed once the
+# parent exits -- but only theirs: an editor opened from a notification can outlive the session, and
+# so must the TMPDIR it's given.
 exec 3< <(printf '%s' "$CADDYFILE_TEXT")
 CADDYFILE_TEXT=""
-TMPDIR="$PROXY_DIR" lead_group run_smokescreen "$PROXY_DIR" "$PARENT_PID" "$RULES" "$CADDY_LOG" \
+TMPDIR="$PROXY_DIR" lead_group run_smokescreen "$PROXY_DIR" "$PARENT_PID" "$RULES" "$CADDY_LOG" "$LOG" \
     4>&2 2>&1 <&3 3<&- > >(format_smokescreen_log 2>&1)

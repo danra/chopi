@@ -2,7 +2,7 @@
 // library and extended to hot-reload the --egress-acl-file rules, and the supervisor of the
 // session's GitHub relays, served by Caddy.
 //
-//	chopi-smokescreen --dir DIR --parent PID --relay-log FILE -- SMOKESCREEN_FLAGS...
+//	chopi-smokescreen --dir DIR --parent PID --relay-log FILE [--keep-fresh FILE]... -- SMOKESCREEN_FLAGS...
 //
 //   - Smokescreen's flags and log output are identical to the standalone smokescreen binary's,
 //     but for where it listens: --listen-ip and --listen-port are ignored.
@@ -16,6 +16,8 @@
 //     errors go to stderr, for chopi to show; from then on, everything goes to stdout, the log.
 //   - The proxy stops once process PID (chopi) exits, removing DIR, or on TERM or HUP; if Caddy
 //     exits, it stops too, so nothing is left serving half the session. Caddy is stopped with it.
+//   - The relay log and each --keep-fresh FILE are touched hourly while the proxy runs, for chopi's
+//     log retention, which goes by their last change, to leave them be.
 
 package main
 
@@ -219,6 +221,7 @@ func main() {
 		exit(0)
 	}
 	go watchRules(conf, holder, path, lastMod)
+	go keepFresh(opts.keepFresh, keepFreshInterval)
 	smokescreenExited := make(chan struct{})
 	go func() {
 		smokescreen.StartWithConfig(conf, nil)

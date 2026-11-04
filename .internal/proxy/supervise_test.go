@@ -24,6 +24,33 @@ func TestParseOptionsSplitsChopisFlagsFromSmokescreens(t *testing.T) {
 	}
 }
 
+func TestParseOptionsKeepsTheRelayLogFresh(t *testing.T) {
+	opts, err := parseOptions([]string{"--dir", "/d", "--parent", "42", "--relay-log", "/l",
+		"--keep-fresh", "/a", "--keep-fresh", "/b", "--"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(opts.keepFresh, []string{"/a", "/b", "/l"}) {
+		t.Errorf("kept fresh %q", opts.keepFresh)
+	}
+}
+
+func TestKeepFreshTouchesItsFiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "log")
+	writeFile(t, path, "")
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	setMtime(t, path, old)
+	go keepFresh([]string{path}, 10*time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if mtimeOf(t, path).After(old.Add(time.Hour)) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Error("not touched")
+}
+
 func TestParseOptionsRefuses(t *testing.T) {
 	for _, args := range [][]string{
 		{"--dir", "/d", "--parent", "42", "--relay-log", "/l"},                       // no smokescreen flags

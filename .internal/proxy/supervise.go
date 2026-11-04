@@ -30,9 +30,10 @@ const relayStartTimeout = 25 * time.Second
 
 // options are chopi's own flags, given before "--" and smokescreen's flags.
 type options struct {
-	dir       string // where the ports are reported and the API relay's socket is; removed once parent exits
-	parent    int    // the process whose exit stops the proxy: chopi
-	relayLog  string // Caddy's output
+	dir       string   // where the ports are reported and the API relay's socket is; removed once parent exits
+	parent    int      // the process whose exit stops the proxy: chopi
+	relayLog  string   // Caddy's output
+	keepFresh []string // files touched hourly while the proxy runs, the relay log among them
 	smokeArgs []string
 }
 
@@ -44,6 +45,10 @@ func parseOptions(args []string) (options, error) {
 	fs.StringVar(&opts.dir, "dir", "", "")
 	fs.IntVar(&opts.parent, "parent", 0, "")
 	fs.StringVar(&opts.relayLog, "relay-log", "", "")
+	fs.Func("keep-fresh", "", func(path string) error {
+		opts.keepFresh = append(opts.keepFresh, path)
+		return nil
+	})
 	if err := fs.Parse(args); err != nil {
 		return opts, err
 	}
@@ -56,9 +61,26 @@ func parseOptions(args []string) (options, error) {
 	}
 	if opts.dir == "" || opts.parent == 0 || opts.relayLog == "" || opts.smokeArgs == nil {
 		return opts, errors.New("usage: chopi-smokescreen --dir DIR --parent PID --relay-log FILE " +
-			"-- SMOKESCREEN_FLAGS...")
+			"[--keep-fresh FILE]... -- SMOKESCREEN_FLAGS...")
 	}
+	opts.keepFresh = append(opts.keepFresh, opts.relayLog)
 	return opts, nil
+}
+
+// keepFreshInterval is how often keepFresh touches the session's logs: well within the days chopi
+// keeps a log past its last change, so it never deletes a running session's. It counts awake time
+// only, as Go's timers on macOS stand still while the machine sleeps, so it's short: a session
+// on a laptop that's mostly asleep still gets its logs touched within an hour of each wake.
+const keepFreshInterval = time.Hour
+
+// keepFresh touches each of paths every interval, for as long as the proxy runs.
+func keepFresh(paths []string, interval time.Duration) {
+	for range time.Tick(interval) {
+		now := time.Now()
+		for _, path := range paths {
+			os.Chtimes(path, now, now)
+		}
+	}
 }
 
 // relays are the GitHub relays' listeners, opened before Caddy starts, so no other process can
