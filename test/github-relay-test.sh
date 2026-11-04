@@ -5,8 +5,8 @@
 # NOT run by `make test`; it needs a repo you can push to to run fully, set in env
 # as ALLOW_REPO=<owner/repo>
 #
-# It renders the relay config for a throwaway allowlist, starts the relays as chopi-proxy does
-# (chopi-smokescreen, starting caddy), and checks that:
+# It renders the relay config for a throwaway allowlist, starts the relays as a session's proxy
+# does (chopi-smokescreen, starting caddy), and checks that:
 #   0. the relay listens on loopback only                          (not on all interfaces)
 #   1. anonymous public fetch works through the relay
 #   1b. a gzipped fetch is decoded by GitHub
@@ -40,12 +40,12 @@ _test_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # skip guards).
 TMPDIR="$(mktemp -d)"; export TMPDIR
 trap 'rm -rf "$TMPDIR"' EXIT
-# The test's own relay socket and ports file, rather than a running chopi-proxy's: util.sh derives
-# both from CHOPI_RUN_DIR.
+# The test's own run dir, rather than the user's: util.sh derives PROXY_RUN_DIR from CHOPI_RUN_DIR.
 # shellcheck disable=SC2034  # read by util.sh
 CHOPI_RUN_DIR="$TMPDIR"
 
 . "$_test_dir/../.internal/util.sh"
+. "$_test_dir/../.internal/session-proxy.sh"
 . "$_test_dir/lib.sh"
 
 header "End-to-end GitHub relay test"
@@ -67,8 +67,7 @@ fi
 
 RENDER="$CHOPI_DIR/.internal/github-relays-caddyfile.sh"
 WORK="$(mktemp -d "$TMPDIR/chopi-github-relay-test.XXXXXX")"
-RELAY_PID=""
-cleanup() { [ -n "$RELAY_PID" ] && kill "$RELAY_PID" 2>/dev/null; rm -rf "$TMPDIR"; }
+cleanup() { [ -n "$SESSION_PROXY_PID" ] && kill "$SESSION_PROXY_PID" 2>/dev/null; rm -rf "$TMPDIR"; }
 trap cleanup EXIT
 
 # The outgoing proxy, which serves beside the relays, gets rules allowing nothing: only the relays
@@ -78,15 +77,23 @@ printf 'version: v1\nservices: []\ndefault:\n  name: default\n  action: enforce\
 
 mkdir -p "$PROXY_RUN_DIR"
 
-# start_relays CONFIG LOG -- start the relays as chopi-proxy does, on the Caddy config CONFIG,
-# logging to LOG (and caddy to LOG.caddy, which LOG quotes if caddy fails to start). Sets RELAY_PID,
-# CADDY_PID, GITHUB_RELAY_PORT and git_url once they serve, or fails.
+# start_relays CONFIG LOG -- start the proxy as a session's would, the relays on the Caddy config
+# CONFIG, logging to LOG (and caddy to LOG.caddy, which LOG quotes if caddy fails to start); sets
+# SESSION_PROXY_PID, CADDY_PID, GITHUB_RELAY_PORT, GH_RELAY_SOCK and git_url once they serve, or
+# fails. Awaited as chopi awaits a session's proxy, sharing its handshake.
 start_relays() {
     local config="$1" log="$2"
-    run_chopi_smokescreen "$WORK/rules.yaml" "$log.caddy" < <(printf '%s' "$config") >>"$log" 2>&1 &
-    RELAY_PID=$!
-    wait_for_proxy_ports "$RELAY_PID" || return 1
-    CADDY_PID="$(pgrep -P "$RELAY_PID" -x caddy)"
+    # shellcheck disable=SC2034 # consumed by await_session_proxy
+    SESSION_PROXY_DIR="$(mktemp -d "$PROXY_RUN_DIR/proxy.XXXXXX")"
+    # shellcheck disable=SC2034 # consumed by await_session_proxy
+    SESSION_PROXY_LOG="$log"
+    run_chopi_smokescreen "$SESSION_PROXY_DIR" $$ "$WORK/rules.yaml" "$log.caddy" \
+        < <(printf '%s' "$config") >>"$log" 2>"$SESSION_PROXY_DIR/startup.err" &
+    SESSION_PROXY_PID=$!
+    await_session_proxy 2>>"$log" || return 1
+    GITHUB_RELAY_PORT="$SESSION_RELAY_PORT"
+    GH_RELAY_SOCK="$SESSION_GH_SOCK"
+    CADDY_PID="$(pgrep -P "$SESSION_PROXY_PID" -x caddy)"
     git_url="http://127.0.0.1:$GITHUB_RELAY_PORT"
 }
 
@@ -237,7 +244,7 @@ fi
 # sandboxed command (github_relay_gh_env), so the config key, the socket dial, and the host
 # derivation are all pinned by gh itself.
 mkdir -p "$WORK/gh-config"
-readarray -t gh_env < <(github_relay_gh_env "$WORK/gh-config")
+readarray -t gh_env < <(github_relay_gh_env "$WORK/gh-config" "$GH_RELAY_SOCK")
 gh_relay() { env "${gh_env[@]}" gh "$@"; }
 
 # curl fills in for gh to test forged Hosts, unclean paths, bogus storage blobs etc.
@@ -433,7 +440,7 @@ fi
 # 5. credential rejected by GitHub: relaunch with an allowlist entry and a bogus token. Probe
 # with operations GitHub can never serve anonymously (a push; a fetch of a nonexistent repo),
 # so it must 401 the bogus credential rather than fall back to anonymous access.
-kill "$RELAY_PID" 2>/dev/null; wait "$RELAY_PID" 2>/dev/null
+kill "$SESSION_PROXY_PID" 2>/dev/null; wait "$SESSION_PROXY_PID" 2>/dev/null
 printf 'octocat/*\n' > "$WORK/allow-bogus"
 bogus_cfg="$("$RENDER" "$WORK/allow-bogus")"
 bogus_cfg="${bogus_cfg//@@CHOPI_AUTH@@/Basic Ym9ndXM6Ym9ndXM=}"

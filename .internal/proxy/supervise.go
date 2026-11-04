@@ -13,7 +13,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -25,14 +24,15 @@ const (
 )
 
 // relayStartTimeout bounds Caddy's start, from launch to serving: time enough for macOS to scan
-// a freshly installed Caddy on its first run.
+// a freshly installed Caddy on its first run, yet short of chopi's own 30s wait for the proxy, so
+// a Caddy that never serves still fails with its own reason rather than chopi's bare timeout.
 const relayStartTimeout = 25 * time.Second
 
 // options are chopi's own flags, given before "--" and smokescreen's flags.
 type options struct {
+	dir       string // where the ports are reported and the API relay's socket is; removed once parent exits
+	parent    int    // the process whose exit stops the proxy: chopi
 	relayLog  string // Caddy's output
-	ghSock    string // the API relay's unix socket
-	portsFile string // where the ports are reported once the proxy is up
 	smokeArgs []string
 }
 
@@ -41,9 +41,9 @@ func parseOptions(args []string) (options, error) {
 	var opts options
 	fs := flag.NewFlagSet("chopi-smokescreen", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	fs.StringVar(&opts.dir, "dir", "", "")
+	fs.IntVar(&opts.parent, "parent", 0, "")
 	fs.StringVar(&opts.relayLog, "relay-log", "", "")
-	fs.StringVar(&opts.ghSock, "gh-sock", "", "")
-	fs.StringVar(&opts.portsFile, "ports-file", "", "")
 	if err := fs.Parse(args); err != nil {
 		return opts, err
 	}
@@ -51,9 +51,12 @@ func parseOptions(args []string) (options, error) {
 	if rest := len(args) - fs.NArg(); rest > 0 && args[rest-1] == "--" {
 		opts.smokeArgs = fs.Args()
 	}
-	if opts.relayLog == "" || opts.ghSock == "" || opts.portsFile == "" || opts.smokeArgs == nil {
-		return opts, errors.New("usage: chopi-smokescreen --relay-log FILE --gh-sock PATH " +
-			"--ports-file FILE -- SMOKESCREEN_FLAGS...")
+	if opts.parent < 0 {
+		return opts, fmt.Errorf("--parent: not a pid: %d", opts.parent)
+	}
+	if opts.dir == "" || opts.parent == 0 || opts.relayLog == "" || opts.smokeArgs == nil {
+		return opts, errors.New("usage: chopi-smokescreen --dir DIR --parent PID --relay-log FILE " +
+			"-- SMOKESCREEN_FLAGS...")
 	}
 	return opts, nil
 }
@@ -61,8 +64,8 @@ func parseOptions(args []string) (options, error) {
 // relays are the GitHub relays' listeners, opened before Caddy starts, so no other process can
 // take them first, and so Caddy, unable to report a port it picked, need not pick one.
 type relays struct {
-	git *net.TCPListener  // git smart-HTTP, on a loopback port
-	api *net.UnixListener // the gh REST API, on a unix socket
+	git *net.TCPListener  // git smart-HTTP, on a loopback port the kernel picks
+	api *net.UnixListener // the gh REST API, on DIR/gh.sock
 }
 
 // portOf is the port l listens on.
@@ -161,6 +164,39 @@ func awaitCaddy(port int) <-chan error {
 	return answered
 }
 
+// watchExit returns a channel that closes once process pid exits: the kernel reports it, with
+// kqueue, so nothing polls. It closes right away for a process already gone.
+func watchExit(pid int) (<-chan struct{}, error) {
+	kq, err := syscall.Kqueue()
+	if err != nil {
+		return nil, err
+	}
+	syscall.CloseOnExec(kq)
+	exited := make(chan struct{})
+	var ev syscall.Kevent_t
+	syscall.SetKevent(&ev, pid, syscall.EVFILT_PROC, syscall.EV_ADD|syscall.EV_ONESHOT)
+	ev.Fflags = syscall.NOTE_EXIT
+	if _, err := syscall.Kevent(kq, []syscall.Kevent_t{ev}, nil, nil); err != nil {
+		syscall.Close(kq)
+		if errors.Is(err, syscall.ESRCH) {
+			close(exited)
+			return exited, nil
+		}
+		return nil, err
+	}
+	go func() {
+		defer syscall.Close(kq)
+		events := make([]syscall.Kevent_t, 1)
+		for {
+			if _, err := syscall.Kevent(kq, nil, events, nil); !errors.Is(err, syscall.EINTR) {
+				break
+			}
+		}
+		close(exited)
+	}()
+	return exited, nil
+}
+
 // writeAtomically writes content to path, whole or not at all: it is written beside path and
 // renamed over it, so a reader polling for path never sees it partly written.
 func writeAtomically(path, content string) error {
@@ -190,38 +226,8 @@ func reportPorts(path string, p ports) error {
 	return writeAtomically(path, fmt.Sprintf("proxy %d\nrelay %d\n", p.proxy, p.relay))
 }
 
-// lastPortsFile is where the ports reported in portsFile are recorded for the proxy's next run: kept
-// beside it, but left as the proxy stops, unlike portsFile, which says the proxy is up.
-func lastPortsFile(portsFile string) string {
-	return portsFile + ".last"
-}
-
-// readPorts reads the ports reportPorts wrote to path: zero for a port missing, invalid, or in a
-// file missing or unreadable.
-func readPorts(path string) ports {
-	var p ports
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return p
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		var name string
-		var port int
-		if n, _ := fmt.Sscan(line, &name, &port); n != 2 || port <= 0 || port > 65535 {
-			continue
-		}
-		switch name {
-		case "proxy":
-			p.proxy = port
-		case "relay":
-			p.relay = port
-		}
-	}
-	return p
-}
-
-// stopSignals are the signals that stop the proxy: a Ctrl-C's INT, a TERM, and a closing
-// terminal's HUP.
+// stopSignals are the signals that stop the proxy: chopi's TERM as the session ends, and a
+// closing terminal's HUP.
 func stopSignals() <-chan os.Signal {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)

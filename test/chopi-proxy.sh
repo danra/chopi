@@ -8,11 +8,12 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$repo/.internal/util.sh"
 . "$repo/test/lib.sh"
 . "$repo/.internal/classify-log.sh"
+. "$repo/.internal/session-proxy.sh"
 BEL="$(printf '\007')"   # U+0007 BEL: format-deny.jq prefixes an interactive DENY with it
 ESC="$(printf '\033')"   # U+001B ANSI escape: introduces the DENY color code
 set +euo pipefail
 
-header "test/chopi-proxy.sh -- unit tests for the proxy's log logic + network holes + github migration refusal"
+header "test/chopi-proxy.sh -- unit tests for the proxy's log logic + github migration refusal + session network holes"
 
 # Exported so the scripts under test leave their temporaries here too.
 TMPDIR="$(mktemp -d)"; export TMPDIR
@@ -411,10 +412,10 @@ assert_eq "$(exfiltration_prone_github_allowed_domains "$lookalike_rules")" "" \
 
 
 # ---------------------------------------------------------------------------
-echo "the proxy's network holes (network.sb denies, the proxy profile re-opens)"
+echo "the session's network holes (network.sb denies, the session profile re-opens)"
 # ---------------------------------------------------------------------------
 assert_eq "$(grep -c '^[[:space:]]*(allow' "$repo/.internal/network.sb")" "0" \
-    "network.sb opens nothing itself: the proxy profile does"
+    "network.sb opens nothing itself: the holes are per session"
 
 gh_sock="$TMPDIR/gh sock"
 : > "$gh_sock"
@@ -423,7 +424,7 @@ net_rules="$(grep -v '^;' "$TMPDIR/net.sb")"
 assert_eq "$net_rules" '(allow network-outbound (remote ip "localhost:24760"))
 (allow network-outbound (remote ip "localhost:24761"))
 (allow network-outbound (literal "'"$(realpath "$gh_sock")"'"))' \
-    "the proxy profile opens exactly the proxy's two ports and its API relay socket"
+    "the session profile opens exactly the session's two ports and its API relay socket"
 
 
 # ---------------------------------------------------------------------------
@@ -490,7 +491,9 @@ echo "process group (chopi-proxy runs in its caller's)"
 # from this script, which has no job control, chopi-proxy shares the script's process group, as
 # under nohup, a pipe, or a service manager.
 no_rules="$TMPDIR/no-such-rules.yaml"
-out="$("$repo/bin/chopi-proxy.sh" --rules "$no_rules" 2>&1)"
+mkdir -p "$TMPDIR/pg-proxy"
+out="$("$repo/.internal/chopi-proxy.sh" --dir "$TMPDIR/pg-proxy" --log "$TMPDIR/pg-proxy.log" \
+    --parent $$ --rules "$no_rules" --github-allowlist /dev/null 2>&1)"
 assert_contains "$out" "$no_rules" "chopi-proxy runs in its caller's process group"
 
 

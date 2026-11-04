@@ -1,24 +1,21 @@
-// chopi-smokescreen -- chopi's proxy: Stripe's smokescreen egress proxy, embedded as a library and
-// extended to hot-reload the --egress-acl-file rules, and the supervisor of the GitHub relays,
-// served by Caddy.
+// chopi-smokescreen -- a chopi session's proxy: Stripe's smokescreen egress proxy, embedded as a
+// library and extended to hot-reload the --egress-acl-file rules, and the supervisor of the
+// session's GitHub relays, served by Caddy.
 //
-//	chopi-smokescreen --relay-log FILE --gh-sock PATH --ports-file FILE -- SMOKESCREEN_FLAGS...
+//	chopi-smokescreen --dir DIR --parent PID --relay-log FILE -- SMOKESCREEN_FLAGS...
 //
 //   - Smokescreen's flags and log output are identical to the standalone smokescreen binary's,
 //     but for where it listens: --listen-ip and --listen-port are ignored.
 //   - The rules file is polled for changes, with a new valid rules set immediately
 //     and atomically swapped in.
-//   - Every listener is opened here -- smokescreen's own and the git relay's, each on a loopback
-//     port: the one it had in the last run where free, else one the kernel picks; and the API
-//     relay's on the unix socket PATH -- so no other process can take one first. Smokescreen
-//     serves its own; Caddy, started with its config on stdin and its output in the --relay-log
-//     FILE, inherits the relays'.
-//   - Once smokescreen listens and Caddy serves, the ports are reported in the --ports-file FILE,
-//     for chopi to learn them from, and to know the proxy is up, and a line says where on stdout.
-//     They are also recorded in FILE.last, which outlives the proxy, for its next run to reclaim.
-//     Until then, errors go to stderr; from then on, everything goes to stdout, the log.
-//   - The proxy stops on INT, TERM or HUP, removing the socket and the ports file; if Caddy exits,
-//     it stops too, so nothing is left serving half of what it should. Caddy is stopped with it.
+//   - Every listener is opened here, on a loopback port the kernel picks, or the unix socket
+//     DIR/gh.sock, so no other process can take it first. Smokescreen serves its own; Caddy, started
+//     with its config on stdin and its output in the --relay-log FILE, inherits the relays'.
+//   - Once smokescreen listens and Caddy serves, the ports are reported in DIR/ports, for chopi
+//     to learn them from, and to know the proxy is up, and a line says where on stdout. Until then,
+//     errors go to stderr, for chopi to show; from then on, everything goes to stdout, the log.
+//   - The proxy stops once process PID (chopi) exits, removing DIR, or on TERM or HUP; if Caddy
+//     exits, it stops too, so nothing is left serving half the session. Caddy is stopped with it.
 
 package main
 
@@ -31,6 +28,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -135,36 +133,6 @@ func listenLoopback(port int) (*net.TCPListener, error) {
 	return net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port})
 }
 
-// listenLoopbackPorts opens a loopback listener for each of preferred: on that port where it is
-// free, else on one the kernel picks. Keeping its ports keeps a restarted proxy reachable from the
-// chopi sessions already running: their sandbox's holes, and their HTTP_PROXY, name the ports they
-// started with. All the preferred ports are taken before the kernel picks any, so it can't hand one
-// of them to another listener of ours.
-func listenLoopbackPorts(preferred []int) ([]*net.TCPListener, error) {
-	listeners := make([]*net.TCPListener, len(preferred))
-	for i, port := range preferred {
-		if port != 0 {
-			listeners[i], _ = listenLoopback(port)
-		}
-	}
-	for i := range listeners {
-		if listeners[i] != nil {
-			continue
-		}
-		listener, err := listenLoopback(0)
-		if err != nil {
-			for _, l := range listeners {
-				if l != nil {
-					l.Close()
-				}
-			}
-			return nil, err
-		}
-		listeners[i] = listener
-	}
-	return listeners, nil
-}
-
 func main() {
 	opts, err := parseOptions(os.Args[1:])
 	if err != nil {
@@ -208,44 +176,47 @@ func main() {
 	holder.current.Store(rules)
 	conf.EgressACL = holder
 
-	// On the ports of the last run, where they are free.
-	last := readPorts(lastPortsFile(opts.portsFile))
-	listeners, err := listenLoopbackPorts([]int{last.proxy, last.relay})
+	proxyListener, err := listenLoopback(0)
 	if err != nil {
 		fail("can't listen: %v", err)
 	}
-	useListener(conf, listeners[0])
-	reported := ports{proxy: int(conf.Port), relay: portOf(listeners[1])}
+	useListener(conf, proxyListener)
 	// Checked here, as smokescreen would only as it starts: a config it refuses is a reason the
-	// proxy can't start, to say before starting Caddy.
+	// session can't start, for chopi to show.
 	if err := conf.Validate(); err != nil {
 		fail("invalid smokescreen config: %v", err)
 	}
-	api, err := listenAPIRelay(opts.ghSock)
+	gitListener, err := listenLoopback(0)
+	if err != nil {
+		fail("can't listen: git relay: %v", err)
+	}
+	ghSock := filepath.Join(opts.dir, "gh.sock")
+	api, err := listenAPIRelay(ghSock)
 	if err != nil {
 		fail("can't listen: %v", err)
 	}
-	relays := &relays{git: listeners[1], api: api}
-	stop := stopSignals()
-
-	// Leave no socket or ports file behind: they were ours.
-	cleanup := func() {
-		os.Remove(opts.ghSock)
-		os.Remove(opts.portsFile)
+	relays := &relays{git: gitListener, api: api}
+	reported := ports{proxy: int(conf.Port), relay: portOf(gitListener)}
+	parentExited, err := watchExit(opts.parent)
+	if err != nil {
+		fail("can't watch process %d: %v", opts.parent, err)
 	}
+	stop := stopSignals()
 
 	// Both servers start at once: smokescreen serves its listener right away, as Caddy starts.
 	stopCaddy, caddyExited, err := startCaddy(relays, opts.relayLog)
 	if err != nil {
-		cleanup()
 		fail("can't start caddy for the GitHub relay: %v", err)
 	}
-	// Stop the proxy with STATUS, Caddy with it: the socket and ports file go once nothing serves
-	// them.
+	// Stop the proxy with STATUS, Caddy with it.
 	exit := func(status int) {
 		stopCaddy()
-		cleanup()
 		os.Exit(status)
+	}
+	// The session is over once chopi is gone, and nobody else removes the dir.
+	sessionEnded := func() {
+		os.RemoveAll(opts.dir)
+		exit(0)
 	}
 	go watchRules(conf, holder, path, lastMod)
 	smokescreenExited := make(chan struct{})
@@ -274,21 +245,22 @@ func main() {
 		exit(1)
 	case <-stop:
 		exit(0)
+	case <-parentExited:
+		sessionEnded()
 	}
-	// The last ports first: remembered past the proxy's stop, for its next start to take again.
-	for _, path := range []string{lastPortsFile(opts.portsFile), opts.portsFile} {
-		if err := reportPorts(path, reported); err != nil {
-			complain("can't write the ports to %s: %v", path, err)
-			exit(1)
-		}
+	if err := reportPorts(filepath.Join(opts.dir, "ports"), reported); err != nil {
+		complain("can't report the ports: %v", err)
+		exit(1)
 	}
 	fmt.Printf("[chopi-smokescreen] outgoing proxy on 127.0.0.1:%d, GitHub relay on 127.0.0.1:%d, "+
-		"GitHub API relay on %s\n", reported.proxy, reported.relay, opts.ghSock)
-	// Should the log's formatter die, the log is lost from here on, but not the network:
-	// writing to it then fails instead of killing the proxy.
+		"GitHub API relay on %s\n", reported.proxy, reported.relay, ghSock)
+	// Up from here on, so anything left to say belongs in the log.
+	syscall.Dup2(1, 2)
+	// Should the log's formatter die, the log is lost from here on, but not the session's
+	// network: writing to it then fails instead of killing the proxy.
 	signal.Ignore(syscall.SIGPIPE)
 
-	// ...then serve, until stopped or a server exits.
+	// ...then serve, until the session ends or a server exits.
 	select {
 	case <-caddyExited:
 		fmt.Println("[chopi-smokescreen] the GitHub relay exited; stopping the proxy")
@@ -297,6 +269,8 @@ func main() {
 		exit(1)
 	case <-stop:
 		exit(0)
+	case <-parentExited:
+		sessionEnded()
 	}
 }
 
@@ -306,7 +280,7 @@ func fail(format string, args ...any) {
 	os.Exit(1)
 }
 
-// complain reports a reason the proxy can't start on stderr.
+// complain reports a reason the proxy can't start on stderr, for chopi to show.
 func complain(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "chopi-smokescreen: "+format+"\n", args...)
 }

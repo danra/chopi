@@ -6,35 +6,17 @@
 # only learns the dir the command will actually run in partway through setup:
 #   * preflight_initial          -- runnable up front: the workspace doesn't overlap chopi's
 #                                   own dir (a confined command must not reach the policy
-#                                   that confines it) or chopi-proxy's run dir (whose ports
-#                                   aim the holes), the proxy-side services (both loopback
-#                                   ports, as chopi-proxy reports them, and the GitHub API relay
-#                                   socket) are up, and the safehouse CLI is on PATH.
+#                                   that confines it) or chopi-proxy's run dir (whose ports aim
+#                                   the holes), and the safehouse CLI is on PATH.
 #   * preflight_config_placement -- deferred until chopi has resolved the workspace (the
 #                                   --worktree target), since that is the dir a custom
 #                                   --config must stay outside of.
+#
+# resolve_proxy_config, run up front, resolves the proxy's config, which it reads all session long.
 
 _preflight_dir="$(dirname "${BASH_SOURCE[0]}")"
 . "$_preflight_dir/util.sh"
 unset _preflight_dir
-
-# check_listener -- confirm something is listening on 127.0.0.1:PORT, else print an error naming
-# WHAT (e.g. "no outgoing proxy") and HINT, then fail. Liveness only: it confirms something is
-# listening, not that it's ours. We deliberately don't verify the listener's identity because no
-# purely-local check can: hijacking the port takes separate local code execution (the sandboxed
-# command itself can't bind it), and a same-user attacker who can do that can equally run
-# smokescreen/chopi-proxy or forge any pidfile or token we'd check -- same-user processes have equal
-# OS authority. An identity check would add cost and a false sense of security without changing what
-# such an attacker must do.
-check_listener() {
-    arity 3
-    local port="$1" what="$2" hint="$3"
-    if ! port_has_listener "$port"; then
-        echo "error: $what on 127.0.0.1:$port" >&2
-        echo "$hint" >&2
-        return 1
-    fi
-}
 
 preflight_initial() {
     arity 0
@@ -50,36 +32,14 @@ preflight_initial() {
             || return 1
     fi
 
-    # The ports file in the run dir aims this run's holes and HTTP_PROXY, so the sandboxed command
-    # must not reach it. Not a CHOPI_ALLOW_SELF matter: working on chopi needs no access to it.
+    # The session's proxy reports its ports in the run dir, and they aim this run's holes and
+    # HTTP_PROXY, so the sandboxed command must not reach it. Not a CHOPI_ALLOW_SELF matter: working
+    # on chopi needs no access to it.
     if overlaps_proxy_run_dir "$workspace_dir"; then
         echo "error: workspace '$workspace_dir' overlaps chopi-proxy's run directory ('$PROXY_RUN_DIR');" >&2
         echo "       the sandboxed command could rewrite the ports that aim its own network holes." >&2
         echo "Run chopi from a workspace that neither holds nor sits inside $PROXY_RUN_DIR, or point" >&2
-        echo "CHOPI_RUN_DIR (for both chopi-proxy and chopi) elsewhere." >&2
-        return 1
-    fi
-
-    # The outgoing proxy must already be running in its own terminal. We deliberately
-    # don't start it here, so it stays in the foreground where you can watch refused
-    # connections and stop it to edit the list of allowed domains. It reports the ports the
-    # kernel picked for it once it serves.
-    if ! read_proxy_ports; then
-        echo "error: no outgoing proxy: no ports reported in $PROXY_PORTS_FILE" >&2
-        echo "Start it first in a separate terminal, in this same environment (a proxy started" >&2
-        echo "under a different CHOPI_RUN_DIR reports them elsewhere):  chopi-proxy" >&2
-        return 1
-    fi
-    check_listener "$PROXY_PORT" "no outgoing proxy" \
-        "$PROXY_PORTS_FILE is stale; (re)start it in a separate terminal:  chopi-proxy" || return 1
-
-    check_listener "$GITHUB_RELAY_PORT" "no GitHub relay" \
-        "It runs alongside the outgoing proxy; (re)start both in a separate terminal:  chopi-proxy" || return 1
-
-    if ! sock_has_listener "$GH_RELAY_SOCK"; then
-        echo "error: no GitHub API relay listening at $GH_RELAY_SOCK" >&2
-        echo "Start chopi-proxy in this same environment first (a proxy started under a" >&2
-        echo "different CHOPI_RUN_DIR binds a different socket path)." >&2
+        echo "CHOPI_RUN_DIR elsewhere." >&2
         return 1
     fi
 
@@ -93,6 +53,7 @@ preflight_initial() {
     fi
 }
 
+# Refuse a custom --config CONFIG that lies inside the workspace RUN_DIR.
 preflight_config_placement() {
     arity 2
     local config_file="$1" run_dir="$2"
@@ -113,4 +74,34 @@ preflight_config_placement() {
             "Keep the sandbox config outside the workspace you're sandboxing." \
             || return 1
     fi
+}
+
+# Resolve the proxy config file the sandbox config's variable VAR names -- or, when it names none,
+# the default config/DEFAULT the installer creates from config/templates/TEMPLATE -- setting VAR to
+# its real path. chopi hands the proxy that path, which it reads for the whole session, hot-reloading
+# the rules.
+#
+# usage: resolve_proxy_config VAR DEFAULT TEMPLATE
+resolve_proxy_config() {
+    arity 3
+    local var="$1" default="$CHOPI_DIR/config/$2" template="$CHOPI_DIR/config/templates/$3"
+    local path resolved
+    path="${!var}"
+    case "$path" in
+        '') if [ ! -e "$default" ]; then
+                echo "chopi: no $2 at $default" >&2
+                echo "Run the installer to create it from the template:  $CHOPI_DIR/install.sh" >&2
+                echo "or copy it manually:  cp \"$template\" \"$default\"" >&2
+                return 1
+            fi
+            path="$default" ;;
+        /*) ;;
+        *)  echo "chopi: $var must be an absolute path, got '$path'" >&2
+            return 1 ;;
+    esac
+    # Checked apart from realpath: GNU's, often first on PATH, resolves a path that doesn't exist.
+    [ -f "$path" ] || { echo "chopi: no $var file at '$path'" >&2; return 1; }
+    resolved="$(realpath "$path" 2>/dev/null)" \
+        || { echo "chopi: cannot resolve $var path '$path'" >&2; return 1; }
+    printf -v "$var" '%s' "$resolved"
 }

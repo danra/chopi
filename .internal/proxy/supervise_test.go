@@ -2,19 +2,21 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseOptionsSplitsChopisFlagsFromSmokescreens(t *testing.T) {
-	opts, err := parseOptions([]string{"--relay-log", "/l", "--gh-sock", "/s",
-		"--ports-file", "/p", "--", "--config-file", "/c"})
+	opts, err := parseOptions([]string{"--dir", "/d", "--parent", "42", "--relay-log", "/l",
+		"--", "--config-file", "/c"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opts.relayLog != "/l" || opts.ghSock != "/s" || opts.portsFile != "/p" {
+	if opts.dir != "/d" || opts.parent != 42 || opts.relayLog != "/l" {
 		t.Errorf("parsed %+v", opts)
 	}
 	if !slices.Equal(opts.smokeArgs, []string{"--config-file", "/c"}) {
@@ -24,16 +26,57 @@ func TestParseOptionsSplitsChopisFlagsFromSmokescreens(t *testing.T) {
 
 func TestParseOptionsRefuses(t *testing.T) {
 	for _, args := range [][]string{
-		{"--relay-log", "/l", "--gh-sock", "/s", "--ports-file", "/p"},                       // no smokescreen flags
-		{"--gh-sock", "/s", "--ports-file", "/p", "--"},                                      // no --relay-log
-		{"--relay-log", "/l", "--ports-file", "/p", "--"},                                    // no --gh-sock
-		{"--relay-log", "/l", "--gh-sock", "/s", "--"},                                       // no --ports-file
-		{"--relay-log", "/l", "--gh-sock", "/s", "--ports-file", "/p", "--bogus", "1", "--"}, // unknown
-		{"--relay-log"}, // no value
+		{"--dir", "/d", "--parent", "42", "--relay-log", "/l"},                       // no smokescreen flags
+		{"--parent", "42", "--relay-log", "/l", "--"},                                // no --dir
+		{"--dir", "/d", "--relay-log", "/l", "--"},                                   // no --parent
+		{"--dir", "/d", "--parent", "42", "--"},                                      // no --relay-log
+		{"--dir", "/d", "--parent", "x", "--relay-log", "/l", "--"},                  // not a pid
+		{"--dir", "/d", "--parent", "-1", "--relay-log", "/l", "--"},                 // not a pid
+		{"--dir", "/d", "--parent", "42", "--relay-log", "/l", "--bogus", "1", "--"}, // unknown
+		{"--dir"}, // no value
 	} {
 		if _, err := parseOptions(args); err == nil {
 			t.Errorf("%q: accepted", args)
 		}
+	}
+}
+
+func TestWatchExitClosesOnceTheProcessExits(t *testing.T) {
+	child := exec.Command("sleep", "30")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited, err := watchExit(child.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-exited:
+		t.Fatal("closed while the process runs")
+	case <-time.After(100 * time.Millisecond):
+	}
+	child.Process.Kill()
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("not closed after the process exited")
+	}
+	child.Wait()
+}
+
+func TestWatchExitClosesForAProcessAlreadyGone(t *testing.T) {
+	child := exec.Command("true")
+	if err := child.Run(); err != nil {
+		t.Fatal(err)
+	}
+	exited, err := watchExit(child.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("not closed for a process already gone")
 	}
 }
 
@@ -52,32 +95,6 @@ func TestReportPortsWritesThemAndNothingElse(t *testing.T) {
 	entries, _ := os.ReadDir(dir)
 	if len(entries) != 1 {
 		t.Errorf("dir holds %d entries, want just the ports file: the temporary must not be left behind", len(entries))
-	}
-}
-
-func TestReadPortsReadsWhatReportPortsWrote(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "ports")
-	if err := reportPorts(path, ports{proxy: 24760, relay: 24761}); err != nil {
-		t.Fatal(err)
-	}
-	if got := readPorts(path); got != (ports{proxy: 24760, relay: 24761}) {
-		t.Errorf("read %v", got)
-	}
-}
-
-func TestReadPortsSkipsWhatIsNoPort(t *testing.T) {
-	dir := t.TempDir()
-	if got := readPorts(filepath.Join(dir, "missing")); got != (ports{}) {
-		t.Errorf("read %v from no file", got)
-	}
-	path := filepath.Join(dir, "ports")
-	writeFile(t, path, "proxy 0\nrelay 70000\nother x\ngit 24762\n")
-	if got := readPorts(path); got != (ports{}) {
-		t.Errorf("read %v, want no port", got)
-	}
-	writeFile(t, path, "relay x\nproxy 24760\n")
-	if got := readPorts(path); got != (ports{proxy: 24760}) {
-		t.Errorf("read %v, want just the proxy's port", got)
 	}
 }
 
