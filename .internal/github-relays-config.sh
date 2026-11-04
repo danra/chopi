@@ -10,7 +10,7 @@
 # the token never touches disk or any argv. A token gh rotates is thus taken up at the next edit.
 #
 # Notes for the user, and why it fails, go to stderr: chopi-smokescreen logs the notes, and shows
-# why it fails in the terminal where the proxy starts, and in its log on a reload.
+# why it fails in chopi's terminal where the proxy starts, and in its log on a reload.
 
 set -euo pipefail
 

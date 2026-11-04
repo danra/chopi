@@ -1,6 +1,6 @@
-// chopi-smokescreen -- chopi's proxy: Stripe's smokescreen egress proxy, embedded as a library and
-// extended to hot-reload the --egress-acl-file rules, and the supervisor of the GitHub relays,
-// served by Caddy.
+// chopi-smokescreen -- a chopi session's proxy: Stripe's smokescreen egress proxy, embedded as a
+// library and extended to hot-reload the --egress-acl-file rules, and the supervisor of the
+// session's GitHub relays, served by Caddy.
 //
 //	chopi-smokescreen --relay-log FILE --gh-sock PATH --ports-file FILE --github-allowlist FILE
 //	                  --relay-config CMD -- SMOKESCREEN_FLAGS...
@@ -23,10 +23,11 @@
 //   - Once smokescreen listens and Caddy serves, the ports are reported in the --ports-file FILE,
 //     for chopi to learn them from, and to know the proxy is up, and a line says where on stdout.
 //     They are also recorded in FILE.last, which outlives the proxy, for its next run to reclaim.
-//     Until then, errors go to stderr; from then on, everything goes to stdout, the log.
+//     Until then, errors go to stderr, for chopi to show; from then on, everything goes to stdout,
+//     the log.
 //   - The proxy stops on INT, TERM or HUP, removing the socket and the ports file; if the Caddy
-//     serving exits, it stops too, so nothing is left serving half of what it should. Caddy is
-//     stopped with it.
+//     serving exits, it stops too, so nothing is left serving half the session. Caddy is stopped
+//     with it.
 
 package main
 
@@ -324,7 +325,7 @@ func main() {
 	useListener(conf, listeners[0])
 	reported := ports{proxy: int(conf.Port), relay: portOf(listeners[1])}
 	// Checked here, as smokescreen would only as it starts: a config it refuses is a reason the
-	// proxy can't start, to say before starting Caddy.
+	// session can't start, for chopi to show.
 	if err := conf.Validate(); err != nil {
 		fail("invalid smokescreen config: %v", err)
 	}
@@ -408,12 +409,12 @@ func main() {
 		"GitHub API relay on %s\n", reported.proxy, reported.relay, opts.ghSock)
 	// Up from here on, so anything left to say belongs in the log.
 	syscall.Dup2(1, 2)
-	// Should the log's formatter die, the log is lost from here on, but not the network:
-	// writing to it then fails instead of killing the proxy.
+	// Should the log's formatter die, the log is lost from here on, but not the session's
+	// network: writing to it then fails instead of killing the proxy.
 	signal.Ignore(syscall.SIGPIPE)
 	go watchFile(allowlistMod, relaySup.reloadIfChanged)
 
-	// ...then serve, until stopped or a server exits.
+	// ...then serve, until the session ends or a server exits.
 	select {
 	case <-relaySup.failed:
 		fmt.Println("[chopi-smokescreen] the GitHub relay exited; stopping the proxy")
@@ -431,7 +432,7 @@ func fail(format string, args ...any) {
 	os.Exit(1)
 }
 
-// complain reports a reason the proxy can't start on stderr.
+// complain reports a reason the proxy can't start on stderr, for chopi to show.
 func complain(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "chopi-smokescreen: "+format+"\n", args...)
 }

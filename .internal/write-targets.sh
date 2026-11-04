@@ -130,7 +130,7 @@ validate_write_target() {
     fi
     # Its ports aim each run's network holes; an approved patch must not be the way to rewrite them.
     if overlaps_proxy_run_dir "$path"; then
-        echo "$prog: safe write target overlaps chopi-proxy's run directory: $path" >&2
+        echo "$prog: safe write target overlaps the proxy's run directory: $path" >&2
         return 1
     fi
     # The proxy's config sets the sessions' outgoing limits, which it hot-reloads: an approved patch

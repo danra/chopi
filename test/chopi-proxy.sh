@@ -8,11 +8,12 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$repo/.internal/util.sh"
 . "$repo/test/lib.sh"
 . "$repo/.internal/classify-log.sh"
+. "$repo/.internal/session-proxy.sh"
 BEL="$(printf '\007')"   # U+0007 BEL: format-deny.jq prefixes an interactive DENY with it
 ESC="$(printf '\033')"   # U+001B ANSI escape: introduces the DENY color code
 set +euo pipefail
 
-header "test/chopi-proxy.sh -- unit tests for the proxy's log logic + network holes + github migration refusal"
+header "test/chopi-proxy.sh -- unit tests for the proxy's log logic + github migration refusal + session network holes"
 
 # Exported so the scripts under test leave their temporaries here too.
 TMPDIR="$(mktemp -d)"; export TMPDIR
@@ -434,10 +435,10 @@ assert_eq "$(exfiltration_prone_github_allowed_domains "$lookalike_rules")" "" \
 
 
 # ---------------------------------------------------------------------------
-echo "the proxy's network holes (network.sb denies, the proxy profile re-opens)"
+echo "the session's network holes (network.sb denies, the session profile re-opens)"
 # ---------------------------------------------------------------------------
 assert_eq "$(grep -c '^[[:space:]]*(allow' "$repo/.internal/network.sb")" "0" \
-    "network.sb opens nothing itself: the proxy profile does"
+    "network.sb opens nothing itself: the holes are per session"
 
 gh_sock="$TMPDIR/gh sock"
 : > "$gh_sock"
@@ -446,7 +447,7 @@ net_rules="$(grep -v '^;' "$TMPDIR/net.sb")"
 assert_eq "$net_rules" '(allow network-outbound (remote ip "localhost:24760"))
 (allow network-outbound (remote ip "localhost:24761"))
 (allow network-outbound (literal "'"$(realpath "$gh_sock")"'"))' \
-    "the proxy profile opens exactly the proxy's two ports and its API relay socket"
+    "the session profile opens exactly the session's two ports and its API relay socket"
 
 
 # ---------------------------------------------------------------------------
@@ -468,37 +469,24 @@ assert_not_contains "$run_dir_rules" '(literal "/")' \
 # ---------------------------------------------------------------------------
 echo "option values (an option given no value, or an empty one, is refused)"
 # ---------------------------------------------------------------------------
-# A trailing unknown option ends any run that gets past the one under test, with nothing started:
-# what tells the two apart is whether the run stopped at the option under test, naming it.
-for opt in --rules --github-allowlist; do
-    out="$("$repo/.internal/chopi-proxy.sh" "$opt" 2>&1)"; st=$?
-    assert_nonzero "$st" "$opt with no value is refused"
-    assert_contains "$out" "$opt requires" "  -> naming the option"
-    out="$("$repo/.internal/chopi-proxy.sh" "$opt" "" --no-such-option 2>&1)"; st=$?
-    assert_nonzero "$st" "$opt with an empty value is refused"
-    assert_contains "$out" "$opt requires" "  -> naming the option, not falling back to the default file"
-done
-
-
-# ---------------------------------------------------------------------------
-echo "custom config files (must be in the config dir every session protects)"
-# ---------------------------------------------------------------------------
-# The rules are checked first: the allowlist's cases pass rules from the config dir, which get past
-# their checks, so that only the allowlist can stop the run.
-cfg_home="$(mktemp -d)"; cfg_home="$(realpath "$cfg_home")"
-mkdir -p "$cfg_home/config" "$cfg_home/elsewhere"
-echo 'allow: []' >"$cfg_home/elsewhere/rules.yaml"
-echo 'allow: []' >"$cfg_home/config/rules.yaml"
-ln -s "$cfg_home/elsewhere/rules.yaml" "$cfg_home/config/escaping.yaml"
-for opt in --rules --github-allowlist; do
+# Refused before anything is started, the log included.
+required=(--dir --log --parent --rules --github-allowlist)
+for opt in "${required[@]}"; do
     others=()
-    [ "$opt" = --rules ] || others=(--rules "$cfg_home/config/rules.yaml")
-    for file in elsewhere/rules.yaml config/escaping.yaml; do
-        out="$(CHOPI_RUN_DIR="$cfg_home" "$repo/bin/chopi-proxy.sh" "${others[@]}" "$opt" "$cfg_home/$file" 2>&1)"; st=$?
-        assert_nonzero "$st" "a custom $opt file $file, resolving outside the config dir, is refused"
-        assert_contains "$out" "the $opt file must be in $cfg_home/config" "  -> naming where it must be"
+    for other in "${required[@]}"; do
+        [ "$other" = "$opt" ] || others+=("$other" "$TMPDIR/opt-value")
     done
+    out="$("$repo/.internal/chopi-proxy.sh" "${others[@]}" 2>&1)"; st=$?
+    assert_nonzero "$st" "a run without $opt is refused"
+    assert_contains "$out" "are required" "  -> saying what is required"
+    out="$("$repo/.internal/chopi-proxy.sh" "${others[@]}" "$opt" 2>&1)"; st=$?
+    assert_nonzero "$st" "$opt with no value is refused"
+    assert_contains "$out" "are required" "  -> saying what is required"
+    out="$("$repo/.internal/chopi-proxy.sh" "$opt" "" "${others[@]}" 2>&1)"; st=$?
+    assert_nonzero "$st" "$opt with an empty value is refused"
+    assert_contains "$out" "are required" "  -> saying what is required"
 done
+assert_absent "$TMPDIR/opt-value" "  -> with nothing started"
 
 
 # ---------------------------------------------------------------------------
@@ -528,14 +516,14 @@ assert_contains "$out" "another user" "  -> naming why"
 
 
 # ---------------------------------------------------------------------------
-echo "process group (chopi-proxy runs in its caller's)"
+echo "a missing rules file"
 # ---------------------------------------------------------------------------
-# A missing rules file ends any run that gets past startup's checks, with nothing started. Run
-# from this script, which has no job control, chopi-proxy shares the script's process group, as
-# under nohup, a pipe, or a service manager.
+# A missing rules file ends any run that gets past startup's checks, with nothing started.
 no_rules="$TMPDIR/no-such-rules.yaml"
-out="$("$repo/.internal/chopi-proxy.sh" --rules "$no_rules" 2>&1)"
-assert_contains "$out" "$no_rules" "chopi-proxy runs in its caller's process group"
+mkdir -p "$TMPDIR/pg-proxy"
+out="$("$repo/.internal/chopi-proxy.sh" --dir "$TMPDIR/pg-proxy" --log "$TMPDIR/pg-proxy.log" \
+    --parent $$ --rules "$no_rules" --github-allowlist /dev/null 2>&1)"
+assert_contains "$out" "$no_rules" "a missing rules file is named on stderr"
 
 
 # ---------------------------------------------------------------------------

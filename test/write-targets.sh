@@ -144,16 +144,16 @@ refuses "  -> and so is a directory inside it, which is where the sandbox config
 
 # The proxy's run dir holds the ports that aim each session's network holes.
 mkdir -p "$PROXY_RUN_DIR"
-refuses "chopi-proxy's run directory is refused as a target" \
-    "overlaps chopi-proxy's run directory" "$PROXY_RUN_DIR"
+refuses "the proxy's run directory is refused as a target" \
+    "overlaps the proxy's run directory" "$PROXY_RUN_DIR"
 refuses "  -> and so is a directory holding it" \
-    "overlaps chopi-proxy's run directory" "$TMPDIR/chopi-run"
+    "overlaps the proxy's run directory" "$TMPDIR/chopi-run"
 ln -s "$TMPDIR/chopi-run" "$TMPDIR/chopi-run-link"
 refuses "  -> and so is the run directory reached through a symlink" \
-    "overlaps chopi-proxy's run directory" "$TMPDIR/chopi-run-link/run"
+    "overlaps the proxy's run directory" "$TMPDIR/chopi-run-link/run"
 
 # Custom proxy config, in its own dir outside chopi's, sets the sessions' outgoing limits all the
-# same, whichever config the running proxy was started with.
+# same, whichever config each session's proxy was started with.
 cfg_dir="$TMPDIR/chopi-home/config"
 mkdir -p "$cfg_dir"
 touch "$cfg_dir/rules.yaml"
@@ -171,7 +171,7 @@ CHOPI_DIR="$TMPDIR/fake-chopi" refuses \
     "  -> and one holding the default rules, linked from chopi's directory, unresolved" \
     "overlaps the proxy's config" "$TMPDIR/linked-config"
 # The profile protects what proxy_config_paths lists: every link on the way to a default file, each
-# in its real dir, which chopi-proxy follows as it starts, so repointing one would change the config
+# in its real dir, which chopi follows as a session starts, so repointing one would change the config
 # like writing it would. Here the chain has a second link, and a linked dir.
 mkdir -p "$TMPDIR/hop" "$TMPDIR/real-config"
 : > "$TMPDIR/real-config/rules.yaml"
@@ -179,18 +179,21 @@ ln -s "$TMPDIR/real-config" "$TMPDIR/hop/dir-link"
 ln -s ../hop/dir-link/rules.yaml "$TMPDIR/linked-config/second-link.yaml"
 ln -sf "$TMPDIR/linked-config/second-link.yaml" "$TMPDIR/fake-chopi/config/$DEFAULT_PROXY_RULES"
 real_tmp="$(realpath "$TMPDIR")"
-config_paths="$(CHOPI_DIR="$TMPDIR/fake-chopi" PROXY_CONFIGS_FILE="$TMPDIR/none" proxy_config_paths)"
+config_paths="$(CHOPI_DIR="$TMPDIR/fake-chopi" PROXY_RUN_DIR="$TMPDIR/no-run" proxy_config_paths)"
 assert_contains "$config_paths" "$real_tmp/fake-chopi/config/$DEFAULT_PROXY_RULES" \
     "  -> the proxy's config paths list a default file's link, in its real dir"
 assert_contains "$config_paths" "$real_tmp/linked-config/second-link.yaml" "  -> the link it points at"
 assert_contains "$config_paths" "$real_tmp/hop/dir-link" "  -> a linked dir on the way"
 assert_contains "$config_paths" "$real_tmp/real-config/rules.yaml" "  -> and the file they resolve to"
-# The running proxy reports the files it reads, resolved as it started: should a link have been
-# repointed since, the file it still reads is protected too.
-printf '%s\n' "$real_tmp/linked-config/rules.yaml" > "$TMPDIR/configs"
-config_paths="$(CHOPI_DIR="$TMPDIR/fake-chopi" PROXY_CONFIGS_FILE="$TMPDIR/configs" proxy_config_paths)"
+# Each running session's proxy dir lists the files it reads, as resolved when it started: should a
+# link have been repointed since, the file it still reads is protected too.
+mkdir -p "$TMPDIR/run/chopi-proxy.a" "$TMPDIR/run/chopi-proxy.b"
+printf '%s\n' "$real_tmp/linked-config/rules.yaml" > "$TMPDIR/run/chopi-proxy.a/$PROXY_CONFIGS_FILE_NAME"
+printf '%s\n' "$real_tmp/real-config/allowlist" > "$TMPDIR/run/chopi-proxy.b/$PROXY_CONFIGS_FILE_NAME"
+config_paths="$(CHOPI_DIR="$TMPDIR/fake-chopi" PROXY_RUN_DIR="$TMPDIR/run" proxy_config_paths)"
 assert_contains "$config_paths" "$real_tmp/linked-config/rules.yaml" \
-    "  -> as is a file the running proxy reports it reads"
+    "  -> as is a file a running session's proxy reads"
+assert_contains "$config_paths" "$real_tmp/real-config/allowlist" "  -> and one another session's reads"
 
 # Inside the workspace is allowed: the profile denies writing to the target to enforce review
 mkdir -p "$work/sub"

@@ -6,11 +6,9 @@
 # only learns the dir the command will actually run in partway through setup:
 #   * preflight_initial          -- runnable up front: the workspace doesn't overlap chopi's
 #                                   own dir (a confined command must not reach the policy
-#                                   that confines it), chopi-proxy's run dir (whose ports
-#                                   aim the holes), or the proxy's config (which sets the
-#                                   outgoing limits), the proxy-side services (both loopback
-#                                   ports, as chopi-proxy reports them, and the GitHub API relay
-#                                   socket) are up, and the safehouse CLI is on PATH.
+#                                   that confines it), the proxy's run dir (whose ports aim
+#                                   the holes), or the proxy's config (which sets the outgoing
+#                                   limits), and the safehouse CLI is on PATH.
 #   * preflight_config_placement -- deferred until chopi has resolved the workspace (the
 #                                   --worktree target), since that is the dir a custom
 #                                   --config must stay outside of.
@@ -35,24 +33,6 @@ refuse_or_warn() {
     fi
 }
 
-# check_listener -- confirm something is listening on 127.0.0.1:PORT, else print an error naming
-# WHAT (e.g. "no outgoing proxy") and HINT, then fail. Liveness only: it confirms something is
-# listening, not that it's ours. We deliberately don't verify the listener's identity because no
-# purely-local check can: hijacking the port takes separate local code execution (the sandboxed
-# command itself can't bind it), and a same-user attacker who can do that can equally run
-# smokescreen/chopi-proxy or forge any pidfile or token we'd check -- same-user processes have equal
-# OS authority. An identity check would add cost and a false sense of security without changing what
-# such an attacker must do.
-check_listener() {
-    arity 3
-    local port="$1" what="$2" hint="$3"
-    if ! port_has_listener "$port"; then
-        echo "error: $what on 127.0.0.1:$port" >&2
-        echo "$hint" >&2
-        return 1
-    fi
-}
-
 preflight_initial() {
     arity 0
 
@@ -67,19 +47,20 @@ preflight_initial() {
             || return 1
     fi
 
-    # The ports file in the run dir aims this run's holes and HTTP_PROXY, so the sandboxed command
-    # must not reach it. Not a CHOPI_ALLOW_SELF matter: working on chopi needs no access to it.
+    # The session's proxy reports its ports in the run dir, and they aim this run's holes and
+    # HTTP_PROXY, so the sandboxed command must not reach it. Not a CHOPI_ALLOW_SELF matter: working
+    # on chopi needs no access to it.
     if overlaps_proxy_run_dir "$workspace_dir"; then
-        echo "error: workspace '$workspace_dir' overlaps chopi-proxy's run directory ('$PROXY_RUN_DIR');" >&2
+        echo "error: workspace '$workspace_dir' overlaps the proxy's run directory ('$PROXY_RUN_DIR');" >&2
         echo "       the sandboxed command could rewrite the ports that aim its own network holes." >&2
         echo "Run chopi from a workspace that neither holds nor sits inside $PROXY_RUN_DIR, or point" >&2
-        echo "CHOPI_RUN_DIR (for both chopi-proxy and chopi) elsewhere." >&2
+        echo "CHOPI_RUN_DIR elsewhere." >&2
         return 1
     fi
 
-    # The proxy's config sets every session's outgoing limits, which it hot-reloads. The profile
-    # denies the command any change to it whatever the workspace (write_proxy_config_profile), so
-    # CHOPI_ALLOW_SELF may downgrade this, for working on chopi, whose dir holds the default ones.
+    # The proxy's config sets every session's outgoing limits, which their proxies hot-reload. The
+    # profile denies the command any change to it whatever the workspace (write_proxy_config_profile),
+    # so CHOPI_ALLOW_SELF may downgrade this, for working on chopi, whose dir holds the default ones.
     local config
     if config="$(overlaps_proxy_config "$workspace_dir")"; then
         refuse_or_warn \
@@ -87,29 +68,6 @@ preflight_initial() {
             "the sandboxed command would be granted its outgoing limits, and every other session's, to rewrite" \
             "Run chopi from a workspace that neither holds nor sits inside the proxy's config." \
             || return 1
-    fi
-
-    # The outgoing proxy must already be running in its own terminal. We deliberately
-    # don't start it here, so it stays in the foreground where you can watch refused
-    # connections and stop it to edit the list of allowed domains. It reports the ports the
-    # kernel picked for it once it serves.
-    if ! read_proxy_ports; then
-        echo "error: no outgoing proxy: no ports reported in $PROXY_PORTS_FILE" >&2
-        echo "Start it first in a separate terminal, in this same environment (a proxy started" >&2
-        echo "under a different CHOPI_RUN_DIR reports them elsewhere):  chopi-proxy" >&2
-        return 1
-    fi
-    check_listener "$PROXY_PORT" "no outgoing proxy" \
-        "$PROXY_PORTS_FILE is stale; (re)start it in a separate terminal:  chopi-proxy" || return 1
-
-    check_listener "$GITHUB_RELAY_PORT" "no GitHub relay" \
-        "It runs alongside the outgoing proxy; (re)start both in a separate terminal:  chopi-proxy" || return 1
-
-    if ! sock_has_listener "$GH_RELAY_SOCK"; then
-        echo "error: no GitHub API relay listening at $GH_RELAY_SOCK" >&2
-        echo "Start chopi-proxy in this same environment first (a proxy started under a" >&2
-        echo "different CHOPI_RUN_DIR binds a different socket path)." >&2
-        return 1
     fi
 
     # Agent Safehouse builds the sandbox policy and execs the command inside it, so
