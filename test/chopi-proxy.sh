@@ -166,10 +166,11 @@ out="$(printf '%s\n' "$unknown_deny" | classify false)"
 assert_eq "$out" "[chopi-proxy.sh] DENY  tele.example:443  @ T2" "a deny with any other decision_reason -> loud DENY as before"
 
 # The deny hook (the macOS notification in the live proxy) fires for unknown denies only.
-record_deny() { arity 1; printf 'HOOK:%s\n' "$1"; }
-out="$(printf '%s\n' "$known_deny" | classify_log false "chopi-proxy.sh" record_deny "" false)"
+# record_hook stands in for each hook in turn.
+record_hook() { arity 1; printf 'HOOK:%s\n' "$1"; }
+out="$(printf '%s\n' "$known_deny" | classify_log false "chopi-proxy.sh" record_hook "" false)"
 assert_not_contains "$out" "HOOK:" "known deny does NOT fire the deny hook (no notification)"
-out="$(printf '%s\n' "$unknown_deny" | classify_log false "chopi-proxy.sh" record_deny "" false)"
+out="$(printf '%s\n' "$unknown_deny" | classify_log false "chopi-proxy.sh" record_hook "" false)"
 assert_contains "$out" "HOOK:tele.example:443" "unknown deny still fires the deny hook"
 
 # Once per host per session: a repeat is silent, a different host gets its own line.
@@ -246,12 +247,13 @@ out="$(printf '%s\n' '{"level":"error","msg":"egress ACL reload failed; keeping 
 assert_eq "$out" "[chopi-proxy.sh] RULES RELOAD FAILED (previous rules kept)  ?  @ T" \
     "a failed reload missing the error field still surfaces loud"
 
-# The reload-failure hook (the macOS notification in the live proxy) fires for failures only.
-record_reload_fail() { arity 0; printf 'HOOK:reload-failed\n'; }
-out="$(printf '%s\n' "$reload_fail" | classify_log false "chopi-proxy.sh" "" record_reload_fail false)"
-assert_contains "$out" "HOOK:reload-failed" "a failed reload fires the reload-failure hook"
-out="$(printf '%s\n' "$reload_ok" | classify_log false "chopi-proxy.sh" "" record_reload_fail false)"
-assert_not_contains "$out" "HOOK:" "  -> a successful one doesn't"
+# The reload hook (the macOS notification in the live proxy) tells failures from successes.
+out="$(printf '%s\n' "$reload_fail" | classify_log false "chopi-proxy.sh" "" record_hook false)"
+assert_contains "$out" "HOOK:failed" "a failed reload fires the reload hook with 'failed'"
+assert_not_contains "$out" "HOOK:ok" "  -> and not with 'ok'"
+out="$(printf '%s\n' "$reload_ok" | classify_log false "chopi-proxy.sh" "" record_hook false)"
+assert_contains "$out" "HOOK:ok" "a successful reload fires the reload hook with 'ok'"
+assert_not_contains "$out" "HOOK:failed" "  -> and not with 'failed'"
 
 out="$(printf '%s\n' "$reload_ok" | classify_verbose false)"
 assert_eq "$out" "$reload_ok

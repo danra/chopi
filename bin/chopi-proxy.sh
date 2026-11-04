@@ -164,9 +164,10 @@ done
 # - Denials of hosts matching the configured denylist show as a plain "deny(known)" line,
 #   once per host per session -- no notification, repeats dropped
 # - Rules hot-reloads show as a plain "rules reloaded" line; a failed reload (the edit
-#   did NOT take effect) shows as a loud "RULES RELOAD FAILED" line, and notifies
+#   did NOT take effect) shows as a loud "RULES RELOAD FAILED" line, and notifies; the next
+#   successful reload withdraws that notification
 # - Allowed connections and the known noise are dropped
-# - Every other line passes through. notify_deny and notify_reload_failed pop the macOS banners.
+# - Every other line passes through. notify_deny and notify_reload manage the macOS banners.
 format_smokescreen_log() {
     # This runs in a process substitution, which inherits the launching shell's job table
     # (the caddy pipeline, the reaper). Those are not this shell's children, so their
@@ -176,7 +177,7 @@ format_smokescreen_log() {
     disown -a
     local is_interactive=false
     [ -t 1 ] && is_interactive=true
-    classify_log "$is_interactive" "$SCRIPT_NAME" notify_deny notify_reload_failed "$VERBOSE"
+    classify_log "$is_interactive" "$SCRIPT_NAME" notify_deny notify_reload "$VERBOSE"
 }
 
 notify_deny() {
@@ -184,9 +185,15 @@ notify_deny() {
     notify chopi-proxy-deny 'connection denied' "DENY $1"
 }
 
-notify_reload_failed() {
-    arity 0
-    notify chopi-proxy-reload 'rules reload failed' "Your edit to ${RULES##*/} did not take effect"
+# usage: notify_reload ok|failed
+notify_reload() {
+    arity 1
+    case "$1" in
+        failed) notify chopi-proxy-reload 'rules reload failed' \
+                       "Your edit to ${RULES##*/} did not take effect" ;;
+        # The rules now in effect are the user's latest: a failure banner still up is stale.
+        ok) { alerter --remove chopi-proxy-reload >/dev/null 2>&1 || true; } & ;;
+    esac
 }
 
 # Pop a macOS banner with SUBTITLE and MESSAGE, in the background, replacing the last one in

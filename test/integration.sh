@@ -803,6 +803,12 @@ if wait_for_count "$proxy_log" "rules reloaded" 2; then
 else
     bad "the proxy did NOT reload after the rules were fixed"
 fi
+# Each successful reload withdraws the failure banner; (1) already did once.
+if wait_for_count "$alerter_log" "remove chopi-proxy-reload" 2; then
+    ok "the fixed rules withdraw the now-stale reload-failure notification"
+else
+    bad "the fixed rules did NOT withdraw the reload-failure notification"
+fi
 code="$(sandbox_curl --max-time 20 "https://$DENIED_HOST")"
 assert_not_contains "$code" "200"                  "the restored rules refuse the host again"
 
