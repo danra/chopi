@@ -8,8 +8,9 @@
 #     command could be handed read/write to its own sandboxing policy.
 #   * preflight_initial -- the chopi-dir overlap refusal (and its CHOPI_ALLOW_SELF
 #     downgrade).
-#   * preflight_config_placement -- refusing a custom --config, or proxy config it names, that
-#     lives inside the workspace.
+#   * preflight_config_placement -- refusing a custom --config that lives inside the workspace.
+#   * resolve_proxy_config -- resolving the proxy's config to the real paths the in-sandbox
+#     wrapper checks the sandboxed command can't write.
 #   * rule / the Seatbelt-rule emitter -- its empty-PATH refusal keeps an
 #     accidentally-empty variable from becoming a silently misapplied rule.
 
@@ -239,6 +240,49 @@ assert_eq "$(run_dir HOME=/home CHOPI_RUN_DIR=/elsewhere)" "/elsewhere/run" \
 # must name the same dir for both, the one where it was given.
 assert_eq "$(cd /tmp && run_dir HOME=/home CHOPI_RUN_DIR=rel/dir)" "$(cd /tmp && pwd)/rel/dir/run" \
     "  -> a relative one is taken from the directory it is given in"
+
+
+# ---------------------------------------------------------------------------
+echo "resolve_proxy_config (resolving the proxy's config paths once, up front)"
+# ---------------------------------------------------------------------------
+rp="$(mktemp -d)"; rp="$(realpath "$rp")"
+mkdir "$rp/team" "$rp/chopi" "$rp/chopi/config"
+: > "$rp/team/rules.yaml"
+ln -s "$rp/team" "$rp/link"
+
+out="$( CHOPI_PROXY_RULES="$rp/link/rules.yaml"
+        resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml && printf '%s' "$CHOPI_PROXY_RULES" )"
+assert_eq "$out" "$rp/team/rules.yaml" "a configured path is resolved through its symlinks"
+
+out="$( CHOPI_PROXY_RULES=""; CHOPI_DIR="$rp/chopi"
+        ln -s "$rp/team/rules.yaml" "$rp/chopi/config/proxy-rules.yaml"
+        resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml && printf '%s' "$CHOPI_PROXY_RULES" )"
+assert_eq "$out" "$rp/team/rules.yaml" "with none configured, the default is resolved too"
+rm "$rp/chopi/config/proxy-rules.yaml"
+
+out="$( CHOPI_PROXY_RULES=""; CHOPI_DIR="$rp/chopi"
+        resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml 2>&1 )"; st=$?
+assert_nonzero "$st" "a missing default is refused"
+assert_contains "$out" "cp \"$rp/chopi/config/templates/proxy-rules.template.yaml\" \"$rp/chopi/config/proxy-rules.yaml\"" \
+    "  -> saying how to create it"
+
+# shellcheck disable=SC2034 # read by resolve_proxy_config, through its name
+out="$( CHOPI_PROXY_RULES=rules.yaml; resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml 2>&1 )"; st=$?
+assert_nonzero "$st" "a relative path is refused"
+assert_contains "$out" "CHOPI_PROXY_RULES must be an absolute path" "  -> naming the setting"
+
+# GNU realpath, often first on PATH, resolves a missing path as BSD's doesn't: stand one in.
+mkdir "$rp/gnu"
+cat > "$rp/gnu/realpath" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$1"
+EOF
+chmod +x "$rp/gnu/realpath"
+# shellcheck disable=SC2034 # read by resolve_proxy_config, through its name
+out="$( CHOPI_GITHUB_ALLOWLIST="$rp/team/missing"; PATH="$rp/gnu:$PATH"
+        resolve_proxy_config CHOPI_GITHUB_ALLOWLIST github-allowlist github-allowlist.template 2>&1 )"; st=$?
+assert_nonzero "$st" "a configured path that doesn't exist is refused, whichever realpath is on PATH"
+assert_contains "$out" "no CHOPI_GITHUB_ALLOWLIST file at '$rp/team/missing'" "  -> naming the setting"
 
 
 # ---------------------------------------------------------------------------
