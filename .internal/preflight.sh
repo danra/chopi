@@ -6,7 +6,8 @@
 # only learns the dir the command will actually run in partway through setup:
 #   * preflight_initial          -- runnable up front: the workspace doesn't overlap chopi's
 #                                   own dir (a confined command must not reach the policy
-#                                   that confines it), the proxy-side services (both loopback
+#                                   that confines it) or chopi-proxy's run dir (kept out of
+#                                   its reach too), the proxy-side services (both loopback
 #                                   ports and the GitHub API relay socket) are up, and the
 #                                   safehouse CLI is on PATH.
 #   * preflight_config_placement -- deferred until chopi has resolved the workspace (the
@@ -63,6 +64,16 @@ preflight_initial() {
             "the sandboxed command would get read/write access to its own config" \
             "Run chopi from inside the repo you're working on, not from chopi's own dir, a parent of it, or a subdir of it." \
             || return 1
+    fi
+
+    # chopi-proxy's run dir is for what aims this run's network holes, so the sandboxed command
+    # must not reach it. Not a CHOPI_ALLOW_SELF matter: working on chopi needs no access to it.
+    if overlaps_proxy_run_dir "$workspace_dir"; then
+        echo "error: workspace '$workspace_dir' overlaps chopi-proxy's run directory ('$PROXY_RUN_DIR')," >&2
+        echo "       which the sandboxed command must not reach." >&2
+        echo "Run chopi from a workspace that neither holds nor sits inside $PROXY_RUN_DIR, or point" >&2
+        echo "CHOPI_RUN_DIR (for both chopi-proxy and chopi) elsewhere." >&2
+        return 1
     fi
 
     # The outgoing proxy must already be running in its own terminal. We deliberately

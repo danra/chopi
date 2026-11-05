@@ -427,6 +427,22 @@ assert_eq "$net_rules" '(allow network-outbound (remote ip "localhost:24760"))
 
 
 # ---------------------------------------------------------------------------
+echo "the proxy's run dir is out of the sandbox's reach, whatever else is granted"
+# ---------------------------------------------------------------------------
+run_dir_t="$TMPDIR/home dir/.chopi/run"
+mkdir -p "$run_dir_t"
+write_proxy_run_dir_profile "$TMPDIR/run-dir.sb" "$run_dir_t"
+run_dir_rules="$(grep -v '^;' "$TMPDIR/run-dir.sb")"
+run_dir_real="$(realpath "$run_dir_t")"
+assert_contains "$run_dir_rules" '(deny file-read* file-write* (subpath "'"$run_dir_real"'"))' \
+    "the profile denies reading and writing the run dir, by its canonical path"
+assert_contains "$run_dir_rules" '(deny file-write* (literal "'"$(dirname "$run_dir_real")"'"))' \
+    "  -> and pins its ancestors, so it can't be renamed away and replaced"
+assert_not_contains "$run_dir_rules" '(literal "/")' \
+    "  -> up to, not including, the root"
+
+
+# ---------------------------------------------------------------------------
 echo "option values (an option given no value, or an empty one, is refused)"
 # ---------------------------------------------------------------------------
 # A trailing unknown option ends any run that gets past the one under test, with nothing started:
@@ -439,6 +455,32 @@ for opt in --rules --github-allowlist; do
     assert_nonzero "$st" "$opt with an empty value is refused"
     assert_contains "$out" "$opt requires" "  -> naming the option, not falling back to the default file"
 done
+
+
+# ---------------------------------------------------------------------------
+echo "make_private_dir (chopi-proxy's run dir is ours alone)"
+# ---------------------------------------------------------------------------
+perms() { stat -f %Lp "$1"; }
+priv="$TMPDIR/private"
+make_private_dir "$priv"; st=$?
+assert_zero "$st" "a missing dir is created"
+assert_eq "$(perms "$priv")" "700" "  -> private"
+chmod 755 "$priv"
+make_private_dir "$priv"; st=$?
+assert_zero "$st" "an existing dir of ours is accepted"
+assert_eq "$(perms "$priv")" "700" "  -> and made private"
+mkdir -m 755 "$TMPDIR/link-target"
+ln -s "$TMPDIR/link-target" "$TMPDIR/link"
+out="$(make_private_dir "$TMPDIR/link" 2>&1)"; st=$?
+assert_nonzero "$st" "a symlink is refused"
+assert_contains "$out" "not a directory" "  -> as not a directory"
+assert_eq "$(perms "$TMPDIR/link-target")" "755" "  -> leaving what it points to as it was"
+touch "$TMPDIR/plain-file"
+out="$(make_private_dir "$TMPDIR/plain-file" 2>&1)"; st=$?
+assert_nonzero "$st" "a file is refused"
+out="$(make_private_dir /usr 2>&1)"; st=$?
+assert_nonzero "$st" "another user's dir is refused"
+assert_contains "$out" "another user" "  -> naming why"
 
 
 # ---------------------------------------------------------------------------

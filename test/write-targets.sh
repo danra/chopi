@@ -5,15 +5,18 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-. "$repo/.internal/util.sh"
-. "$repo/test/lib.sh"
-
-header "test/write-targets.sh -- unit tests for the patch queue's config and grants"
 
 TMPDIR="$(mktemp -d)"; export TMPDIR
 # The sandbox resolves paths through the /var symlink, so canonicalize before comparing.
 TMPDIR="$(cd "$TMPDIR" && pwd -P)"
 trap 'rm -rf "$TMPDIR"' EXIT
+# A run dir of the test's own, not the developer's: util.sh derives PROXY_RUN_DIR from it.
+CHOPI_RUN_DIR="$TMPDIR/chopi-run"
+
+. "$repo/.internal/util.sh"
+. "$repo/test/lib.sh"
+
+header "test/write-targets.sh -- unit tests for the patch queue's config and grants"
 
 # The queue root is $HOME-derived, so point HOME into the temp dir: the tests must never
 # touch the developer's real ~/.chopi. The lib under test is sourced after, for the same reason.
@@ -130,6 +133,16 @@ refuses "chopi's own directory is refused as a target" \
     "overlaps chopi's directory" "$CHOPI_DIR"
 refuses "  -> and so is a directory inside it, which is where the sandbox config lives" \
     "overlaps chopi's directory" "$CHOPI_DIR/config"
+
+# The proxy's run dir is out of the sandbox's reach.
+mkdir -p "$PROXY_RUN_DIR"
+refuses "chopi-proxy's run directory is refused as a target" \
+    "overlaps chopi-proxy's run directory" "$PROXY_RUN_DIR"
+refuses "  -> and so is a directory holding it" \
+    "overlaps chopi-proxy's run directory" "$TMPDIR/chopi-run"
+ln -s "$TMPDIR/chopi-run" "$TMPDIR/chopi-run-link"
+refuses "  -> and so is the run directory reached through a symlink" \
+    "overlaps chopi-proxy's run directory" "$TMPDIR/chopi-run-link/run"
 
 # Inside the workspace is allowed: the profile denies writing to the target to enforce review
 mkdir -p "$work/sub"

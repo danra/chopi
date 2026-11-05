@@ -25,6 +25,20 @@ _gh_tmp="${TMPDIR:-/tmp}"
 GH_RELAY_SOCK="${_gh_tmp%/}/chopi-gh-relay.sock"
 unset _gh_tmp
 
+# chopi-proxy's run dir, which chopi-proxy.sh and chopi.sh share: run/ under ~/.chopi. The sandbox
+# can neither read nor write it (write_proxy_run_dir_profile): it is for what chopi-proxy keeps that
+# aims the sandbox's own network holes. Setting CHOPI_RUN_DIR gives a chopi-proxy, and the chopi
+# runs started under it, a run dir of their own, as the tests do: its run/, which chopi-proxy and
+# chopi make private (make_private_dir), leaving the dir CHOPI_RUN_DIR names as it is. A relative
+# one is taken from where it is given: chopi-proxy moves into chopi's directory and chopi into a
+# worktree, so left relative it would name a different dir for each.
+CHOPI_RUN_DIR="${CHOPI_RUN_DIR:-$HOME/.chopi}"
+case "$CHOPI_RUN_DIR" in
+    /*) ;;
+    *) CHOPI_RUN_DIR="$PWD/$CHOPI_RUN_DIR" ;;
+esac
+PROXY_RUN_DIR="${CHOPI_RUN_DIR%/}/run"
+
 # mktemp name prefixes of chopi's per-invocation temporaries (created under the private
 # TMPDIR); shared so the tests assert on the same names chopi creates.
 CHOPI_CLAUDE_CONTEXT_READS_PREFIX="chopi-claude-context-reads."
@@ -240,6 +254,13 @@ overlaps_chopi_dir() {
     overlapping_dirs "$real" "$CHOPI_DIR"
 }
 
+# Does path $1 reach chopi-proxy's run dir, in either direction? Nothing a session can write may
+# reach it.
+overlaps_proxy_run_dir() {
+    arity 1
+    overlapping_dirs "$(realpath_or_self "$1")" "$(realpath_or_self "$PROXY_RUN_DIR")"
+}
+
 # Resolve the GitHub token the relay authenticates with, following gh's own source precedence:
 # GH_TOKEN, then GITHUB_TOKEN, then gh's stored login. A variable that is SET wins over the next
 # source even when EMPTY -- an explicit GH_TOKEN='' (or GITHUB_TOKEN='' when GH_TOKEN is unset) means
@@ -354,6 +375,26 @@ github_relay_gh_env() {
         "GH_TOKEN=x-chopi-relay"
 }
 
+# Write the Seatbelt profile denying the sandboxed command any access to chopi-proxy's run dir
+# RUN_DIR to FILE: it is for what aims the sandbox's own network holes. Preflight keeps the
+# workspace off it, but other grants can cover it too: an --add-dirs path, a safe write target
+# (readable), or a CHOPI_RUN_DIR under a dir safehouse grants, like TMPDIR. Appended after every
+# file grant, so that among matching filtered rules this deny comes last and wins. Its ancestors
+# are pinned so the dir can't be renamed away and replaced.
+#
+# usage: write_proxy_run_dir_profile FILE RUN_DIR
+write_proxy_run_dir_profile() {
+    arity 2
+    local file="$1" run_dir
+    run_dir="$(realpath "$2")" \
+        || { echo "chopi: cannot resolve chopi-proxy's run directory '$2'" >&2; return 1; }
+    {
+        echo ";; chopi: chopi-proxy's run dir stays out of reach."
+        rule 'deny file-read* file-write*' subpath "$run_dir"
+        pin_ancestries / "$(dirname "$run_dir")"
+    } >"$file"
+}
+
 # Write the Seatbelt profile re-opening the proxy's endpoints to FILE: network.sb denies every
 # outgoing connection, so these are the only ones the sandboxed command can make -- the smokescreen
 # forward proxy on PORT, the git relay on RELAY_PORT, and the API relay's socket SOCK.
@@ -414,6 +455,24 @@ first_listening_port() {
         fi
     done
     return 1
+}
+
+# Make dir $1, in an existing parent, a directory only we can reach: created so if missing, else
+# made so, once it is sure to be our own directory, not a link or another user's, as one planted in
+# a shared parent such as /tmp could be.
+make_private_dir() {
+    arity 1
+    local dir="$1"
+    mkdir -m 700 "$dir" 2>/dev/null || true
+    if [ -L "$dir" ] || [ ! -d "$dir" ]; then
+        echo "error: $dir is not a directory" >&2
+        return 1
+    fi
+    if [ "$(stat -f %u "$dir")" != "$(id -u)" ]; then
+        echo "error: $dir belongs to another user" >&2
+        return 1
+    fi
+    chmod 700 "$dir"
 }
 
 # Run COMMAND in the background, in a process group of its own, and once it exits -- however it

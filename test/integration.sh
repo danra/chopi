@@ -18,10 +18,12 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
-# A private TMPDIR, exported so the scripts under test leave their temporaries here too. Created
-# before sourcing util.sh, which derives GH_RELAY_SOCK from it; trap it now so an early skip still
-# cleans up (the rest of the fixtures, and the fuller trap, come after the skip guards below).
+# A private TMPDIR, exported so the scripts under test leave their temporaries here too. It is the
+# CHOPI_RUN_DIR too, set before sourcing util.sh, which derives GH_RELAY_SOCK and PROXY_RUN_DIR
+# from them, so the run dir the chopi runs it starts guard is its own; trap it now so an early skip
+# still cleans up (the rest of the fixtures, and the fuller trap, come after the skip guards below).
 TMPDIR="$(mktemp -d)"; export TMPDIR
+CHOPI_RUN_DIR="$TMPDIR"; export CHOPI_RUN_DIR
 trap 'rm -rf "$TMPDIR"' EXIT
 
 . "$repo/.internal/util.sh"
@@ -391,6 +393,22 @@ assert_absent "$outside/evil.txt" "write OUTSIDE the workspace is denied (no fil
 out="$(chopi_t /bin/sh -c "cat '$repo/.internal/preflight.sh' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_not_contains "$out" "preflight"             "read of chopi's OWN dir is denied (config stays out of reach)"
 assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
+
+# chopi-proxy's run dir is for what aims the next run's network holes. Here it sits under TMPDIR,
+# which safehouse grants, and the config below grants it outright: chopi's deny must still win.
+cfg_run_dir="$base/config/sandbox-run-dir.sh"
+cat > "$cfg_run_dir" <<EOF
+CHOPI_SAFEHOUSE_FLAGS=( --add-dirs "$PROXY_RUN_DIR" )
+CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
+EOF
+out="$( ( cd "$ws" && "$repo/bin/chopi" --config "$cfg_run_dir" -- /bin/sh -c "
+    ls '$PROXY_RUN_DIR' >/dev/null 2>&1 && echo READ_OK || echo READ_FAIL
+    (echo 1 > '$PROXY_RUN_DIR/new') 2>/dev/null && echo CREATE_OK || echo CREATE_FAIL
+    mv '$PROXY_RUN_DIR' '$PROXY_RUN_DIR.moved' 2>/dev/null && echo MOVE_OK || echo MOVE_FAIL
+" ) 2>/dev/null )"
+assert_contains "$out" "READ_FAIL"   "the proxy's run dir is unreadable, even under a grant covering it"
+assert_contains "$out" "CREATE_FAIL" "  -> nothing can be created in it"
+assert_contains "$out" "MOVE_FAIL"   "  -> and it can't be renamed away"
 
 
 # ---------------------------------------------------------------------------

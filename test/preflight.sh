@@ -15,15 +15,18 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Exported so the scripts under test leave their temporaries here too.
+TMPDIR="$(mktemp -d)"; export TMPDIR
+trap 'rm -rf "$TMPDIR"' EXIT
+# A run dir of the test's own, not a running chopi-proxy's: util.sh derives its paths from it.
+CHOPI_RUN_DIR="$TMPDIR/chopi"
+
 . "$repo/.internal/util.sh"
 . "$repo/.internal/preflight.sh"
 . "$repo/test/lib.sh"
 
 header "test/preflight.sh -- unit tests preflight checks"
-
-# Exported so the scripts under test leave their temporaries here too.
-TMPDIR="$(mktemp -d)"; export TMPDIR
-trap 'rm -rf "$TMPDIR"' EXIT
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +115,35 @@ assert_eq "$out" "end" "  -> and writes nothing to stdout"
 tmp="$(mktemp -d)"
 out="$( cd "$tmp" && preflight_initial 2>&1 )"
 assert_not_contains "$out" "overlaps chopi's own directory" "non-overlapping workspace clears the overlap check"
+assert_not_contains "$out" "overlaps chopi-proxy's run directory" "  -> and the run-dir overlap check"
+
+
+# ---------------------------------------------------------------------------
+echo "preflight_initial (run dir/workspace overlap)"
+# ---------------------------------------------------------------------------
+# The run dir is for what aims chopi's holes: a workspace reaching it would let the sandboxed
+# command aim the next run's. CHOPI_ALLOW_SELF, for working on chopi
+# itself, has no business relaxing that. The run dir is the run/ chopi-proxy keeps inside
+# CHOPI_RUN_DIR: the rest of CHOPI_RUN_DIR, a shared dir such as /tmp, say, is no concern.
+# preflight_under DIR ENV... -- preflight_initial run from DIR, with util.sh sourced under ENV.
+preflight_under() {
+    local dir="$1"; shift
+    # shellcheck disable=SC2016  # expands in the child bash, against the environment under test
+    (cd "$dir" && env "$@" bash -c \
+        '. "$1/.internal/util.sh"; . "$1/.internal/preflight.sh"; preflight_initial' _ "$repo" 2>&1)
+}
+work="$(mktemp -d)"; mkdir -p "$work/run/sub" "$work/sub"
+out="$(preflight_under "$work" CHOPI_RUN_DIR="$work")"; st=$?
+assert_contains "$out" "overlaps chopi-proxy's run directory" "refuses when workspace CONTAINS the run dir"
+assert_nonzero "$st" "  -> and returns non-zero"
+out="$(preflight_under "$work/run/sub" CHOPI_RUN_DIR="$work")"
+assert_contains "$out" "overlaps chopi-proxy's run directory" "refuses when workspace is INSIDE the run dir"
+out="$(preflight_under "$work/sub" CHOPI_RUN_DIR="$work")"
+assert_not_contains "$out" "overlaps chopi-proxy's run directory" \
+    "a workspace beside the run dir, inside CHOPI_RUN_DIR, clears the check"
+out="$(preflight_under "$work" CHOPI_ALLOW_SELF=1 CHOPI_RUN_DIR="$work")"; st=$?
+assert_contains "$out" "error: workspace" "CHOPI_ALLOW_SELF does not downgrade the run-dir overlap"
+assert_nonzero "$st" "  -> and still returns non-zero"
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +216,25 @@ assert_nonzero "$st" "  -> and returns non-zero"
 
 ( preflight_config_placement "$cfg_outside" ) 2>/dev/null; st=$?
 assert_eq "$st" 2 "a wrong number of arguments is a hard error (exit 2)"
+
+
+# ---------------------------------------------------------------------------
+echo "where chopi-proxy's run dir is (out of the sandbox's reach, not under TMPDIR)"
+# ---------------------------------------------------------------------------
+# run_dir ENV... -- the run dir util.sh derives under ENV, with TMPDIR set aside and CHOPI_RUN_DIR
+# unset unless ENV sets it.
+run_dir() {
+    # shellcheck disable=SC2016  # expands in the child bash, against the environment under test
+    env -u CHOPI_RUN_DIR TMPDIR=/login-tmp "$@" \
+        bash -c '. "$1/.internal/util.sh"; echo "$PROXY_RUN_DIR"' _ "$repo"
+}
+assert_eq "$(run_dir HOME=/home)" "/home/.chopi/run" "the run dir is ~/.chopi/run, not under TMPDIR"
+assert_eq "$(run_dir HOME=/home CHOPI_RUN_DIR=/elsewhere)" "/elsewhere/run" \
+    "  -> and CHOPI_RUN_DIR moves it, into a run/ of its own"
+# chopi-proxy runs from chopi's directory and chopi from the workspace: a relative CHOPI_RUN_DIR
+# must name the same dir for both, the one where it was given.
+assert_eq "$(cd /tmp && run_dir HOME=/home CHOPI_RUN_DIR=rel/dir)" "$(cd /tmp && pwd)/rel/dir/run" \
+    "  -> a relative one is taken from the directory it is given in"
 
 
 # ---------------------------------------------------------------------------

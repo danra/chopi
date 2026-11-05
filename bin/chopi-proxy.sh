@@ -263,6 +263,10 @@ if sock_has_listener "$GH_RELAY_SOCK"; then
 fi
 rm -f "$GH_RELAY_SOCK"
 
+# The run dir, out of the sandbox's reach, is ours alone.
+mkdir -p "$CHOPI_RUN_DIR"
+make_private_dir "$PROXY_RUN_DIR" || exit 1
+
 echo "[$SCRIPT_NAME] relay log: $CADDY_LOG" >&2
 echo "[$SCRIPT_NAME] starting the outgoing proxy and the GitHub relays (Ctrl-C to stop)" >&2
 # chopi-smokescreen opens the listeners, serves the proxy, and starts Caddy on the relays' config,

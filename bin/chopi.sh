@@ -257,6 +257,14 @@ main() {
     write_proxy_network_profile "$proxy_net_profile" "$PROXY_PORT" "$GITHUB_RELAY_PORT" "$GH_RELAY_SOCK" \
         || return 1
 
+    # chopi-proxy makes its run dir as it starts; making it here too keeps the deny below from
+    # depending on whether it has.
+    local run_dir_profile
+    mkdir -p "$CHOPI_RUN_DIR" && make_private_dir "$PROXY_RUN_DIR" || return 1
+    run_dir_profile="$(mktemp "$TMPDIR/chopi-proxy-run-dir.XXXXXX")" \
+        || { echo "chopi: could not create a temp file for the proxy run-dir profile" >&2; return 1; }
+    write_proxy_run_dir_profile "$run_dir_profile" "$PROXY_RUN_DIR" || return 1
+
     local proxy="http://127.0.0.1:$PROXY_PORT"
 
     if [ -n "$worktree_dir" ]; then
@@ -265,7 +273,8 @@ main() {
 
     # chopi's network profiles are always appended last so that (deny network*) lands after
     # safehouse's own profile, pinning outgoing traffic to the subsequent holes allowed for the proxy
-    # and the GitHub relay servers.
+    # and the GitHub relay servers. The run-dir profile goes just before them, after every file
+    # grant, so its deny outranks them all.
     #
     # errexit off around safehouse so a non-zero exit from the sandboxed command is captured
     # and propagated (so `chopi cmd && next` short-circuits) instead of aborting here.
@@ -277,6 +286,7 @@ main() {
         "${context_flags[@]+"${context_flags[@]}"}" \
         "${protection_flags[@]}" \
         "${wrapper_flags[@]}" \
+        --append-profile "$run_dir_profile" \
         --append-profile "$CHOPI_DIR/.internal/network.sb" \
         --append-profile "$proxy_net_profile" \
         -- \

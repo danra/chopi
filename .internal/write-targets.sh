@@ -125,6 +125,11 @@ validate_write_target() {
         echo "$prog: safe write target overlaps the patch queue: $path" >&2
         return 1
     fi
+    # chopi-proxy's run dir is out of the sandbox's reach; an approved patch must not be a way in.
+    if overlaps_proxy_run_dir "$path"; then
+        echo "$prog: safe write target overlaps chopi-proxy's run directory: $path" >&2
+        return 1
+    fi
     if has_git_component "$path"; then
         echo "$prog: safe write target has a .git component: $path" >&2
         return 1
