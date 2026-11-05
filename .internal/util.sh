@@ -416,6 +416,33 @@ first_listening_port() {
     return 1
 }
 
+# Run COMMAND in the background, in a process group of its own, and once it exits -- however it
+# exits, a SIGKILL or a crash included -- TERM the rest of that group and exit with its status.
+# This keeps COMMAND's helpers (Caddy) from outliving it, while leaving our caller's group alone.
+# A stop signal sent to us is passed on to COMMAND as a TERM, so it stops as it would have stopped
+# itself; out of the terminal's foreground group, COMMAND gets no Ctrl-C of its own beside that.
+#
+# usage: lead_group COMMAND [ARGS...]
+lead_group() {
+    local pid status
+    set -m
+    # Given our stdin explicitly: bash otherwise gives a background command /dev/null for it.
+    "$@" <&0 &
+    pid=$!
+    set +m
+    # A trapped signal cuts the wait short, so wait again until COMMAND is gone.
+    trap 'kill -TERM "$pid" 2>/dev/null' TERM HUP INT
+    while :; do
+        status=0
+        wait "$pid" || status=$?
+        kill -0 "$pid" 2>/dev/null || break
+    done
+    trap '' TERM HUP INT
+    # The group outlives COMMAND, its ID with it, for as long as a helper of COMMAND's is in it.
+    kill -TERM -- "-$pid" 2>/dev/null
+    exit "$status"
+}
+
 # Print the pids of the processes listening on TCP 127.0.0.1:PORT, one per line. Listeners on other
 # addresses of the port (::1, a LAN address) aren't listed: they don't take 127.0.0.1's connections.
 # Nor, though they may answer there, are ones on the wildcard address or another user's.

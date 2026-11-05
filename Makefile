@@ -37,6 +37,7 @@ SHELL_SOURCES = \
 	test/git-isolate.sh \
 	test/git-harden.sh \
 	test/chopi-proxy.sh \
+	test/lead-group.sh \
 	test/worktree.sh \
 	test/preflight.sh \
 	test/shell-rc.sh \
@@ -64,6 +65,7 @@ test:
 	@./test/git-isolate.sh
 	@./test/git-harden.sh
 	@./test/chopi-proxy.sh
+	@./test/lead-group.sh
 	@./test/worktree.sh
 	@./test/preflight.sh
 	@./test/shell-rc.sh

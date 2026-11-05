@@ -95,6 +95,17 @@ assert_nonzero() {
     fi
 }
 
+# assert_pid_exits PID MSG -- assert PID exits within ~3s, killing it if not, so a failure leaves no
+# stray behind.
+assert_pid_exits() {
+    arity 2
+    local _ st
+    for _ in {1..30}; do kill -0 "$1" 2>/dev/null || break; sleep 0.1; done
+    kill -0 "$1" 2>/dev/null; st=$?
+    assert_nonzero "$st" "$2"
+    [ "$st" -ne 0 ] || kill "$1"
+}
+
 # assert_absent PATH DESC -- nothing exists at PATH (a denied write left no trace)
 assert_absent() {
     arity 2
