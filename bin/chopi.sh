@@ -251,15 +251,10 @@ main() {
     readarray -t gh_env <<< "$gh_env_text"
 
     # Open a Seatbelt network hole to the GitHub API relay socket.
-    local gh_sock gh_relay_profile
-    gh_sock="$(realpath "$GH_RELAY_SOCK")" \
-        || { echo "chopi: cannot resolve the GitHub API relay socket path '$GH_RELAY_SOCK'" >&2; return 1; }
-    gh_relay_profile="$(mktemp "$TMPDIR/chopi-gh-relay-net.XXXXXX")" \
-        || { echo "chopi: could not create a temp file for the GitHub API relay network profile" >&2; return 1; }
-    {
-        echo ";; chopi: re-open the GitHub API relay's unix socket (network.sb denies unix sockets)."
-        rule 'allow network-outbound' literal "$gh_sock"
-    } > "$gh_relay_profile"
+    local proxy_net_profile
+    proxy_net_profile="$(mktemp "$TMPDIR/chopi-proxy-net.XXXXXX")" \
+        || { echo "chopi: could not create a temp file for the proxy network profile" >&2; return 1; }
+    write_proxy_network_profile "$proxy_net_profile" "$GH_RELAY_SOCK" || return 1
 
     local proxy="http://127.0.0.1:$PROXY_PORT"
 
@@ -282,7 +277,7 @@ main() {
         "${protection_flags[@]}" \
         "${wrapper_flags[@]}" \
         --append-profile "$CHOPI_DIR/.internal/network.sb" \
-        --append-profile "$gh_relay_profile" \
+        --append-profile "$proxy_net_profile" \
         -- \
         "${CHOPI_EXTRA_ENV[@]+"${CHOPI_EXTRA_ENV[@]}"}" \
         "${queue_env[@]+"${queue_env[@]}"}" \

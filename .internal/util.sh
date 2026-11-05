@@ -355,6 +355,21 @@ github_relay_gh_env() {
         "GH_TOKEN=x-chopi-relay"
 }
 
+# Write the Seatbelt profile re-opening the GitHub API relay's socket SOCK to FILE: network.sb denies
+# unix sockets along with the rest.
+#
+# usage: write_proxy_network_profile FILE SOCK
+write_proxy_network_profile() {
+    arity 2
+    local file="$1" sock
+    sock="$(realpath "$2")" \
+        || { echo "chopi: cannot resolve the GitHub API relay socket path '$2'" >&2; return 1; }
+    {
+        echo ";; chopi: re-open the GitHub API relay's unix socket (network.sb denies unix sockets)."
+        rule 'allow network-outbound' literal "$sock"
+    } >"$file"
+}
+
 # Do github remote URLs resolve to the relay under the ambient git config (all scopes, read from
 # the current directory)? The in-sandbox wrapper runs this after exporting chopi's
 # rewrites into the command scope, so it checks exactly the config the sandboxed command will see:
