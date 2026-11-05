@@ -252,7 +252,7 @@ therefore split across cooperating layers:
 
 | Layer | Tool | Enforces |
 |-------|------|----------|
-| Sandbox | [`safehouse`](https://github.com/eugene1g/agent-safehouse) (wraps `sandbox-exec`) | Filesystem and preset features; the only outgoing network permitted is to the local proxies at `127.0.0.1:4760` (smokescreen), `:4761` (the GitHub relay), and the relay's unix socket for the `gh` REST API. |
+| Sandbox | [`safehouse`](https://github.com/eugene1g/agent-safehouse) (wraps `sandbox-exec`) | Filesystem and preset features; the only outgoing network permitted is to the local proxies on `127.0.0.1` (smokescreen and the GitHub relay) and the relay's unix socket for the `gh` REST API. |
 | Domain-level proxy | [`smokescreen`](https://github.com/stripe/smokescreen) (CONNECT proxy) | Of the traffic that reaches it, only connections to allowed hosts are forwarded; everything else is refused and logged. |
 | GitHub repo-level proxy | [`caddy`](https://caddyserver.com) (reverse proxy) | `github.com` git and the REST API are reached *only* through this relay, which scopes them to a repo allowlist: fetching/reading a **public** repo is unrestricted, but reading a **private** repo, **any push**, and **any authenticated API access** are limited to allowlisted repos. |
 
@@ -281,12 +281,12 @@ Network path of the sandboxed command:
 
 ```
 <cmd>
-  │  Seatbelt allows outgoing connections ONLY to 127.0.0.1:{4760,4761} + the GitHub API relay socket
-  ├─ github.com (git) ─── 4761 ────▶ caddy relay ─(repo allowlisted?)─▶ GitHub
+  │  Seatbelt allows outgoing connections ONLY to the proxies' ports + the GitHub API relay socket
+  ├─ github.com (git) ─── port ────▶ caddy relay ─(repo allowlisted?)─▶ GitHub
   │                                   └─ public fetch: any repo · private fetch or push: allowlisted only
   ├─ gh REST API ──── unix socket ─▶ caddy relay ─(repo allowlisted?)─▶ GitHub API
   │                                   └─ read: any public repo · authed access: allowlisted only
-  └─ everything else ──── 4760 ────▶ smokescreen ─(host allowed?)─▶ api.anthropic.com / ...
+  └─ everything else ──── port ────▶ smokescreen ─(host allowed?)─▶ api.anthropic.com / ...
                                           └────(not allowed)────▶ refused + logged
 ```
 
@@ -325,7 +325,7 @@ its rules at startup). `install.sh` and `make build` compile it to
 
 ### The GitHub relays
 
-Both GitHub relays live in one Caddy config: a TCP listener on `127.0.0.1:4761` for git
+Both GitHub relays live in one Caddy config: a TCP listener on a `127.0.0.1` port for git
 smart-HTTP, and a loopback unix socket for the `gh` REST API. `chopi` points `gh` at the
 socket with `GH_HOST=github.localhost` (which makes `gh` speak plaintext `http`, so still
 no CA) plus `http_unix_socket` in a throwaway config dir. The host-side token is injected

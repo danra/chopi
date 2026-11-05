@@ -11,19 +11,35 @@ unset _util_dir
 
 SMOKESCREEN_BIN="$CHOPI_DIR/.internal/proxy/chopi-smokescreen"
 
-PROXY_PORT=4760
-GITHUB_RELAY_PORT=4761       # the git relay's loopback listener: git-smart-HTTP -> github.com
+# The outgoing proxy's and the GitHub relay's loopback ports: the kernel picks them as chopi-proxy
+# first starts, and a restart takes them again where free (recorded in PROXY_PORTS_FILE.last), and
+# read_proxy_ports reads them from PROXY_PORTS_FILE.
+PROXY_PORT=""
+GITHUB_RELAY_PORT=""         # git-smart-HTTP -> github.com
 
 # The Caddy GitHub-API relay's endpoint. Unlike the git relay (a TCP port), gh reaches this over a
 # unix socket: chopi sets GH_HOST=github.localhost so gh addresses the API as plaintext
 # http://api.github.localhost/... (no CA needed), and gh's http_unix_socket config dials this path
 # instead of resolving that name. The relay therefore sees the cleartext API request and scopes it
-# to the same allowlist as git. Per-user under TMPDIR; chopi.sh opens a Seatbelt hole to this exact
-# path. Computed from the login-canonical TMPDIR -- before the entry scripts repoint TMPDIR to their
-# private self-cleaning dirs -- so chopi-proxy.sh and chopi.sh can share it.
-_gh_tmp="${TMPDIR:-/tmp}"
-GH_RELAY_SOCK="${_gh_tmp%/}/chopi-gh-relay.sock"
-unset _gh_tmp
+# to the same allowlist as git. chopi.sh opens a Seatbelt hole to this exact path.
+#
+# It and the ports file live in PROXY_RUN_DIR, which chopi-proxy.sh and chopi.sh share: run/ under
+# ~/.chopi, which the sandbox can neither read nor write. Not under TMPDIR, which it can write: the
+# ports decide which holes chopi opens, so a sandboxed command that rewrote them would aim the next
+# run's holes, and HTTP_PROXY, at a local service of its choosing. Setting CHOPI_RUN_DIR gives a
+# chopi-proxy, and the chopi runs started under it, a proxy of their own, as the tests do: its run/,
+# which chopi-proxy makes private (make_private_dir), leaving the dir CHOPI_RUN_DIR names as it is.
+# A relative one is taken from where it is given: chopi-proxy moves into chopi's directory and chopi
+# into a worktree, so left relative it would name a different dir for each.
+CHOPI_RUN_DIR="${CHOPI_RUN_DIR:-$HOME/.chopi}"
+case "$CHOPI_RUN_DIR" in
+    /*) ;;
+    *) CHOPI_RUN_DIR="$PWD/$CHOPI_RUN_DIR" ;;
+esac
+PROXY_RUN_DIR="${CHOPI_RUN_DIR%/}/run"
+GH_RELAY_SOCK="$PROXY_RUN_DIR/chopi-gh-relay.sock"
+# Where chopi-proxy reports its ports once it serves, and removes them as it stops.
+PROXY_PORTS_FILE="$PROXY_RUN_DIR/chopi-proxy.ports"
 
 # mktemp name prefixes of chopi's per-invocation temporaries (created under the private
 # TMPDIR); shared so the tests assert on the same names chopi creates.
@@ -240,6 +256,13 @@ overlaps_chopi_dir() {
     overlapping_dirs "$real" "$CHOPI_DIR"
 }
 
+# Does path $1 reach chopi-proxy's run dir, in either direction? Its ports file aims each run's
+# network holes and HTTP_PROXY, so nothing a session can write may reach it.
+overlaps_proxy_run_dir() {
+    arity 1
+    overlapping_dirs "$(realpath_or_self "$1")" "$(realpath_or_self "$PROXY_RUN_DIR")"
+}
+
 # Resolve the GitHub token the relay authenticates with, following gh's own source precedence:
 # GH_TOKEN, then GITHUB_TOKEN, then gh's stored login. A variable that is SET wins over the next
 # source even when EMPTY -- an explicit GH_TOKEN='' (or GITHUB_TOKEN='' when GH_TOKEN is unset) means
@@ -311,9 +334,10 @@ exfiltration_prone_github_allowed_domains() {
     done <<< "$section"
 }
 
+# The git config pairs (key=value lines) routing github git to the git relay on PORT.
 github_relay_git_config() {
-    arity 0
-    local relay="http://127.0.0.1:$GITHUB_RELAY_PORT"
+    arity 1
+    local relay="http://127.0.0.1:$1"
     printf '%s\n' \
         "url.$relay/.insteadOf=https://github.com/" \
         "url.$relay/.insteadOf=git@github.com:" \
@@ -353,6 +377,28 @@ github_relay_gh_env() {
         "GH_TOKEN=x-chopi-relay"
 }
 
+# Write the Seatbelt profile denying the sandboxed command any access to chopi-proxy's run dir
+# RUN_DIR to FILE. Its ports file aims each run's network holes and HTTP_PROXY, so a command that
+# rewrote it would aim the next session's at a local port of its choosing. Preflight keeps the
+# workspace off it, but other grants can cover it too: an --add-dirs path, a safe write target
+# (readable), or a CHOPI_RUN_DIR under a dir safehouse grants, like TMPDIR. Appended after every
+# file grant, so that among matching filtered rules this deny comes last and wins. Its ancestors
+# are pinned so the dir can't be renamed away and replaced. Connecting to the API relay's socket
+# in it is a network operation, which the proxy's network profile allows on its own.
+#
+# usage: write_proxy_run_dir_profile FILE RUN_DIR
+write_proxy_run_dir_profile() {
+    arity 2
+    local file="$1" run_dir
+    run_dir="$(realpath "$2")" \
+        || { echo "chopi: cannot resolve chopi-proxy's run directory '$2'" >&2; return 1; }
+    {
+        echo ";; chopi: chopi-proxy's run dir, whose ports aim the network holes, stays out of reach."
+        rule 'deny file-read* file-write*' subpath "$run_dir"
+        pin_ancestries / "$(dirname "$run_dir")"
+    } >"$file"
+}
+
 # Write the Seatbelt profile re-opening the proxy's endpoints to FILE: network.sb denies every
 # outgoing connection, so these are the only ones the sandboxed command can make -- the smokescreen
 # forward proxy on PORT, the git relay on RELAY_PORT, and the API relay's socket SOCK.
@@ -371,17 +417,17 @@ write_proxy_network_profile() {
     } >"$file"
 }
 
-# Do github remote URLs resolve to the relay under the ambient git config (all scopes, read from
-# the current directory)? The in-sandbox wrapper runs this after exporting chopi's
-# rewrites into the command scope, so it checks exactly the config the sandboxed command will see:
-# a competing insteadOf in an earlier-read scope wins the longest-prefix tie and would divert
-# github git off the relay onto a transport the sandbox blocks.
+# Do github remote URLs resolve to the git relay on PORT under the ambient git config (all
+# scopes, read from the current directory)? The in-sandbox wrapper runs this after exporting
+# chopi's rewrites into the command scope, so it checks exactly the config the sandboxed command
+# will see: a competing insteadOf in an earlier-read scope wins the longest-prefix tie and would
+# divert github git off the relay onto a transport the sandbox blocks.
 #
 # Returns 1 when a github URL resolves elsewhere, and 2 when git itself fails (e.g. the
 # /usr/bin/git stub finding no developer tools it can read), with git's output on stderr.
 is_github_relay_reroute_effective() {
-    arity 0
-    local relay="http://127.0.0.1:$GITHUB_RELAY_PORT"
+    arity 1
+    local relay="http://127.0.0.1:$1"
     local src resolved
     for src in "https://github.com/o/r" "git@github.com:o/r" "ssh://git@github.com/o/r"; do
         resolved="$(git ls-remote --get-url "$src")" || return 2
@@ -402,87 +448,76 @@ sock_has_listener() {
     curl -s -o /dev/null --max-time 2 --unix-socket "$1" http://sock/ 2>/dev/null
 }
 
-# Print the first of the given 127.0.0.1 ports that already has a listener and return 0; print
-# nothing and return 1 when all are free. Callers decide what a busy port means (error vs. skip).
-first_listening_port() {
-    local port
-    for port in "$@"; do
-        if port_has_listener "$port"; then
-            printf '%s' "$port"
-            return 0
-        fi
-    done
-    return 1
+# Set PROXY_PORT and GITHUB_RELAY_PORT from PROXY_PORTS_FILE, one "NAME PORT" line each, as
+# chopi-proxy reports them once it serves. Fails, setting neither, when the file is missing or
+# malformed.
+read_proxy_ports() {
+    arity 0
+    local name port proxy="" relay=""
+    [ -f "$PROXY_PORTS_FILE" ] || return 1
+    while read -r name port; do
+        case "$name" in
+            proxy) proxy="$port" ;;
+            relay) relay="$port" ;;
+        esac
+    done <"$PROXY_PORTS_FILE"
+    [[ "$proxy" =~ ^[0-9]+$ && "$relay" =~ ^[0-9]+$ ]] || return 1
+    PROXY_PORT="$proxy"
+    GITHUB_RELAY_PORT="$relay"
 }
 
-# Print the pids of the processes listening on TCP 127.0.0.1:PORT, one per line. Listeners on other
-# addresses of the port (::1, a LAN address) aren't listed: they don't take 127.0.0.1's connections.
-# Nor, though they may answer there, are ones on the wildcard address or another user's.
-port_listener_pids() {
+# run_chopi_smokescreen RULES RELAY_LOG -- run chopi's proxy and the GitHub relays, on the rules
+# file RULES, with Caddy's config on stdin and its output in RELAY_LOG; the API relay on
+# GH_RELAY_SOCK, and the ports reported in PROXY_PORTS_FILE. It execs, for its PID to be the
+# proxy's: run it in the background.
+run_chopi_smokescreen() {
+    arity 2
+    exec "$SMOKESCREEN_BIN" --relay-log "$2" --gh-sock "$GH_RELAY_SOCK" --ports-file "$PROXY_PORTS_FILE" -- \
+        --config-file "$CHOPI_DIR/.internal/smokescreen-config.yaml" \
+        --egress-acl-file "$1"
+}
+
+# Make dir $1, in an existing parent, a directory only we can reach: created so if missing, else
+# made so, once it is sure to be our own directory, not a link or another user's, as one planted in
+# a shared parent such as /tmp could be.
+make_private_dir() {
     arity 1
-    lsof -nP -t -iTCP@127.0.0.1:"$1" -sTCP:LISTEN 2>/dev/null
-}
-
-# Poll for process PID to be the only listener on 127.0.0.1:PORT (~5s, 50 x 0.1s): a port that
-# merely answers may be another process's, one that took it before PID's bind (or shares it, via
-# SO_REUSEPORT). Returns 0 once PID is, 2 at once, saying so, if another process listens on the
-# port -- even after PID died of it -- and 1 on timeout or if PID exits while the port is free (e.g.
-# a server that dies on a bad config). PID must be the binding process itself, not a parent or
-# wrapper, and must not share its listening socket with children, which lsof would list too: the
-# servers waited on, Caddy and smokescreen, are single-process Go servers that don't. This guards
-# against a race at server start, not against impersonation (see check_listener in preflight.sh for
-# why that can't be proven).
-wait_for_listener() {
-    arity 2
-    local port="$1" pid="$2" owners _
-    for _ in {1..50}; do
-        if port_has_listener "$port"; then
-            owners="$(port_listener_pids "$port")"
-            [ "$owners" = "$pid" ] && return 0
-            # Taken, even if PID already died of it (a server losing its port does, within lsof's
-            # run) -- unless lsof lists nobody and PID died: that was PID's listener, gone with it.
-            [ -z "$owners" ] && ! kill -0 "$pid" 2>/dev/null && return 1
-            echo "error: another process is listening on 127.0.0.1:$port" >&2
-            return 2
-        fi
-        kill -0 "$pid" 2>/dev/null || return 1
-        sleep 0.1
-    done
-    return 1
-}
-
-start_github_relay() {
-    arity 2
-    local caddyfile_text="$1" log="$2"
-    # Fill the socket slot with this process's GH_RELAY_SOCK (see its definition for why the
-    # generator can't), and clear any stale socket a crashed prior run left. A socket that
-    # still answers is a sibling relay that won the port race since the caller's busy-port
-    # check (the two aren't atomic): back off before launching caddy, which would itself
-    # unlink the sibling's socket while dying on the busy port.
-    caddyfile_text="${caddyfile_text//@@CHOPI_GH_SOCK@@/$GH_RELAY_SOCK}"
-    if sock_has_listener "$GH_RELAY_SOCK"; then
-        echo "error: a running GitHub API relay already owns $GH_RELAY_SOCK" >&2
+    local dir="$1"
+    mkdir -m 700 "$dir" 2>/dev/null || true
+    if [ -L "$dir" ] || [ ! -d "$dir" ]; then
+        echo "error: $dir is not a directory" >&2
         return 1
     fi
-    rm -f "$GH_RELAY_SOCK"
-    # Feed the config to Caddy over a pipe (--config -): printf is a builtin, so the baked GitHub
-    # token doesn't appear in any process's argv.
-    printf '%s' "$caddyfile_text" | caddy run --adapter caddyfile --config - > "$log" 2>&1 &
-    CADDY_PID=$!
-    wait_for_listener "$GITHUB_RELAY_PORT" "$CADDY_PID"
+    if [ "$(stat -f %u "$dir")" != "$(id -u)" ]; then
+        echo "error: $dir belongs to another user" >&2
+        return 1
+    fi
+    chmod 700 "$dir"
 }
 
-# TODO: Here for testability, but awkward in util.sh
-# Watch process MAIN_PID from the background; once it exits, kill CADDY_PID and remove TMPDIR
-# and GH_SOCK. chopi-proxy execs smokescreen over itself, losing its EXIT trap, so this reaper is
-# what takes Caddy and its leftovers down with it. INT, TERM and HUP are ignored: a Ctrl-C or a
-# closing terminal terminate smokescreen, and the reaper must outlive it to clean up; Caddy
-# ignores HUP, so if the reaper dies on it, Caddy would be left orphaned holding the relay port.
-start_relay_reaper() {
-    arity 4
-    local main_pid="$1" caddy_pid="$2" tmpdir="$3" gh_sock="$4"
-    ( trap '' INT TERM HUP
-      while kill -0 "$main_pid" 2>/dev/null; do sleep 0.2; done
-      kill "$caddy_pid" 2>/dev/null || true
-      rm -rf "$tmpdir" "$gh_sock" ) &
+# Run COMMAND in the background, in a process group of its own, and once it exits -- however it
+# exits, a SIGKILL or a crash included -- TERM the rest of that group and exit with its status.
+# This keeps COMMAND's helpers (Caddy) from outliving it, while leaving our caller's group alone.
+# A stop signal sent to us is passed on to COMMAND as a TERM, so it stops as it would have stopped
+# itself; out of the terminal's foreground group, COMMAND gets no Ctrl-C of its own beside that.
+#
+# usage: lead_group COMMAND [ARGS...]
+lead_group() {
+    local pid status
+    set -m
+    # Given our stdin explicitly: bash otherwise gives a background command /dev/null for it.
+    "$@" <&0 &
+    pid=$!
+    set +m
+    # A trapped signal cuts the wait short, so wait again until COMMAND is gone.
+    trap 'kill -TERM "$pid" 2>/dev/null' TERM HUP INT
+    while :; do
+        status=0
+        wait "$pid" || status=$?
+        kill -0 "$pid" 2>/dev/null || break
+    done
+    trap '' TERM HUP INT
+    # The group outlives COMMAND, its ID with it, for as long as a helper of COMMAND's is in it.
+    kill -TERM -- "-$pid" 2>/dev/null
+    exit "$status"
 }

@@ -95,6 +95,17 @@ assert_nonzero() {
     fi
 }
 
+# assert_pid_exits PID MSG -- assert PID exits within ~3s, killing it if not, so a failure leaves no
+# stray behind.
+assert_pid_exits() {
+    arity 2
+    local _ st
+    for _ in {1..30}; do kill -0 "$1" 2>/dev/null || break; sleep 0.1; done
+    kill -0 "$1" 2>/dev/null; st=$?
+    assert_nonzero "$st" "$2"
+    [ "$st" -ne 0 ] || kill "$1"
+}
+
 # assert_absent PATH DESC -- nothing exists at PATH (a denied write left no trace)
 assert_absent() {
     arity 2
@@ -242,3 +253,16 @@ summary() {
 
 # git >= 2.38 refuses file-protocol submodules by default; allow for test
 export allow_git_file_protocol=(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always)
+
+# wait_for_proxy_ports PID -- wait (~30s) for the chopi-proxy PID to report its ports, setting them
+# as read_proxy_ports does; fails if it exits first.
+wait_for_proxy_ports() {
+    arity 1
+    local _
+    for _ in {1..300}; do
+        read_proxy_ports && return 0
+        kill -0 "$1" 2>/dev/null || return 1
+        sleep 0.1
+    done
+    return 1
+}

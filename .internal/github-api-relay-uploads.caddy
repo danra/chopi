@@ -6,7 +6,7 @@
 # The upload path names /repos/{owner}/{repo}, so the credential is scoped by the same
 # path-allowlist as the standard API site.
 http://uploads.github.com {
-	bind "unix/@@CHOPI_GH_SOCK@@"
+	bind fd/{$CHOPI_GH_FD}
 
 	@uploads_allowed path_regexp (?i)^/repos/(@@ALLOWLIST_REGEX@@)(/.*)?$
 	handle @uploads_allowed {

@@ -18,10 +18,13 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
-# A private TMPDIR, exported so the scripts under test leave their temporaries here too. Created
-# before sourcing util.sh, which derives GH_RELAY_SOCK from it; trap it now so an early skip still
-# cleans up (the rest of the fixtures, and the fuller trap, come after the skip guards below).
+# A private TMPDIR, exported so the scripts under test leave their temporaries here too. It is the
+# CHOPI_RUN_DIR too, set before sourcing util.sh, which derives GH_RELAY_SOCK and PROXY_PORTS_FILE
+# from it, so the proxy this test starts, and the chopi runs it starts, are its own, whatever
+# chopi-proxy may be running beside it; trap it now so an early skip still cleans up (the rest of
+# the fixtures, and the fuller trap, come after the skip guards below).
 TMPDIR="$(mktemp -d)"; export TMPDIR
+CHOPI_RUN_DIR="$TMPDIR"; export CHOPI_RUN_DIR
 trap 'rm -rf "$TMPDIR"' EXIT
 
 . "$repo/.internal/util.sh"
@@ -46,9 +49,6 @@ for t in safehouse jq alerter nc caddy git gh; do
 done
 # The proxy binary is invoked by absolute path (it isn't on PATH); mirror chopi-proxy.sh's check.
 [ -x "$SMOKESCREEN_BIN" ] || skip "proxy binary not built at $SMOKESCREEN_BIN (run: make build)"
-if busy_port="$(first_listening_port "$PROXY_PORT" "$GITHUB_RELAY_PORT")"; then
-    skip "port $busy_port is already in use -- stop your running chopi-proxy first"
-fi
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +61,7 @@ fi
 # ---------------------------------------------------------------------------
 vartmp="$(cd /var/tmp && pwd -P)" || { echo "error: cannot resolve /var/tmp" >&2; exit 1; }
 base="$(mktemp -d "$vartmp/chopi-itest.XXXXXX")" || { echo "error: mktemp failed" >&2; exit 1; }
-trap 'if [ -n "${proxy_pid:-}" ]; then kill "$proxy_pid" 2>/dev/null || true; wait "$proxy_pid" 2>/dev/null || true; fi; rm -rf "$base" "$TMPDIR"' EXIT
+trap 'if [ -n "${proxy_pid:-}" ]; then stop_proxy "$proxy_pid"; fi; rm -rf "$base" "$TMPDIR"' EXIT
 
 ws="$base/workspace"            # the sandbox workspace (read/write granted, as the workdir)
 outside="$base/outside"         # sibling of the workspace -> reliably denied
@@ -161,8 +161,25 @@ wait_for() {
     wait_for_count "$f" "$pat" 1
 }
 
+# start_proxy LOG ARGS... -- start chopi-proxy with ARGS in the background, logging to LOG; $! is
+# its PID. It starts as a terminal starts it, in a process group of its own (set -m): without job
+# control, bash starts a background command with INT ignored, past any trap's reach.
+start_proxy() {
+    local log="$1"; shift
+    set -m
+    "$repo/bin/chopi-proxy.sh" "$@" > "$log" 2>&1 &
+    set +m
+}
+
+# stop_proxy PID -- stop the chopi-proxy PID as a Ctrl-C would: an INT to its whole process group.
+stop_proxy() {
+    arity 1
+    kill -INT -- "-$1" 2>/dev/null || true
+    wait "$1" 2>/dev/null || true
+}
+
 # Poll ~5s for child PID to exit and reap it: returns 0 with its exit status in
-# WAIT_FOR_EXIT_RC. On timeout kills PID, reaps it, and returns 1.
+# WAIT_FOR_EXIT_RC. On timeout stops PID's process group, reaps it, and returns 1.
 wait_for_exit() {
     arity 1
     local pid="$1" _
@@ -174,20 +191,24 @@ wait_for_exit() {
         fi
         sleep 0.1
     done
-    kill "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
+    stop_proxy "$pid"
     return 1
 }
 
-# assert_no_listeners STAGE -- a refused chopi-proxy start must exit before binding anything:
-# assert both proxy ports are free ("refused before STAGE").
-assert_no_listeners() {
+# proxy_left_traces -- whether a stopped chopi-proxy left its ports file or API relay socket behind.
+proxy_left_traces() {
+    [ -e "$PROXY_PORTS_FILE" ] || [ -e "$GH_RELAY_SOCK" ]
+}
+
+# assert_no_traces STAGE -- a refused chopi-proxy start must exit before binding anything:
+# assert it reported no ports and left no API relay socket ("refused before STAGE").
+assert_no_traces() {
     arity 1
     local stage="$1"
-    if first_listening_port "$PROXY_PORT" "$GITHUB_RELAY_PORT" >/dev/null; then
-        bad "  -> but a port stayed bound (it must refuse before $stage)"
+    if proxy_left_traces; then
+        bad "  -> but it reported ports or left its socket (it must refuse before $stage)"
     else
-        ok  "  -> and neither port was bound (refused before $stage)"
+        ok  "  -> and it reported no ports, nor left its socket (refused before $stage)"
     fi
 }
 
@@ -199,7 +220,7 @@ nonempty_github_allow="$base/config/itest-github-allowlist-nonempty"
 printf 'soundradix/*\n' > "$nonempty_github_allow"
 refuse_log="$base/refuse.log"
 
-GH_TOKEN='' "$repo/bin/chopi-proxy.sh" --rules "$rules" --github-allowlist "$nonempty_github_allow" > "$refuse_log" 2>&1 &
+GH_TOKEN='' start_proxy "$refuse_log" --rules "$rules" --github-allowlist "$nonempty_github_allow"
 refuse_pid=$!
 
 if ! wait_for_exit "$refuse_pid"; then
@@ -207,7 +228,7 @@ if ! wait_for_exit "$refuse_pid"; then
 else
     assert_nonzero  "$WAIT_FOR_EXIT_RC" "chopi-proxy refuses a populated allowlist with no token"
     assert_contains "$(cat "$refuse_log")" "no GitHub token is set" "  -> and logs the reason"
-    assert_no_listeners "starting Caddy"
+    assert_no_traces "starting Caddy"
 fi
 
 
@@ -230,7 +251,7 @@ exfil_github_allow="$base/config/itest-github-allowlist-exfil"
 : > "$exfil_github_allow"
 exfil_log="$base/exfil-refuse.log"
 
-"$repo/bin/chopi-proxy.sh" --rules "$exfil_rules" --github-allowlist "$exfil_github_allow" > "$exfil_log" 2>&1 &
+start_proxy "$exfil_log" --rules "$exfil_rules" --github-allowlist "$exfil_github_allow"
 exfil_pid=$!
 
 if ! wait_for_exit "$exfil_pid"; then
@@ -242,15 +263,16 @@ else
     assert_contains "$(cat "$exfil_log")" "proxy-rules.template.yaml"   "  -> and directs to the current template"
     assert_contains "$(cat "$exfil_log")" "global_deny_list"            "  -> or to moving the domains to the denylist"
     assert_contains "$(cat "$exfil_log")" "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY" "  -> and names the override"
-    assert_no_listeners "starting anything"
+    assert_no_traces "starting anything"
 fi
 
 # The override: the same rules only warn with CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1,
 # and the proxy comes up.
 override_log="$base/exfil-override.log"
-CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1 "$repo/bin/chopi-proxy.sh" --rules "$exfil_rules" --github-allowlist "$exfil_github_allow" > "$override_log" 2>&1 &
+CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1 start_proxy "$override_log" \
+    --rules "$exfil_rules" --github-allowlist "$exfil_github_allow"
 override_pid=$!
-if wait_for_listener "$PROXY_PORT" "$override_pid"; then
+if wait_for_proxy_ports "$override_pid"; then
     ok "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1 lets the proxy start"
     assert_contains "$(cat "$override_log")" "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY is set" \
         "  -> with the refusal downgraded to a warning"
@@ -258,13 +280,36 @@ else
     bad "the proxy did not come up with CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1"
     sed 's/^/  /' "$override_log" >&2 || true
 fi
-kill "$override_pid" 2>/dev/null || true
-wait "$override_pid" 2>/dev/null || true
-# Free the ports for the real proxy below (Caddy exits ~0.2s after smokescreen).
-for _ in {1..50}; do
-    first_listening_port "$PROXY_PORT" "$GITHUB_RELAY_PORT" >/dev/null || break
-    sleep 0.1
-done
+stop_proxy "$override_pid"
+
+
+# ---------------------------------------------------------------------------
+echo "a chopi-smokescreen that dies without its cleanup (a SIGKILL) leaves no ports behind"
+# ---------------------------------------------------------------------------
+# Left behind, the ports would send the next chopi session to whatever later took them.
+killed_log="$base/killed.log"
+start_proxy "$killed_log" --rules "$rules" --github-allowlist "$exfil_github_allow"
+killed_pid=$!
+if wait_for_proxy_ports "$killed_pid"; then
+    # By its command line: the process name macOS matches -x against is cut to 16 characters.
+    if ! pkill -KILL -P "$killed_pid" -f "^$SMOKESCREEN_BIN "; then
+        bad "found no chopi-smokescreen under chopi-proxy to kill"
+        stop_proxy "$killed_pid"
+    elif ! wait_for_exit "$killed_pid"; then
+        bad "chopi-proxy kept running after chopi-smokescreen was killed"
+    else
+        assert_nonzero "$WAIT_FOR_EXIT_RC" "chopi-proxy fails when chopi-smokescreen is killed"
+        if proxy_left_traces; then
+            bad "  -> but it left the ports file or the API relay socket behind"
+        else
+            ok  "  -> and removes the ports file and the API relay socket"
+        fi
+    fi
+else
+    bad "the proxy did not come up for the SIGKILL test"
+    sed 's/^/  /' "$killed_log" >&2 || true
+    stop_proxy "$killed_pid"
+fi
 
 
 # ---------------------------------------------------------------------------
@@ -276,11 +321,11 @@ empty_github_allow="$base/config/itest-github-allowlist-empty"
 : > "$empty_github_allow"
 
 # The stub alerter goes first on the proxy's PATH; jq/nc/etc. stay reachable via the rest.
-PATH="$alerter_stub:$PATH" "$repo/bin/chopi-proxy.sh" --rules "$rules" --github-allowlist "$empty_github_allow" > "$proxy_log" 2>&1 &
+PATH="$alerter_stub:$PATH" start_proxy "$proxy_log" --rules "$rules" --github-allowlist "$empty_github_allow"
 proxy_pid=$!
 
-if ! wait_for_listener "$PROXY_PORT" "$proxy_pid"; then
-    echo "error: the test proxy did not come up on 127.0.0.1:$PROXY_PORT" >&2
+if ! wait_for_proxy_ports "$proxy_pid"; then
+    echo "error: the test proxy did not come up, reporting its ports in $PROXY_PORTS_FILE" >&2
     echo "--- proxy.log ---" >&2; cat "$proxy_log" >&2
     exit 1
 fi
@@ -362,6 +407,27 @@ assert_absent "$outside/evil.txt" "write OUTSIDE the workspace is denied (no fil
 out="$(chopi_t /bin/sh -c "cat '$repo/.internal/preflight.sh' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_not_contains "$out" "preflight"             "read of chopi's OWN dir is denied (config stays out of reach)"
 assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
+
+# The ports file aims the next run's network holes and HTTP_PROXY. Here the run dir sits under
+# TMPDIR, which safehouse grants, and the config below grants it outright: chopi's deny must
+# still win, or a sandboxed command could aim the next session's proxy at a port of its choosing.
+cfg_run_dir="$base/config/sandbox-run-dir.sh"
+cat > "$cfg_run_dir" <<EOF
+CHOPI_SAFEHOUSE_FLAGS=( --add-dirs "$PROXY_RUN_DIR" )
+CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
+EOF
+ports_before="$(cat "$PROXY_PORTS_FILE")"
+out="$( ( cd "$ws" && "$repo/bin/chopi" --config "$cfg_run_dir" -- /bin/sh -c "
+    cat '$PROXY_PORTS_FILE' >/dev/null 2>&1 && echo READ_OK || echo READ_FAIL
+    (echo 1 > '$PROXY_PORTS_FILE') 2>/dev/null && echo WRITE_OK || echo WRITE_FAIL
+    (echo 1 > '$PROXY_RUN_DIR/new') 2>/dev/null && echo CREATE_OK || echo CREATE_FAIL
+    mv '$PROXY_RUN_DIR' '$PROXY_RUN_DIR.moved' 2>/dev/null && echo MOVE_OK || echo MOVE_FAIL
+" ) 2>/dev/null )"
+assert_contains "$out" "READ_FAIL"   "the proxy's run dir is unreadable, even under a grant covering it"
+assert_contains "$out" "WRITE_FAIL"  "  -> its ports file can't be rewritten"
+assert_contains "$out" "CREATE_FAIL" "  -> nothing can be created in it"
+assert_contains "$out" "MOVE_FAIL"   "  -> and it can't be renamed away"
+assert_eq "$(cat "$PROXY_PORTS_FILE")" "$ports_before" "  -> the ports file is as the proxy wrote it"
 
 
 # ---------------------------------------------------------------------------
@@ -724,11 +790,13 @@ assert_contains "$api_deny" 'not an allowed API operation' "  -> gh reached the 
 assert_contains "$api_deny" 'HTTP 403'                     "  -> as the relay's own 403"
 
 # (6) Conversely, chopi refuses upfront when no relay socket is present at the path it derives from
-# TMPDIR.
-no_sock_tmp="$(mktemp -d "$base/chopi-no-sock.XXXXXX")"
-refuse_out="$(TMPDIR="$no_sock_tmp" chopi_t /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+# CHOPI_RUN_DIR -- though the ports file there, the test proxy's, names ports that serve.
+no_sock_dir="$(mktemp -d "$base/chopi-no-sock.XXXXXX")"
+mkdir -m 700 "$no_sock_dir/run"
+cp "$PROXY_PORTS_FILE" "$no_sock_dir/run/$(basename "$PROXY_PORTS_FILE")"
+refuse_out="$(CHOPI_RUN_DIR="$no_sock_dir" chopi_t /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
 assert_nonzero     "$rc"         "chopi refuses when the GitHub API relay socket is absent"
-assert_contains    "$refuse_out" "no GitHub API relay listening at $no_sock_tmp/chopi-gh-relay.sock" \
+assert_contains    "$refuse_out" "no GitHub API relay listening at $no_sock_dir/run/chopi-gh-relay.sock" \
     "  -> the refusal names the missing relay socket"
 assert_not_contains "$refuse_out" "RAN"                "  -> the sandboxed command never runs"
 

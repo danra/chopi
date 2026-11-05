@@ -213,7 +213,7 @@ main() {
     local relay_pair
     while IFS= read -r relay_pair; do
         CHOPI_GIT_CONFIG+=("$relay_pair")
-    done < <(github_relay_git_config)
+    done < <(github_relay_git_config "$GITHUB_RELAY_PORT")
 
     local cleanup_script_path="$CHOPI_DIR/.internal/git-protect-cleanup.sh"
     local wrapper_cmd=("$cmd_alias" "$cleanup_script_path")
@@ -257,6 +257,11 @@ main() {
     write_proxy_network_profile "$proxy_net_profile" "$PROXY_PORT" "$GITHUB_RELAY_PORT" "$GH_RELAY_SOCK" \
         || return 1
 
+    local run_dir_profile
+    run_dir_profile="$(mktemp "$TMPDIR/chopi-proxy-run-dir.XXXXXX")" \
+        || { echo "chopi: could not create a temp file for the proxy run-dir profile" >&2; return 1; }
+    write_proxy_run_dir_profile "$run_dir_profile" "$PROXY_RUN_DIR" || return 1
+
     local proxy="http://127.0.0.1:$PROXY_PORT"
 
     if [ -n "$worktree_dir" ]; then
@@ -265,7 +270,8 @@ main() {
 
     # chopi's network profiles are always appended last so that (deny network*) lands after
     # safehouse's own profile, pinning outgoing traffic to the subsequent holes allowed for the proxy
-    # and the GitHub relay servers.
+    # and the GitHub relay servers. The run-dir profile goes just before them, after every file
+    # grant, so its deny outranks them all.
     #
     # errexit off around safehouse so a non-zero exit from the sandboxed command is captured
     # and propagated (so `chopi cmd && next` short-circuits) instead of aborting here.
@@ -277,12 +283,14 @@ main() {
         "${context_flags[@]+"${context_flags[@]}"}" \
         "${protection_flags[@]}" \
         "${wrapper_flags[@]}" \
+        --append-profile "$run_dir_profile" \
         --append-profile "$CHOPI_DIR/.internal/network.sb" \
         --append-profile "$proxy_net_profile" \
         -- \
         "${CHOPI_EXTRA_ENV[@]+"${CHOPI_EXTRA_ENV[@]}"}" \
         "${queue_env[@]+"${queue_env[@]}"}" \
         CHOPI_DIR="$CHOPI_DIR" \
+        CHOPI_GITHUB_RELAY_PORT="$GITHUB_RELAY_PORT" \
         HTTP_PROXY="$proxy"  HTTPS_PROXY="$proxy" \
         http_proxy="$proxy"  https_proxy="$proxy" \
         NODE_USE_ENV_PROXY=1 \

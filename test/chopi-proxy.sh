@@ -12,7 +12,7 @@ BEL="$(printf '\007')"   # U+0007 BEL: format-deny.jq prefixes an interactive DE
 ESC="$(printf '\033')"   # U+001B ANSI escape: introduces the DENY color code
 set +euo pipefail
 
-header "test/chopi-proxy.sh -- unit tests for bin/chopi-proxy.sh's log logic + network holes + github migration refusal + relay reaper + listener ownership"
+header "test/chopi-proxy.sh -- unit tests for bin/chopi-proxy.sh's log logic + network holes + github migration refusal"
 
 # Exported so the scripts under test leave their temporaries here too.
 TMPDIR="$(mktemp -d)"; export TMPDIR
@@ -427,63 +427,19 @@ assert_eq "$net_rules" '(allow network-outbound (remote ip "localhost:24760"))
 
 
 # ---------------------------------------------------------------------------
-echo "relay reaper (caddy must not outlive smokescreen -- terminal hangup included)"
+echo "the proxy's run dir is out of the sandbox's reach, whatever else is granted"
 # ---------------------------------------------------------------------------
-# A closing terminal (window closed, multiplexer restarted) HUPs the whole foreground
-# process group: smokescreen dies of it, but Caddy ignores HUP by design, so the reaper is
-# the only thing left to take Caddy down -- if the same HUP kills the reaper, the orphaned
-# Caddy keeps the relay port bound and blocks every later chopi-proxy start. Stand-ins:
-# a `sleep` each for smokescreen (killed explicitly, as the HUP would) and for Caddy
-# (sent nothing, as ignoring the HUP).
-sleep 30 & fake_main=$!
-sleep 30 & fake_caddy=$!
-reaper_tmpdir="$TMPDIR/reaper-tmpdir"; mkdir "$reaper_tmpdir"
-reaper_sock="$TMPDIR/reaper-sock"; : > "$reaper_sock"
-start_relay_reaper "$fake_main" "$fake_caddy" "$reaper_tmpdir" "$reaper_sock"
-reaper=$!
-
-sleep 0.3   # give the reaper time to install its signal traps
-kill -HUP "$reaper" 2>/dev/null
-sleep 0.3
-kill -0 "$reaper" 2>/dev/null
-assert_zero $? "the reaper survives the terminal's HUP"
-kill -0 "$fake_caddy" 2>/dev/null
-assert_zero $? "caddy is left alone while smokescreen lives"
-
-kill "$fake_main" 2>/dev/null; wait "$fake_main" 2>/dev/null
-# The reaper exits right after the kill and the rm -- or is already dead, the failing case.
-for _ in {1..30}; do kill -0 "$reaper" 2>/dev/null || break; sleep 0.1; done
-kill -0 "$fake_caddy" 2>/dev/null
-assert_nonzero $? "caddy is killed once smokescreen is gone"
-assert_absent "$reaper_tmpdir" "the proxy's temp dir is removed"
-assert_absent "$reaper_sock"   "the GitHub API relay socket is removed"
-
-kill "$fake_main" "$fake_caddy" "$reaper" 2>/dev/null   # strays, if any assertion failed
-
-
-# ---------------------------------------------------------------------------
-echo "listener ownership (a server's port taken by another process is not the server up)"
-# ---------------------------------------------------------------------------
-# Another process can take a port between chopi-proxy's busy-port check and Caddy's bind, and
-# Caddy then dies on it: its port answering must not count as Caddy up. Stand-ins: `nc -lk`
-# for the other process (-k: it keeps listening past wait_for_listener's probes), `sleep` for
-# the server that never got the port, and an exited `true` for one already dead of it.
-own_port=4769
-if port_has_listener "$own_port"; then
-    echo "  SKIP: port $own_port is already in use"
-else
-    nc -lk 127.0.0.1 "$own_port" & listener=$!
-    nc -lk ::1 "$own_port" & other_addr=$!
-    sleep 30 & server=$!
-    true & dead=$!; wait "$dead"
-    wait_for_listener "$own_port" "$listener"
-    assert_eq "$?" 0 "the port's own listener -> up, a listener on another address notwithstanding"
-    wait_for_listener "$own_port" "$server" 2>/dev/null
-    assert_eq "$?" 2 "a port held by another process -> reported as such, not as the server up"
-    wait_for_listener "$own_port" "$dead" 2>/dev/null
-    assert_eq "$?" 2 "  -> even once the server died of it"
-    kill "$listener" "$other_addr" "$server" 2>/dev/null
-fi
+run_dir_t="$TMPDIR/home dir/.chopi/run"
+mkdir -p "$run_dir_t"
+write_proxy_run_dir_profile "$TMPDIR/run-dir.sb" "$run_dir_t"
+run_dir_rules="$(grep -v '^;' "$TMPDIR/run-dir.sb")"
+run_dir_real="$(realpath "$run_dir_t")"
+assert_contains "$run_dir_rules" '(deny file-read* file-write* (subpath "'"$run_dir_real"'"))' \
+    "the profile denies reading and writing the run dir, by its canonical path"
+assert_contains "$run_dir_rules" '(deny file-write* (literal "'"$(dirname "$run_dir_real")"'"))' \
+    "  -> and pins its ancestors, so it can't be renamed away and replaced"
+assert_not_contains "$run_dir_rules" '(literal "/")' \
+    "  -> up to, not including, the root"
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +455,43 @@ for opt in --rules --github-allowlist; do
     assert_nonzero "$st" "$opt with an empty value is refused"
     assert_contains "$out" "$opt requires" "  -> naming the option, not falling back to the default file"
 done
+
+
+# ---------------------------------------------------------------------------
+echo "make_private_dir (the run dir holding the token-bearing socket is ours alone)"
+# ---------------------------------------------------------------------------
+perms() { stat -f %Lp "$1"; }
+priv="$TMPDIR/private"
+make_private_dir "$priv"; st=$?
+assert_zero "$st" "a missing dir is created"
+assert_eq "$(perms "$priv")" "700" "  -> private"
+chmod 755 "$priv"
+make_private_dir "$priv"; st=$?
+assert_zero "$st" "an existing dir of ours is accepted"
+assert_eq "$(perms "$priv")" "700" "  -> and made private"
+mkdir -m 755 "$TMPDIR/link-target"
+ln -s "$TMPDIR/link-target" "$TMPDIR/link"
+out="$(make_private_dir "$TMPDIR/link" 2>&1)"; st=$?
+assert_nonzero "$st" "a symlink is refused"
+assert_contains "$out" "not a directory" "  -> as not a directory"
+assert_eq "$(perms "$TMPDIR/link-target")" "755" "  -> leaving what it points to as it was"
+touch "$TMPDIR/plain-file"
+out="$(make_private_dir "$TMPDIR/plain-file" 2>&1)"; st=$?
+assert_nonzero "$st" "a file is refused"
+out="$(make_private_dir /usr 2>&1)"; st=$?
+assert_nonzero "$st" "another user's dir is refused"
+assert_contains "$out" "another user" "  -> naming why"
+
+
+# ---------------------------------------------------------------------------
+echo "process group (chopi-proxy runs in its caller's)"
+# ---------------------------------------------------------------------------
+# A missing rules file ends any run that gets past startup's checks, with nothing started. Run
+# from this script, which has no job control, chopi-proxy shares the script's process group, as
+# under nohup, a pipe, or a service manager.
+no_rules="$TMPDIR/no-such-rules.yaml"
+out="$("$repo/bin/chopi-proxy.sh" --rules "$no_rules" 2>&1)"
+assert_contains "$out" "$no_rules" "chopi-proxy runs in its caller's process group"
 
 
 # ---------------------------------------------------------------------------

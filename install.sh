@@ -86,8 +86,8 @@ if [ -n "$uninstall" ]; then
     exit 0
 fi
 
-if busy_port="$(first_listening_port "$PROXY_PORT" "$GITHUB_RELAY_PORT")"; then
-    echo "error: chopi-proxy (or something else) is currently running and listening on port $busy_port." >&2
+if sock_has_listener "$GH_RELAY_SOCK"; then
+    echo "error: chopi-proxy is currently running (its GitHub API relay answers at $GH_RELAY_SOCK)." >&2
     echo "Shut it down, then re-run this script." >&2
     exit 1
 fi
@@ -125,6 +125,31 @@ ensure_brew caddy     caddy
 # A brew install in this same run may have added go to a bin dir that bash has
 # already cached as "not found"; clear the cache before relying on `go` below.
 hash -r 2>/dev/null || true
+
+# The GitHub relay's Caddyfile binds to inherited sockets (`bind fd/N`), which Caddy
+# only supports from 2.9 on; an older one fails at startup with a bare parse error.
+caddy_is_recent() {
+    arity 0
+    local version major minor
+    version="$(caddy version 2>/dev/null | sed -nE '1s/^v?([0-9]+)\.([0-9]+).*/\1 \2/p')"
+    [ -n "$version" ] || return 1
+    read -r major minor <<<"$version"
+    [ "$major" -gt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -ge 9 ]; }
+}
+
+if ! caddy_is_recent; then
+    if brew list --formula caddy >/dev/null 2>&1; then
+        echo "  upgrading caddy: chopi needs 2.9 or later  (brew upgrade caddy)"
+        trace_on; brew upgrade caddy; trace_off
+        hash -r 2>/dev/null || true
+    fi
+    if ! caddy_is_recent; then
+        echo "error: chopi needs Caddy 2.9 or later, but $(command -v caddy) is" \
+            "$(caddy version 2>/dev/null | head -n1 || echo "of unknown version")." >&2
+        echo "Upgrade it (or put a newer caddy first on PATH), then re-run this script." >&2
+        exit 1
+    fi
+fi
 
 if command -v go >/dev/null 2>&1; then
     echo "  building chopi-smokescreen"
