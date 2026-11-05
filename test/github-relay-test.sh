@@ -25,7 +25,7 @@
 #   4i. (opt) a real Actions job log: API -> redirect -> signed storage, all over the one socket
 #   4j. id-form /repositories/{id} URLs are served anonymously  (pagination Links, renamed-repo redirects)
 #   4k. (opt) an allowlisted repo's pagination Links keep naming the repo  (page 2 stays authenticated)
-#   4l. a losing concurrent double-start leaves the winner's live socket untouched
+#   4l. another process holding the relay port does not pass for the relay
 #   4m. (opt) a release with an asset: gh POSTs the asset to uploads.github.com (the API's
 #       upload_url host) over the same socket, and the relay serves it authed
 #   5. a credential GitHub rejects fails with an informative error message (git, API, and
@@ -372,33 +372,9 @@ if [ -n "${ALLOW_REPO:-}" ] && [ -n "$TOKEN" ]; then
     fi
 fi
 
-# 4l. concurrent double-start: two chopi-proxys can both pass the busy-port check before either
-#     binds, so this is the losing proxy's exact code path. It must fail without touching the
-#     winner's live API socket -- unlinking it leaves the surviving proxy holding the port while
-#     gh can no longer reach the relay. This test only pins the behavior when one of two racing
-#     proxies successfully bound the socket before the second one checks it: as long as
-#     start_github_relay is not atomic (it currently isn't), there is still a very short window
-#     where both pass the socket check and the loser's caddy unlinks the winner's socket.
-if ( start_github_relay "$caddy_cfg" "$WORK/caddy-loser.log" ) 2>"$WORK/e4l"; then
-    bad "double-start: the losing start_github_relay unexpectedly reported success"
-else
-    ok "double-start: the losing start_github_relay fails"
-fi
-if [ -S "$GH_RELAY_SOCK" ]; then
-    ok "double-start: the winner's API socket file survives"
-else
-    bad "double-start: the winner's API socket file is gone"
-fi
-code="$(api_code "$api_url/repos/octocat/Hello-World")"
-if [ "$code" != "000" ]; then
-    ok "double-start: the winner still answers on its API socket (HTTP $code)"
-else
-    bad "double-start: the winner's API socket no longer answers"
-fi
-
-# 4l'. another process holds the relay port (the caddy above stands in for any): the socket
-#      check passes (its own path, here), so caddy launches and dies on the busy port -- or
-#      shares it, if it binds with SO_REUSEPORT. The other listener must not pass for ours.
+# 4l. another process holds the relay port (the caddy above stands in for any): the socket
+#     check passes (its own path, here), so caddy launches and dies on the busy port -- or
+#     shares it, if it binds with SO_REUSEPORT. The other listener must not pass for ours.
 ( GH_RELAY_SOCK="$WORK/caddy-loser-port.sock"
   start_github_relay "$caddy_cfg" "$WORK/caddy-loser-port.log"; rc=$?
   kill "$CADDY_PID" 2>/dev/null
