@@ -172,9 +172,19 @@ format_smokescreen_log() {
     # A Ctrl-C reaches this formatter too. It ignores it, and stop signals generally, and finishes
     # on its own instead, once chopi-smokescreen's output ends, so its last words still show.
     trap '' INT TERM HUP
+    # A formatter that fails takes the rest of the output with it, while the proxy keeps serving:
+    # the output says so where it ends, rather than just going quiet.
+    trap 'report_formatter_failure $?' EXIT
     local is_interactive=false
     [ -t 1 ] && is_interactive=true
     classify_log "$is_interactive" "$SCRIPT_NAME" notify_deny notify_reload "$VERBOSE"
+}
+
+report_formatter_failure() {
+    arity 1
+    [ "$1" -eq 0 ] && return
+    echo "[$SCRIPT_NAME] BUG: the log formatter failed (status $1); the proxy keeps serving," \
+         "but shows nothing more, and notifies of no more denials"
 }
 
 notify_deny() {
