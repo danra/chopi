@@ -541,3 +541,29 @@ lead_group() {
     kill -TERM -- "-$pid" 2>/dev/null || :
     exit "$status"
 }
+
+# Pop a macOS banner with SUBTITLE and MESSAGE, in the background, replacing the last one in
+# GROUP -- so each kind of banner gets its own GROUP, lest a frequent kind (denials) bury a rare
+# one. A click on it brings the proxy's terminal to focus.
+#
+# usage: notify GROUP SUBTITLE MESSAGE
+notify() {
+    arity 3
+    local group="$1" subtitle="$2" message="$3"
+
+    # macOS sets __CFBundleIdentifier to the terminal's bundle id; use it to bring the
+    # proxy's terminal to focus if the notification is clicked.
+    local term_bundle="${__CFBundleIdentifier:-}"
+
+    {
+        result=$(alerter --title 'Chopi' \
+                         --subtitle "$subtitle" \
+                         --message "$message" \
+                         --group "$group" \
+                         --timeout 10 2>/dev/null || true)
+        case "$result" in
+            @TIMEOUT | @CLOSED | '') ;;
+            *) [ -z "$term_bundle" ] || open -b "$term_bundle" >/dev/null 2>&1 || true ;;
+        esac
+    } &
+}
