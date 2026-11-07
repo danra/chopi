@@ -56,45 +56,71 @@ func loadRules(conf *smokescreen.Config, path string) (*acl.ACL, error) {
 	return acl.New(conf.Log, acl.NewYAMLLoader(path), conf.DisabledAclPolicyActions)
 }
 
-func logRulesError(rulesLogEntry *logrus.Entry, err error) {
-	rulesLogEntry.WithError(err).Error("egress ACL reload failed; keeping the previous rules")
-}
+// The log messages of the rules' reload, its failure keeping the previous rules. The formatter
+// (.internal/format-reload.jq, .internal/classify-log.sh) matches them; keep them in sync.
+const (
+	rulesReloaded     = "egress ACL reloaded"
+	rulesReloadFailed = "egress ACL reload failed; keeping the previous rules"
+)
 
 func reloadIfChanged(conf *smokescreen.Config, holder *swappableACL, path string, lastMod time.Time, warned bool) (newLastMod time.Time, newWarned bool) {
-	st, err := os.Stat(path)
 	rulesLogEntry := conf.Log.WithField("rules", path)
+	return applyIfChanged(rulesLogEntry, path, rulesReloaded, rulesReloadFailed, lastMod, warned, func() error {
+		rules, err := loadRules(conf, path)
+		if err != nil {
+			return err
+		}
+		holder.current.Store(rules)
+		return nil
+	})
+}
+
+// applyIfChanged runs apply, which takes up the config file at path, if the file changed since
+// lastMod. Its success is logged to entry with okMsg; its failure, and a file that can't be read,
+// with failedMsg: either keeps the previous config. It returns the modification time taken up, and
+// whether an unreadable file was already logged, for the next call.
+func applyIfChanged(entry *logrus.Entry, path, okMsg, failedMsg string, lastMod time.Time, warned bool, apply func() error) (newLastMod time.Time, newWarned bool) {
+	st, err := os.Stat(path)
 	if err != nil {
-		// A load failure keeps the previous rules.
 		if errors.Is(err, fs.ErrNotExist) {
-			// Ignore missing rules file: atomic-rename saves make it momentarily disappear,
-			// and the edge-case of a genuinely deleted file once rules are already loaded is
-			// also harmless.
+			// Ignore a missing file: atomic-rename saves make it momentarily disappear, and the
+			// edge-case of a genuinely deleted file once its config is already in effect is also
+			// harmless.
 			return lastMod, warned
 		}
-		// Warn on other errors (once, until rules become valid again)
+		// Warn on other errors (once, until the file can be read again)
 		if !warned {
-			logRulesError(rulesLogEntry, err)
+			entry.WithError(err).Error(failedMsg)
 		}
 		return lastMod, true
 	}
 	if st.ModTime().Equal(lastMod) {
 		return lastMod, false
 	}
-	rules, err := loadRules(conf, path)
-	if err != nil {
-		logRulesError(rulesLogEntry, err)
-		return st.ModTime(), false
+	if err := apply(); err != nil {
+		entry.WithError(err).Error(failedMsg)
+	} else {
+		entry.Info(okMsg)
 	}
-	holder.current.Store(rules)
-	rulesLogEntry.Info("egress ACL reloaded")
 	return st.ModTime(), false
 }
 
-func watchRules(conf *smokescreen.Config, holder *swappableACL, path string, lastMod time.Time) {
+// watchFile polls for changes to a config file since lastMod, for poll -- reloadIfChanged, or
+// applyIfChanged -- to take each up.
+func watchFile(lastMod time.Time, poll func(lastMod time.Time, warned bool) (time.Time, bool)) {
 	warned := false
 	for range time.Tick(reloadPollInterval) {
-		lastMod, warned = reloadIfChanged(conf, holder, path, lastMod, warned)
+		lastMod, warned = poll(lastMod, warned)
 	}
+}
+
+// modTime is the file at path's modification time: zero for one missing or unreadable.
+func modTime(path string) time.Time {
+	st, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return st.ModTime()
 }
 
 func egressACLPath(args []string) string {
@@ -173,12 +199,7 @@ func main() {
 	}
 	args := append([]string{os.Args[0]}, opts.smokeArgs...)
 	path := egressACLPath(opts.smokeArgs)
-	var lastMod time.Time
-	if path != "" {
-		if st, err := os.Stat(path); err == nil {
-			lastMod = st.ModTime()
-		}
-	}
+	lastMod := modTime(path)
 
 	// Smokescreen logs to stdout, the log, from the start, its global logger included: stderr is
 	// for why the proxy can't start.
@@ -247,7 +268,9 @@ func main() {
 		cleanup()
 		os.Exit(status)
 	}
-	go watchRules(conf, holder, path, lastMod)
+	go watchFile(lastMod, func(lastMod time.Time, warned bool) (time.Time, bool) {
+		return reloadIfChanged(conf, holder, path, lastMod, warned)
+	})
 	smokescreenExited := make(chan struct{})
 	go func() {
 		smokescreen.StartWithConfig(conf, nil)
