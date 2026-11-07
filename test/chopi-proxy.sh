@@ -248,11 +248,12 @@ assert_eq "$out" "[chopi-proxy.sh] RULES RELOAD FAILED (previous rules kept)  ? 
     "a failed reload missing the error field still surfaces loud"
 
 # The reload hook (the macOS notification in the live proxy) tells failures from successes.
-out="$(printf '%s\n' "$reload_fail" | classify_log false "chopi-proxy.sh" "" record_hook false)"
-assert_contains "$out" "HOOK:failed" "a failed reload fires the reload hook with 'failed'"
+record_reload_hook() { arity 2; printf 'HOOK:%s %s\n' "$1" "$2"; }
+out="$(printf '%s\n' "$reload_fail" | classify_log false "chopi-proxy.sh" "" record_reload_hook false)"
+assert_contains "$out" "HOOK:failed rules" "a failed reload fires the reload hook with 'failed', of the rules"
 assert_not_contains "$out" "HOOK:ok" "  -> and not with 'ok'"
-out="$(printf '%s\n' "$reload_ok" | classify_log false "chopi-proxy.sh" "" record_hook false)"
-assert_contains "$out" "HOOK:ok" "a successful reload fires the reload hook with 'ok'"
+out="$(printf '%s\n' "$reload_ok" | classify_log false "chopi-proxy.sh" "" record_reload_hook false)"
+assert_contains "$out" "HOOK:ok rules" "a successful reload fires the reload hook with 'ok', of the rules"
 assert_not_contains "$out" "HOOK:failed" "  -> and not with 'failed'"
 
 out="$(printf '%s\n' "$reload_ok" | classify_verbose false)"
@@ -273,6 +274,28 @@ out="$(
 assert_eq "$out" "$reload_ok
 [chopi-proxy.sh] DENY  late.example  @ T" \
     "a format-reload.jq failure -> the reload line surfaces raw and the loop continues (under set -e)"
+
+
+# ---------------------------------------------------------------------------
+echo "GitHub allowlist hot-reload lines (format-reload, as for the rules)"
+# ---------------------------------------------------------------------------
+# A reload of the allowlist is logged as the rules' is: a failure keeps the relays serving the
+# previous allowlist.
+allowlist_ok='{"level":"info","msg":"GitHub allowlist reloaded","allowlist":"/x/github-allowlist","time":"T"}'
+allowlist_fail='{"level":"error","msg":"GitHub allowlist reload failed; keeping the previous relays","error":"rendering the GitHub relays'"'"' config from /x/github-allowlist: exit status 1","allowlist":"/x/github-allowlist","time":"T"}'
+
+out="$(printf '%s\n' "$allowlist_ok" | classify false)"
+assert_eq "$out" "[chopi-proxy.sh] GitHub allowlist reloaded  @ T" "allowlist reload -> plain 'GitHub allowlist reloaded' line"
+out="$(printf '%s\n' "$allowlist_fail" | classify false)"
+assert_eq "$out" "[chopi-proxy.sh] GITHUB ALLOWLIST RELOAD FAILED (previous relays kept)  rendering the GitHub relays' config from /x/github-allowlist: exit status 1  @ T" \
+    "failed allowlist reload -> loud line naming the error"
+out="$(printf '%s\n' "$allowlist_fail" | classify true)"
+assert_prefix "$out" "$BEL" "interactive failed allowlist reload is prefixed with a BEL (dock badge)"
+
+out="$(printf '%s\n' "$allowlist_fail" | classify_log false "chopi-proxy.sh" "" record_reload_hook false)"
+assert_contains "$out" "HOOK:failed allowlist" "a failed allowlist reload fires the reload hook with 'failed', of the allowlist"
+out="$(printf '%s\n' "$allowlist_ok" | classify_log false "chopi-proxy.sh" "" record_reload_hook false)"
+assert_contains "$out" "HOOK:ok allowlist" "a successful allowlist reload fires the reload hook with 'ok', of the allowlist"
 
 
 # ---------------------------------------------------------------------------

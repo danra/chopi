@@ -14,8 +14,9 @@
 #                               per host per session, no deny hook
 #                             anything else -> run the deny hook, print a loud DENY line
 #                           allowed -> nothing to show, drop it
-#     no  -> format-reload.jq a rules hot-reload line? render it: plain for a reload,
-#                           loud for a failed one (the previous rules stay in effect)
+#     no  -> format-reload.jq a hot-reload line, of the rules or the GitHub allowlist? render
+#                           it: plain for a reload, loud for a failed one (the previous
+#                           config stays in effect)
 #       no  -> format-misc.jq drop the known noise, pass anything else through unchanged
 #
 # That is a couple of extra jq invocations per line, which is nothing at log volumes, in
@@ -67,11 +68,13 @@ known_deny_seen() {
 #                     known denies, see below -- or "" for none. The proxy passes notify_deny
 #                     (pops a macOS banner); the tests pass "" so a test run never fires
 #                     real notifications.
-#   <on_reload_cmd>   called as `<on_reload_cmd> failed` once per failed rules reload, and as
-#                     `<on_reload_cmd> ok` once per successful one, or "" for none. A failure
-#                     means the user's edit did NOT take effect, which they must hear about as
-#                     surely as a DENY; a success makes any earlier failure stale. The proxy
-#                     passes notify_reload (pops, or withdraws, a macOS banner).
+#   <on_reload_cmd>   called as `<on_reload_cmd> failed <file>` once per failed reload, and as
+#                     `<on_reload_cmd> ok <file>` once per successful one, <file> being which
+#                     config reloaded, "rules" or "allowlist" (the GitHub allowlist), or "" for
+#                     none. A failure means the user's edit did NOT take effect, which they must
+#                     hear about as surely as a DENY; a success makes any earlier failure of that
+#                     file's stale. The proxy passes notify_reload (pops, or withdraws, a macOS
+#                     banner).
 #   <verbose>         true/false -- when true, nothing is dropped or replaced: every raw
 #                     smokescreen line is passed through as-is, interleaved with chopi-proxy's
 #                     own output. Normally-dropped lines (allowed connections, known noise)
@@ -103,8 +106,10 @@ classify_log() {
         # Matched on the raw text, ahead of any jq, so a failing filter can't swallow the alert.
         if [ -n "$on_reload" ]; then
             case "$line" in
-                *'"msg":"egress ACL reload failed'*) "$on_reload" failed ;;
-                *'"msg":"egress ACL reloaded"'*) "$on_reload" ok ;;
+                *'"msg":"egress ACL reload failed'*) "$on_reload" failed rules ;;
+                *'"msg":"egress ACL reloaded"'*) "$on_reload" ok rules ;;
+                *'"msg":"GitHub allowlist reload failed'*) "$on_reload" failed allowlist ;;
+                *'"msg":"GitHub allowlist reloaded"'*) "$on_reload" ok allowlist ;;
             esac
         fi
         if [ -n "$(printf '%s\n' "$line" | jq -R -r -f "$CONNECTION_FILTER")" ]; then
@@ -129,7 +134,7 @@ classify_log() {
                     --arg host "$host" --arg known "$known" \
                     -f "$FORMAT_DENY_FILTER" || surface_raw "$verbose" "$line"
             fi
-        elif [[ "$line" == *'"msg":"egress ACL reload'* ]] && \
+        elif [[ "$line" == *'"msg":"egress ACL reload'* || "$line" == *'"msg":"GitHub allowlist reload'* ]] && \
              reload_line=$(printf '%s\n' "$line" | jq -R -r -L "$JQ_LIB_DIR" \
                 --argjson is_interactive "$is_interactive" --arg script "$script" \
                 -f "$FORMAT_RELOAD_FILTER") && [ -n "$reload_line" ]; then

@@ -192,14 +192,20 @@ notify_deny() {
     notify chopi-proxy-deny 'connection denied' "DENY $1"
 }
 
-# usage: notify_reload ok|failed
+# Each config file's reload failure has a banner group of its own: a reload of one says nothing of
+# the other's last edit.
+#
+# usage: notify_reload ok|failed rules|allowlist
 notify_reload() {
-    arity 1
+    arity 2
+    local group="chopi-proxy-reload-$2" file="$RULES" subtitle='rules reload failed'
+    if [ "$2" = allowlist ]; then
+        file="$GITHUB_ALLOWLIST" subtitle='GitHub allowlist reload failed'
+    fi
     case "$1" in
-        failed) notify chopi-proxy-reload 'rules reload failed' \
-                       "Your edit to ${RULES##*/} did not take effect" ;;
-        # The rules now in effect are the user's latest: a failure banner still up is stale.
-        ok) { alerter --remove chopi-proxy-reload >/dev/null 2>&1 || true; } & ;;
+        failed) notify "$group" "$subtitle" "Your edit to ${file##*/} did not take effect" ;;
+        # The config now in effect is the user's latest: a failure banner still up is stale.
+        ok) { alerter --remove "$group" >/dev/null 2>&1 || true; } & ;;
     esac
 }
 
