@@ -5,10 +5,12 @@
 #   github-relays-config.sh <allowlist-file>
 #
 # Renders the config for the allowlist (github-relays-caddyfile.sh) and fills its credential slots
-# with the GitHub token: the GH_TOKEN or GITHUB_TOKEN set, else gh's. chopi-proxy.sh runs this as
-# the proxy starts, piping the output to Caddy over stdin: the token never touches disk or any argv.
+# with the GitHub token: the GH_TOKEN or GITHUB_TOKEN set, else gh's. chopi-smokescreen runs this as
+# the proxy starts, and again on every edit to the allowlist, piping the output to Caddy over stdin:
+# the token never touches disk or any argv. A token gh rotates is thus taken up at the next edit.
 #
-# Notes for the user, and why it fails, go to stderr.
+# Notes for the user, and why it fails, go to stderr: where the proxy starts, to the terminal, and
+# on a reload, to the proxy's log.
 
 set -euo pipefail
 

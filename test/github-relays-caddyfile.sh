@@ -237,7 +237,7 @@ echo "-- invalid entries are rejected (fail closed, non-zero exit) --"
 render 'no-slash-here' >/dev/null 2>&1; assert_nonzero "$?" "entry without owner/repo rejected"
 render 'own er/repo'   >/dev/null 2>&1; assert_nonzero "$?" "entry with illegal char rejected"
 
-echo "-- github-relays-config.sh: the config with its credentials, as chopi-proxy runs it --"
+echo "-- github-relays-config.sh: the config with its credentials, as chopi-smokescreen runs it --"
 CONFIG="$CHOPI_DIR/.internal/github-relays-config.sh"
 # No gh on PATH: the token is the environment's or none, whatever gh the machine is logged in with.
 nogh=(env -u GH_TOKEN -u GITHUB_TOKEN PATH=/usr/bin:/bin)

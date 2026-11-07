@@ -279,8 +279,8 @@ assert_eq "$out" "$reload_ok
 # ---------------------------------------------------------------------------
 echo "GitHub allowlist hot-reload lines (format-reload, as for the rules)"
 # ---------------------------------------------------------------------------
-# A reload of the allowlist is logged as the rules' is: a failure keeps the relays serving the
-# previous allowlist.
+# The relays' supervisor (.internal/proxy/supervise.go) logs a reload of the allowlist as the rules'
+# is logged: a failure keeps the relays serving the previous allowlist.
 allowlist_ok='{"level":"info","msg":"GitHub allowlist reloaded","allowlist":"/x/github-allowlist","time":"T"}'
 allowlist_fail='{"level":"error","msg":"GitHub allowlist reload failed; keeping the previous relays","error":"rendering the GitHub relays'"'"' config from /x/github-allowlist: exit status 1","allowlist":"/x/github-allowlist","time":"T"}'
 

@@ -2,7 +2,8 @@
 // extended to hot-reload the --egress-acl-file rules, and the supervisor of the GitHub relays,
 // served by Caddy.
 //
-//	chopi-smokescreen --relay-log FILE --gh-sock PATH --ports-file FILE -- SMOKESCREEN_FLAGS...
+//	chopi-smokescreen --relay-log FILE --gh-sock PATH --ports-file FILE --github-allowlist FILE
+//	                  --relay-config CMD -- SMOKESCREEN_FLAGS...
 //
 //   - Smokescreen's flags and log output are identical to the standalone smokescreen binary's,
 //     but for where it listens: --listen-ip and --listen-port are ignored.
@@ -13,12 +14,19 @@
 //     relay's on the unix socket PATH -- so no other process can take one first. Smokescreen
 //     serves its own; Caddy, started with its config on stdin and its output in the --relay-log
 //     FILE, inherits the relays'.
+//   - Caddy's config is CMD's output, run on the --github-allowlist FILE. GH_TOKEN and
+//     GITHUB_TOKEN, where set, are CMD's alone: taken out of the environment everything else gets.
+//   - The allowlist is polled for changes, as the rules are, and on one, a Caddy on the new config
+//     replaces the one serving, on the same listeners: their ports and socket path don't change.
+//     The one replaced finishes the requests it has. A config that fails to render, or a Caddy
+//     that fails to start on it, keeps the one serving.
 //   - Once smokescreen listens and Caddy serves, the ports are reported in the --ports-file FILE,
 //     for chopi to learn them from, and to know the proxy is up, and a line says where on stdout.
 //     They are also recorded in FILE.last, which outlives the proxy, for its next run to reclaim.
 //     Until then, errors go to stderr; from then on, everything goes to stdout, the log.
-//   - The proxy stops on INT, TERM or HUP, removing the socket and the ports file; if Caddy exits,
-//     it stops too, so nothing is left serving half of what it should. Caddy is stopped with it.
+//   - The proxy stops on INT, TERM or HUP, removing the socket and the ports file; if the Caddy
+//     serving exits, it stops too, so nothing is left serving half of what it should. Caddy is
+//     stopped with it.
 
 package main
 
@@ -56,11 +64,13 @@ func loadRules(conf *smokescreen.Config, path string) (*acl.ACL, error) {
 	return acl.New(conf.Log, acl.NewYAMLLoader(path), conf.DisabledAclPolicyActions)
 }
 
-// The log messages of the rules' reload, its failure keeping the previous rules. The formatter
-// (.internal/format-reload.jq, .internal/classify-log.sh) matches them; keep them in sync.
+// The log messages of a config file's reload, its failure keeping the previous config. The
+// formatter (.internal/format-reload.jq, .internal/classify-log.sh) matches them; keep them in sync.
 const (
-	rulesReloaded     = "egress ACL reloaded"
-	rulesReloadFailed = "egress ACL reload failed; keeping the previous rules"
+	rulesReloaded         = "egress ACL reloaded"
+	rulesReloadFailed     = "egress ACL reload failed; keeping the previous rules"
+	allowlistReloaded     = "GitHub allowlist reloaded"
+	allowlistReloadFailed = "GitHub allowlist reload failed; keeping the previous relays"
 )
 
 func reloadIfChanged(conf *smokescreen.Config, holder *swappableACL, path string, lastMod time.Time, warned bool) (newLastMod time.Time, newWarned bool) {
@@ -197,6 +207,9 @@ func main() {
 		fmt.Fprintln(os.Stderr, "chopi-smokescreen:", err)
 		os.Exit(2)
 	}
+	// The token is for rendering the relays' config, not for smokescreen or Caddy.
+	relayConf := relayConfig{cmd: opts.relayConfig, allowlist: opts.allowlist,
+		env: takeEnv("GH_TOKEN", "GITHUB_TOKEN")}
 	args := append([]string{os.Args[0]}, opts.smokeArgs...)
 	path := egressACLPath(opts.smokeArgs)
 	lastMod := modTime(path)
@@ -242,11 +255,22 @@ func main() {
 	if err := conf.Validate(); err != nil {
 		fail("invalid smokescreen config: %v", err)
 	}
+	// Its time first, for an edit made as it renders to be taken up once the relays serve.
+	allowlistMod := modTime(opts.allowlist)
+	initialConfig, notes, err := relayConf.render()
+	if err != nil {
+		fail("%v", err)
+	}
+	if notes != "" {
+		// For the user to see as the proxy starts.
+		fmt.Fprintln(os.Stderr, notes)
+	}
 	api, err := listenAPIRelay(opts.ghSock)
 	if err != nil {
 		fail("can't listen: %v", err)
 	}
-	relays := &relays{git: listeners[1], api: api}
+	relaySup := newRelaySupervisor(&relays{git: listeners[1], api: api}, opts.relayLog, relayConf,
+		conf.Log.WithField("allowlist", opts.allowlist))
 	stop := stopSignals()
 
 	// Leave no socket or ports file behind: they were ours.
@@ -255,19 +279,22 @@ func main() {
 		os.Remove(opts.portsFile)
 	}
 
-	// Both servers start at once: smokescreen serves its listener right away, as Caddy starts.
-	stopCaddy, caddyExited, caddyServed, err := startCaddy(relays, opts.relayLog)
-	if err != nil {
-		cleanup()
-		fail("can't start caddy for the GitHub relay: %v", err)
-	}
 	// Stop the proxy with STATUS, Caddy with it: the socket and ports file go once nothing serves
 	// them.
 	exit := func(status int) {
-		stopCaddy()
+		relaySup.stopAll()
 		cleanup()
 		os.Exit(status)
 	}
+	// Both servers start at once: smokescreen serves its listener right away, as Caddy starts.
+	relaysUp := make(chan error, 1)
+	go func() {
+		proc, err := relaySup.start(initialConfig)
+		if err == nil {
+			relaySup.serve(proc)
+		}
+		relaysUp <- err
+	}()
 	go watchFile(lastMod, func(lastMod time.Time, warned bool) (time.Time, bool) {
 		return reloadIfChanged(conf, holder, path, lastMod, warned)
 	})
@@ -286,12 +313,10 @@ func main() {
 
 	// Wait for Caddy to serve...
 	select {
-	case err := <-caddyServed:
+	case err := <-relaysUp:
 		if err != nil {
 			relayFailed(err)
 		}
-	case <-caddyExited:
-		relayFailed(errors.New("caddy exited"))
 	case <-smokescreenExited:
 		complain("smokescreen stopped as it started; see the log")
 		exit(1)
@@ -310,10 +335,11 @@ func main() {
 	// Should the log's formatter die, the log is lost from here on, but not the network:
 	// writing to it then fails instead of killing the proxy.
 	signal.Ignore(syscall.SIGPIPE)
+	go watchFile(allowlistMod, relaySup.reloadIfChanged)
 
 	// ...then serve, until stopped or a server exits.
 	select {
-	case <-caddyExited:
+	case <-relaySup.failed:
 		fmt.Println("[chopi-smokescreen] the GitHub relay exited; stopping the proxy")
 		exit(1)
 	case <-smokescreenExited:

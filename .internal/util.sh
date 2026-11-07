@@ -466,13 +466,14 @@ read_proxy_ports() {
     GITHUB_RELAY_PORT="$relay"
 }
 
-# run_chopi_smokescreen RULES RELAY_LOG -- run chopi's proxy and the GitHub relays, on the rules
-# file RULES, with Caddy's config on stdin and its output in RELAY_LOG; the API relay on
-# GH_RELAY_SOCK, and the ports reported in PROXY_PORTS_FILE. It execs, for its PID to be the
-# proxy's: run it in the background.
+# run_chopi_smokescreen RULES ALLOWLIST RENDER RELAY_LOG -- run chopi's proxy and the GitHub relays,
+# on the rules file RULES, with Caddy's config the output of RENDER run on ALLOWLIST, again on each
+# edit to it, and Caddy's output in RELAY_LOG; the API relay on GH_RELAY_SOCK, and the ports
+# reported in PROXY_PORTS_FILE. It execs, for its PID to be the proxy's: run it in the background.
 run_chopi_smokescreen() {
-    arity 2
-    exec "$SMOKESCREEN_BIN" --relay-log "$2" --gh-sock "$GH_RELAY_SOCK" --ports-file "$PROXY_PORTS_FILE" -- \
+    arity 4
+    exec "$SMOKESCREEN_BIN" --relay-log "$4" --gh-sock "$GH_RELAY_SOCK" --ports-file "$PROXY_PORTS_FILE" \
+        --github-allowlist "$2" --relay-config "$3" -- \
         --config-file "$CHOPI_DIR/.internal/smokescreen-config.yaml" \
         --egress-acl-file "$1"
 }
