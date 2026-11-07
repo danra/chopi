@@ -212,7 +212,8 @@ pin_ancestries() {
                 pinned+=("$node")
                 rule 'deny file-write*' literal "$node"
             fi
-            node="$(dirname "$node")"
+            node="${node%/*}"
+            node="${node:-/}"
         done
     done
 }
