@@ -237,4 +237,33 @@ echo "-- invalid entries are rejected (fail closed, non-zero exit) --"
 render 'no-slash-here' >/dev/null 2>&1; assert_nonzero "$?" "entry without owner/repo rejected"
 render 'own er/repo'   >/dev/null 2>&1; assert_nonzero "$?" "entry with illegal char rejected"
 
+echo "-- github-relays-config.sh: the config with its credentials, as chopi-proxy runs it --"
+CONFIG="$CHOPI_DIR/.internal/github-relays-config.sh"
+# No gh on PATH: the token is the environment's or none, whatever gh the machine is logged in with.
+nogh=(env -u GH_TOKEN -u GITHUB_TOKEN PATH=/usr/bin:/bin)
+printf 'octocat/*\n' > "$WORK/allow"
+out="$("${nogh[@]}" GH_TOKEN=the-token "$CONFIG" "$WORK/allow" 2>"$WORK/err")"; st=$?
+assert_zero "$st" "an allowlist with entries and a token renders"
+assert_contains "$out" "$(gh_basic_auth_header the-token)" "  -> with the git relay's credential filled in"
+assert_contains "$out" "$(gh_bearer_auth_header the-token)" "  -> and the API relay's"
+assert_not_contains "$out" '@@CHOPI_' "  -> leaving no credential slot"
+assert_eq "$(cat "$WORK/err")" "" "  -> saying nothing"
+out="$("${nogh[@]}" GITHUB_TOKEN=other-token "$CONFIG" "$WORK/allow" 2>/dev/null)"
+assert_contains "$out" "$(gh_bearer_auth_header other-token)" "GITHUB_TOKEN serves where GH_TOKEN isn't set"
+
+out="$("${nogh[@]}" "$CONFIG" "$WORK/allow" 2>"$WORK/err")"; st=$?
+assert_nonzero "$st" "an allowlist with entries and no token is refused"
+assert_eq "$out" "" "  -> printing no config"
+assert_contains "$(cat "$WORK/err")" "no GitHub token is set" "  -> saying why"
+
+: > "$WORK/allow"
+out="$("${nogh[@]}" "$CONFIG" "$WORK/allow" 2>"$WORK/err")"; st=$?
+assert_zero "$st" "an empty allowlist renders with no token"
+assert_contains "$(cat "$WORK/err")" "the GitHub allowlist is empty" "  -> noting what that leaves"
+
+printf 'no-slash-here\n' > "$WORK/allow"
+"${nogh[@]}" GH_TOKEN=t "$CONFIG" "$WORK/allow" >/dev/null 2>"$WORK/err"; st=$?
+assert_nonzero "$st" "an invalid allowlist is refused"
+assert_contains "$(cat "$WORK/err")" "could not render" "  -> saying so"
+
 summary

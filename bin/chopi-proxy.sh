@@ -236,33 +236,10 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 # Render the GitHub relay config.
 CADDY_LOG="$TMPDIR/caddy.log"
-CADDYFILE_TEXT="$("$CHOPI_DIR/.internal/github-relays-caddyfile.sh" "$GITHUB_ALLOWLIST")" \
-    || { echo "error: could not render the GitHub relay config from $GITHUB_ALLOWLIST" >&2; exit 1; }
-if [[ "$CADDYFILE_TEXT" == *@@CHOPI_AUTH@@* ]]; then
-    gh_token="$(resolve_gh_token)"
-    if [ -z "$gh_token" ]; then
-        echo "[$SCRIPT_NAME] error: the GitHub allowlist has entries but no GitHub token is set." >&2
-        echo "              Push and private-repo access to allowlisted repos need one; set GH_TOKEN" >&2
-        echo "              or run 'gh auth login' -- or empty the allowlist for anonymous public fetch only." >&2
-        exit 1
-    fi
-    gh_auth="$(gh_basic_auth_header "$gh_token")"
-    gh_api_auth="$(gh_bearer_auth_header "$gh_token")"
-    gh_token=""
-    CADDYFILE_TEXT="${CADDYFILE_TEXT//@@CHOPI_AUTH@@/$gh_auth}"
-    CADDYFILE_TEXT="${CADDYFILE_TEXT//@@CHOPI_API_AUTH@@/$gh_api_auth}"
-    gh_auth=""
-    gh_api_auth=""
-else
-    # No credential slot: the GitHub allowlist is empty, so the relay proxies anonymous public fetch
-    # only.
-    note_marker="NOTE"
-    [ -t 2 ] && note_marker=$'\033[33mNOTE\033[0m'
-    echo "[$SCRIPT_NAME] $note_marker: the GitHub allowlist is empty; only public fetch and anonymous public API reads are enabled until you add allowed repos." >&2
-fi
+CADDYFILE_TEXT="$("$CHOPI_DIR/.internal/github-relays-config.sh" "$GITHUB_ALLOWLIST")" || exit 1
 
 # Strip any GitHub token the user exported into our environment to avoid passing it down to more processes
-# (if set, resolve_gh_token already read it above).
+# (if set, github-relays-config.sh already read it above).
 unset GH_TOKEN GITHUB_TOKEN
 
 # The API relay's socket and the ports file: clear the ones a crashed prior run left, but not a
