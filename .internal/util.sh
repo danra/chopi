@@ -367,16 +367,16 @@ github_relay_git_config() {
     printf '%s\n' "lfs.$relay/.locksverify=true"
 }
 
-# The env wiring (VAR=val lines) pointing gh at the API relay, writing CONFIG_DIR's config file on
-# the way: GH_HOST=github.localhost makes gh address the API as plaintext
+# The env wiring (VAR=val lines) pointing gh at the API relay on unix socket SOCK, writing
+# CONFIG_DIR's config file on the way: GH_HOST=github.localhost makes gh address the API as plaintext
 # http://api.github.localhost/... (no CA), and http_unix_socket makes it dial the relay socket
 # instead of resolving that name -- it has no environment variable, so it goes in the config file.
 # The GH_TOKEN placeholder only has to make gh consider itself logged in; the relay wipes it and
 # injects the real token host-side.
 github_relay_gh_env() {
-    arity 1
-    local config_dir="$1"
-    printf 'http_unix_socket: %s\n' "$GH_RELAY_SOCK" > "$config_dir/config.yml" || return 1
+    arity 2
+    local config_dir="$1" sock="$2"
+    printf 'http_unix_socket: %s\n' "$sock" > "$config_dir/config.yml" || return 1
     printf '%s\n' \
         "GH_HOST=github.localhost" \
         "GH_CONFIG_DIR=$config_dir" \
