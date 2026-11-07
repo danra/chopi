@@ -33,7 +33,8 @@ func TestMain(m *testing.M) {
 }
 
 // fakeCaddy stands in for Caddy: it records its config (stdin) and pid in CHOPI_TEST_STATE, then
-// serves "git" on the inherited git relay listener and "api" on the API relay's -- or, as
+// serves "git" on the inherited git relay listener and "api" on the API relay's, and says so to its
+// --pingback address, as Caddy does -- or, as
 // CHOPI_TEST_CADDY says, fails to start ("fail"), exits after its first request ("die"), takes a
 // while to stop on a TERM ("slow"), or ignores it ("stubborn").
 func fakeCaddy() {
@@ -65,7 +66,7 @@ func fakeCaddy() {
 			fmt.Println("caddy:", err)
 			os.Exit(1)
 		}
-		http.Serve(listener, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		go http.Serve(listener, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, answer)
 			select {
 			case served <- struct{}{}:
@@ -73,11 +74,17 @@ func fakeCaddy() {
 			}
 		}))
 	}
-	go serve("CHOPI_GH_FD", "api")
-	go serve("CHOPI_GIT_FD", "git port "+os.Getenv("CHOPI_GIT_PORT"))
+	serve("CHOPI_GH_FD", "api")
+	serve("CHOPI_GIT_FD", "git port "+os.Getenv("CHOPI_GIT_PORT"))
+	for i, arg := range os.Args {
+		if arg == "--pingback" && i+1 < len(os.Args) {
+			if conn, err := net.Dial("tcp", os.Args[i+1]); err == nil {
+				conn.Close()
+			}
+		}
+	}
 	if plan == "die" {
-		<-served // the supervisor's readiness probe
-		<-served // the test's
+		<-served // the test's request
 		time.Sleep(100 * time.Millisecond)
 		os.Exit(1)
 	}

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -89,28 +88,33 @@ func listenAPIRelay(sock string) (*net.UnixListener, error) {
 // startCaddy starts Caddy on the relays' listeners, with its config on stdin -- never in argv,
 // as it holds the GitHub token -- and its output in logPath. Caddy reads where its listeners are
 // from its environment: CHOPI_GIT_FD and CHOPI_GH_FD, and CHOPI_GIT_PORT for the redirects it
-// rewrites. It returns once Caddy is started, with a channel that closes once Caddy exits, and a
-// stop that TERMs Caddy and returns once it has exited, killing it if it is still up after
-// caddyStopTimeout.
-func startCaddy(r *relays, logPath string) (stop func(), exited <-chan struct{}, err error) {
+// rewrites. It returns once Caddy is started, with a channel that closes once Caddy exits, one that
+// gets nil once Caddy serves, or why it doesn't, and a stop that TERMs Caddy and returns once it
+// has exited, killing it if it is still up after caddyStopTimeout.
+func startCaddy(r *relays, logPath string) (stop func(), exited <-chan struct{}, served <-chan error, err error) {
 	gitFile, err := r.git.File()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer gitFile.Close()
 	apiFile, err := r.api.File()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer apiFile.Close()
 	logFile, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer logFile.Close()
+	pingback, err := listenLoopback(0)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	caddy := exec.CommandContext(ctx, "caddy", "run", "--adapter", "caddyfile", "--config", "-")
+	caddy := exec.CommandContext(ctx, "caddy", "run", "--adapter", "caddyfile", "--config", "-",
+		"--pingback", pingback.Addr().String())
 	caddy.Cancel = func() error { return caddy.Process.Signal(syscall.SIGTERM) }
 	caddy.WaitDelay = caddyStopTimeout
 	caddy.Stdin = os.Stdin
@@ -124,7 +128,8 @@ func startCaddy(r *relays, logPath string) (stop func(), exited <-chan struct{},
 		"CHOPI_GH_FD="+strconv.Itoa(apiRelayFD))
 	if err := caddy.Start(); err != nil {
 		cancel()
-		return nil, nil, err
+		pingback.Close()
+		return nil, nil, nil, err
 	}
 	// Caddy holds the listeners now. Dropping ours means a Caddy that dies refuses connections
 	// instead of leaving them queued on a listener nothing serves.
@@ -136,30 +141,30 @@ func startCaddy(r *relays, logPath string) (stop func(), exited <-chan struct{},
 		caddy.Wait()
 		close(done)
 	}()
-	return func() { cancel(); <-done }, done, nil
+	return func() { cancel(); <-done }, done, awaitPingback(pingback), nil
+}
+
+// awaitPingback waits for Caddy to report it serves, as it does by connecting to its --pingback
+// address, pingback, which it closes then: Caddy's own word that its config is in effect, where a
+// request to the relays only says something answers them. The channel it returns gets nil once
+// Caddy serves, or why it doesn't.
+func awaitPingback(pingback *net.TCPListener) <-chan error {
+	pinged := make(chan error, 1)
+	go func() {
+		defer pingback.Close()
+		pingback.SetDeadline(time.Now().Add(relayStartTimeout))
+		conn, err := pingback.Accept()
+		if err == nil {
+			conn.Close()
+		}
+		pinged <- err
+	}()
+	return pinged
 }
 
 // caddyStopTimeout bounds Caddy's stop, from TERM to exit, before it is killed: by default Caddy
 // waits as long as it takes for its connections to close. A var, for tests to shorten.
 var caddyStopTimeout = 5 * time.Second
-
-// awaitCaddy waits for Caddy to serve the git relay: any HTTP response there. The listener
-// predates Caddy, so the request waits in its backlog until Caddy takes it. The channel it
-// returns gets nil once Caddy serves, or why it doesn't.
-func awaitCaddy(port int) <-chan error {
-	// The zero Proxy is none: straight to Caddy, whatever http_proxy the user's environment has.
-	// One request is all this client makes: it keeps no connection to Caddy open.
-	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}, Timeout: relayStartTimeout}
-	answered := make(chan error, 1)
-	go func() {
-		resp, err := client.Get("http://127.0.0.1:" + strconv.Itoa(port) + "/")
-		if err == nil {
-			resp.Body.Close()
-		}
-		answered <- err
-	}()
-	return answered
-}
 
 // writeAtomically writes content to path, whole or not at all: it is written beside path and
 // renamed over it, so a reader polling for path never sees it partly written.

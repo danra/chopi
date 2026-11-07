@@ -256,7 +256,7 @@ func main() {
 	}
 
 	// Both servers start at once: smokescreen serves its listener right away, as Caddy starts.
-	stopCaddy, caddyExited, err := startCaddy(relays, opts.relayLog)
+	stopCaddy, caddyExited, caddyServed, err := startCaddy(relays, opts.relayLog)
 	if err != nil {
 		cleanup()
 		fail("can't start caddy for the GitHub relay: %v", err)
@@ -286,7 +286,7 @@ func main() {
 
 	// Wait for Caddy to serve...
 	select {
-	case err := <-awaitCaddy(reported.relay):
+	case err := <-caddyServed:
 		if err != nil {
 			relayFailed(err)
 		}
