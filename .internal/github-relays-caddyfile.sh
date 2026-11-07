@@ -61,7 +61,7 @@ build_allowlist_regex() {
     local entries_regexes=()
     local line entry owner repo esc_owner esc_repo entry_regex
     while IFS= read -r line || [ -n "$line" ]; do
-        entry="$(strip_comment_and_trim "$line")"
+        strip_comment_and_trim_into entry "$line"
         [ -z "$entry" ] && continue
         case "$entry" in
             */*) ;;

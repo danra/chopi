@@ -84,18 +84,25 @@ readarray() {
     eval "$_ra_name=(\${_ra_lines[@]+\"\${_ra_lines[@]}\"})"
 }
 
-trim() {
-    arity 1
-    local s="$1"
-    s="${s#"${s%%[![:space:]]*}"}"    # ltrim
-    s="${s%"${s##*[![:space:]]}"}"    # rtrim
-    printf '%s' "$s"
+# Set variable NAME to STRING with surrounding whitespace trimmed: trim without a subshell, for
+# loops over a file's lines.
+#
+# usage: trim_into NAME STRING
+trim_into() {
+    arity 2
+    local _ti_s="$2"
+    _ti_s="${_ti_s#"${_ti_s%%[![:space:]]*}"}"    # ltrim
+    _ti_s="${_ti_s%"${_ti_s##*[![:space:]]}"}"    # rtrim
+    printf -v "$1" '%s' "$_ti_s"
 }
 
-# Print a config-file line with any trailing '#'-comment dropped and surrounding whitespace trimmed
-strip_comment_and_trim() {
-    arity 1
-    trim "${1%%#*}"
+# Set variable NAME to a config-file LINE with any trailing '#'-comment dropped and surrounding
+# whitespace trimmed
+#
+# usage: strip_comment_and_trim_into NAME LINE
+strip_comment_and_trim_into() {
+    arity 2
+    trim_into "$1" "${2%%#*}"
 }
 
 # Print TEXT with every occurrence of each SLOT replaced by the VALUE following it. Callers
@@ -136,7 +143,8 @@ file_line_number() {
     [ -r "$file" ] || return 1
     while IFS= read -r current || [ -n "$current" ]; do
         n=$((n + 1))
-        if [ "$(trim "$current")" = "$line" ]; then
+        trim_into current "$current"
+        if [ "$current" = "$line" ]; then
             printf '%s' "$n"
             return 0
         fi
@@ -283,7 +291,8 @@ resolve_gh_token() {
     else
         token=""
     fi
-    trim "$token"
+    trim_into token "$token"
+    printf '%s' "$token"
 }
 
 # Build the "Basic ..." Authorization header the GitHub relay injects: the git-smart-HTTP
@@ -322,9 +331,9 @@ exfiltration_prone_github_allowed_domains() {
 
     local line item
     while IFS= read -r line; do
-        item="$(strip_comment_and_trim "$line")"
+        strip_comment_and_trim_into item "$line"
+        trim_into item "${item#-}" # "- domain" -> "domain"
         [ -z "$item" ] && continue
-        item="$(trim "${item#-}")" # "- domain" -> "domain"
         case "$item" in
             \"*\" | \'*\') item="${item#?}"; item="${item%?}" ;; # drop surrounding quotes
         esac
