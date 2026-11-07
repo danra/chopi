@@ -228,7 +228,7 @@ main() {
     local gh_config_dir gh_env_text
     gh_config_dir="$(mktemp -d "$TMPDIR/chopi-gh-config.XXXXXX")" \
         || { echo "chopi: could not create a temp dir for the gh relay config" >&2; return 1; }
-    gh_env_text="$(github_relay_gh_env "$gh_config_dir")" \
+    gh_env_text="$(github_relay_gh_env "$gh_config_dir" "$GH_RELAY_SOCK")" \
         || { echo "chopi: could not write the gh relay config" >&2; return 1; }
     local gh_env=()
     readarray -t gh_env <<< "$gh_env_text"
