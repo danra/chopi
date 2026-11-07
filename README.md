@@ -36,7 +36,9 @@ of known denied domains that don't generate alerts -- important for keeping bloc
 auto-updates etc. from spamming you with notifications. You can add and remove domains while
 the proxy is running and they'll take effect immediately.
 
-To set the GitHub repos allowlist, edit `config/github-allowlist`.
+To set the GitHub repos allowlist, edit `config/github-allowlist`. This too takes effect while the
+proxy is running, without disturbing running chopi sessions. An edit also has the proxy take up a
+GitHub token that `gh` has replaced since it started.
 
 To configure the sandbox policy, edit the first two settings in `config/sandbox.sh` (other
 settings can be reviewed later):

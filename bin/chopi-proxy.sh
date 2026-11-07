@@ -27,7 +27,8 @@ restart only on the same ports.
   --verbose          show smokescreen's output verbatim, interleaved with chopi-proxy's
                      own: nothing is dropped or replaced.
 
-Edits to the rules file take effect while the proxy runs; no restart needed.
+Edits to the rules file and the GitHub allowlist take effect while the proxy runs, on the same
+ports; no restart needed. An allowlist edit also takes up a token gh has rotated since.
 EOF
 }
 
@@ -192,14 +193,20 @@ notify_deny() {
     notify chopi-proxy-deny 'connection denied' "DENY $1"
 }
 
-# usage: notify_reload ok|failed
+# Each config file's reload failure has a banner group of its own: a reload of one says nothing of
+# the other's last edit.
+#
+# usage: notify_reload ok|failed rules|allowlist
 notify_reload() {
-    arity 1
+    arity 2
+    local group="chopi-proxy-reload-$2" file="$RULES" subtitle='rules reload failed'
+    if [ "$2" = allowlist ]; then
+        file="$GITHUB_ALLOWLIST" subtitle='GitHub allowlist reload failed'
+    fi
     case "$1" in
-        failed) notify chopi-proxy-reload 'rules reload failed' \
-                       "Your edit to ${RULES##*/} did not take effect" ;;
-        # The rules now in effect are the user's latest: a failure banner still up is stale.
-        ok) { alerter --remove chopi-proxy-reload >/dev/null 2>&1 || true; } & ;;
+        failed) notify "$group" "$subtitle" "Your edit to ${file##*/} did not take effect" ;;
+        # The config now in effect is the user's latest: a failure banner still up is stale.
+        ok) { alerter --remove "$group" >/dev/null 2>&1 || true; } & ;;
     esac
 }
 
@@ -234,36 +241,13 @@ TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/chopi-proxy.XXXXXX")" \
     || { echo "error: could not create a temp dir for chopi-proxy" >&2; exit 1; }
 trap 'rm -rf "$TMPDIR"' EXIT
 
-# Render the GitHub relay config.
 CADDY_LOG="$TMPDIR/caddy.log"
-CADDYFILE_TEXT="$("$CHOPI_DIR/.internal/github-relays-caddyfile.sh" "$GITHUB_ALLOWLIST")" \
-    || { echo "error: could not render the GitHub relay config from $GITHUB_ALLOWLIST" >&2; exit 1; }
-if [[ "$CADDYFILE_TEXT" == *@@CHOPI_AUTH@@* ]]; then
-    gh_token="$(resolve_gh_token)"
-    if [ -z "$gh_token" ]; then
-        echo "[$SCRIPT_NAME] error: the GitHub allowlist has entries but no GitHub token is set." >&2
-        echo "              Push and private-repo access to allowlisted repos need one; set GH_TOKEN" >&2
-        echo "              or run 'gh auth login' -- or empty the allowlist for anonymous public fetch only." >&2
-        exit 1
-    fi
-    gh_auth="$(gh_basic_auth_header "$gh_token")"
-    gh_api_auth="$(gh_bearer_auth_header "$gh_token")"
-    gh_token=""
-    CADDYFILE_TEXT="${CADDYFILE_TEXT//@@CHOPI_AUTH@@/$gh_auth}"
-    CADDYFILE_TEXT="${CADDYFILE_TEXT//@@CHOPI_API_AUTH@@/$gh_api_auth}"
-    gh_auth=""
-    gh_api_auth=""
-else
-    # No credential slot: the GitHub allowlist is empty, so the relay proxies anonymous public fetch
-    # only.
-    note_marker="NOTE"
-    [ -t 2 ] && note_marker=$'\033[33mNOTE\033[0m'
-    echo "[$SCRIPT_NAME] $note_marker: the GitHub allowlist is empty; only public fetch and anonymous public API reads are enabled until you add allowed repos." >&2
-fi
 
-# Strip any GitHub token the user exported into our environment to avoid passing it down to more processes
-# (if set, resolve_gh_token already read it above).
-unset GH_TOKEN GITHUB_TOKEN
+# The GitHub token the user exported, if any, is chopi-smokescreen's alone, which hands it to the
+# renders of the relays' config (github-relays-config.sh) only: no other command gets it in its
+# environment. The log formatter, a fork of this shell, drops its copy too, as do the banners it
+# forks in turn.
+export -n GH_TOKEN GITHUB_TOKEN
 
 # The API relay's socket and the ports file: clear the ones a crashed prior run left, but not a
 # socket that still answers, a running chopi-proxy's.
@@ -280,14 +264,19 @@ rm -f "$GH_RELAY_SOCK" "$PROXY_PORTS_FILE"
 # ports would point the next chopi session at whatever later takes them.
 trap 'rm -rf "$TMPDIR"; rm -f "$PROXY_PORTS_FILE" "$GH_RELAY_SOCK"' EXIT
 
+# Run chopi-smokescreen with the GitHub token the user exported, if any: exporting an unset
+# variable puts nothing in the environment.
+run_smokescreen() {
+    export GH_TOKEN GITHUB_TOKEN
+    run_chopi_smokescreen "$@"
+}
+
 echo "[$SCRIPT_NAME] relay log: $CADDY_LOG" >&2
 echo "[$SCRIPT_NAME] starting the outgoing proxy and the GitHub relays (Ctrl-C to stop)" >&2
 # chopi-smokescreen opens the listeners, serves the proxy, and starts Caddy on the relays' config,
-# handed over stdin: printf is a builtin, so the baked GitHub token doesn't appear in any process's
-# argv. It reports its ports once up, and says where it serves. We stay, for Caddy to go with
-# chopi-smokescreen however it goes; a Ctrl-C reaches it as a TERM from us. Staying, we drop the
-# token first, before the log formatter forks: no long-lived shell of ours keeps a copy.
-exec 3< <(printf '%s' "$CADDYFILE_TEXT")
-CADDYFILE_TEXT=""
-lead_group run_chopi_smokescreen "$RULES" "$CADDY_LOG" \
-    <&3 3<&- > >(format_smokescreen_log) 2>&1
+# which it renders from the allowlist, and again on each edit to it. It reports its ports once up,
+# and says where it serves. We stay, for Caddy to go with chopi-smokescreen however it goes; a
+# Ctrl-C reaches it as a TERM from us.
+lead_group run_smokescreen "$RULES" "$GITHUB_ALLOWLIST" \
+    "$CHOPI_DIR/.internal/github-relays-config.sh" "$CADDY_LOG" \
+    > >(unset GH_TOKEN GITHUB_TOKEN; format_smokescreen_log) 2>&1

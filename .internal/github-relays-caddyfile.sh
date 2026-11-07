@@ -15,8 +15,9 @@
 # tail on the API relay: an anonymous passthrough for GitHub's signed-storage download hosts
 # (gh follows those redirects over the socket) and a loud refusal for any other Host.
 #
-# chopi-proxy.sh renders this, fills the @@CHOPI_AUTH@@ / @@CHOPI_API_AUTH@@ credential slots in
-# memory, and pipes the result to Caddy over stdin -- so the credentials never touch disk. The
+# github-relays-config.sh renders this, fills the @@CHOPI_AUTH@@ / @@CHOPI_API_AUTH@@ credential
+# slots in memory, and chopi-smokescreen pipes the result to Caddy over stdin -- so the credentials
+# never touch disk. The
 # listeners are chopi-smokescreen's, opened before Caddy starts and handed to it open: Caddy reads
 # their descriptors from its environment, and the git relay's port, for the redirects it rewrites,
 # too ({$CHOPI_GIT_PORT}).

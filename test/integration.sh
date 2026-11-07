@@ -849,7 +849,7 @@ else
     bad "a broken rules edit did NOT log a failed reload"
 fi
 # In its own group, so the next DENY banner doesn't replace it before the user sees it.
-if wait_for "$alerter_log" "rules reload failed --message Your edit to $(basename -- "$rules") did not take effect --group chopi-proxy-reload"; then
+if wait_for "$alerter_log" "rules reload failed --message Your edit to $(basename -- "$rules") did not take effect --group chopi-proxy-reload-rules"; then
     ok "a broken rules edit notifies that the edit did not take effect"
 else
     bad "a broken rules edit did NOT notify"
@@ -872,13 +872,59 @@ else
     bad "the proxy did NOT reload after the rules were fixed"
 fi
 # Each successful reload withdraws the failure banner; (1) already did once.
-if wait_for_count "$alerter_log" "remove chopi-proxy-reload" 2; then
+if wait_for_count "$alerter_log" "remove chopi-proxy-reload-rules" 2; then
     ok "the fixed rules withdraw the now-stale reload-failure notification"
 else
     bad "the fixed rules did NOT withdraw the reload-failure notification"
 fi
 code="$(sandbox_curl --max-time 20 "https://$DENIED_HOST")"
 assert_not_contains "$code" "200"                  "the restored rules refuse the host again"
+
+
+# ---------------------------------------------------------------------------
+echo "GitHub allowlist hot reload (edits take effect on the same relay port, without a restart)"
+# ---------------------------------------------------------------------------
+# The proxy polls the allowlist, and on an edit, a Caddy on the new config replaces the one
+# serving, on the same listeners: running sessions keep the port and socket they were confined to.
+ports_before="$(cat "$PROXY_PORTS_FILE")"
+relay_fetch() {
+    if [ -n "${relay_repo:-}" ]; then
+        assert_contains "$(chopi_relay git ls-remote https://github.com/octocat/Hello-World 2>/dev/null)" \
+            "refs/heads/master" "$1"
+    else
+        echo "  SKIP $1 (no host connectivity to github.com)"
+    fi
+}
+
+# (1) A broken edit is refused loudly, and the relays serving keep serving.
+printf 'no-slash-here\n' > "$empty_github_allow"
+if wait_for "$proxy_log" "GITHUB ALLOWLIST RELOAD FAILED"; then
+    ok "a broken allowlist edit is logged loudly as a failed reload"
+    assert_contains "$(cat "$proxy_log")" "allowlist entry needs owner/repo" "  -> saying why"
+else
+    bad "a broken allowlist edit did NOT log a failed reload"
+fi
+if wait_for "$alerter_log" "GitHub allowlist reload failed --message Your edit to $(basename -- "$empty_github_allow") did not take effect --group chopi-proxy-reload-allowlist"; then
+    ok "a broken allowlist edit notifies that the edit did not take effect"
+else
+    bad "a broken allowlist edit did NOT notify"
+fi
+relay_fetch "after a failed allowlist reload the relay still serves"
+
+# (2) Fixing it reloads the relays, on the same port, and withdraws the failure banner.
+: > "$empty_github_allow"
+if wait_for "$proxy_log" "GitHub allowlist reloaded"; then
+    ok "the proxy reloaded the relays once the allowlist was fixed"
+else
+    bad "the proxy did NOT reload the relays after the allowlist was fixed"
+fi
+if wait_for "$alerter_log" "remove chopi-proxy-reload-allowlist"; then
+    ok "the fixed allowlist withdraws the now-stale reload-failure notification"
+else
+    bad "the fixed allowlist did NOT withdraw the reload-failure notification"
+fi
+assert_eq "$(cat "$PROXY_PORTS_FILE")" "$ports_before" "the reloaded relays report the same ports"
+relay_fetch "after an allowlist reload the relay serves, on the same port"
 
 
 # ---------------------------------------------------------------------------

@@ -9,12 +9,13 @@ import (
 )
 
 func TestParseOptionsSplitsChopisFlagsFromSmokescreens(t *testing.T) {
-	opts, err := parseOptions([]string{"--relay-log", "/l", "--gh-sock", "/s",
-		"--ports-file", "/p", "--", "--config-file", "/c"})
+	opts, err := parseOptions([]string{"--relay-log", "/l", "--gh-sock", "/s", "--ports-file", "/p",
+		"--github-allowlist", "/a", "--relay-config", "/r", "--", "--config-file", "/c"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opts.relayLog != "/l" || opts.ghSock != "/s" || opts.portsFile != "/p" {
+	if opts.relayLog != "/l" || opts.ghSock != "/s" || opts.portsFile != "/p" ||
+		opts.allowlist != "/a" || opts.relayConfig != "/r" {
 		t.Errorf("parsed %+v", opts)
 	}
 	if !slices.Equal(opts.smokeArgs, []string{"--config-file", "/c"}) {
@@ -23,17 +24,71 @@ func TestParseOptionsSplitsChopisFlagsFromSmokescreens(t *testing.T) {
 }
 
 func TestParseOptionsRefuses(t *testing.T) {
+	all := []string{"--relay-log", "/l", "--gh-sock", "/s", "--ports-file", "/p",
+		"--github-allowlist", "/a", "--relay-config", "/r"}
+	// Each of chopi's flags left out in turn.
+	for i := 0; i < len(all); i += 2 {
+		args := append(slices.Clone(all[:i]), all[i+2:]...)
+		if _, err := parseOptions(append(args, "--")); err == nil {
+			t.Errorf("accepted without %s", all[i])
+		}
+	}
 	for _, args := range [][]string{
-		{"--relay-log", "/l", "--gh-sock", "/s", "--ports-file", "/p"},                       // no smokescreen flags
-		{"--gh-sock", "/s", "--ports-file", "/p", "--"},                                      // no --relay-log
-		{"--relay-log", "/l", "--ports-file", "/p", "--"},                                    // no --gh-sock
-		{"--relay-log", "/l", "--gh-sock", "/s", "--"},                                       // no --ports-file
-		{"--relay-log", "/l", "--gh-sock", "/s", "--ports-file", "/p", "--bogus", "1", "--"}, // unknown
+		all, // no smokescreen flags
+		append(slices.Clone(all), "--bogus", "1", "--"), // unknown
 		{"--relay-log"}, // no value
 	} {
 		if _, err := parseOptions(args); err == nil {
 			t.Errorf("%q: accepted", args)
 		}
+	}
+}
+
+func TestTakeEnvTakesTheSetOnesOut(t *testing.T) {
+	t.Setenv("CHOPI_TEST_SET", "v")
+	t.Setenv("CHOPI_TEST_EMPTY", "")
+	os.Unsetenv("CHOPI_TEST_UNSET")
+	got := takeEnv("CHOPI_TEST_SET", "CHOPI_TEST_EMPTY", "CHOPI_TEST_UNSET")
+	if !slices.Equal(got, []string{"CHOPI_TEST_SET=v", "CHOPI_TEST_EMPTY="}) {
+		t.Errorf("took %q", got)
+	}
+	for _, name := range []string{"CHOPI_TEST_SET", "CHOPI_TEST_EMPTY"} {
+		if _, set := os.LookupEnv(name); set {
+			t.Errorf("%s left in the environment", name)
+		}
+	}
+}
+
+func TestRelayConfigRendersWithItsEnv(t *testing.T) {
+	dir := t.TempDir()
+	cmd := filepath.Join(dir, "render")
+	writeFile(t, cmd, "#!/bin/sh\necho note >&2\nprintf '%s:%s' \"$1\" \"$CHOPI_TEST_TOKEN\"\n")
+	os.Chmod(cmd, 0o755)
+	config, notes, err := relayConfig{cmd: cmd, allowlist: "/the/allowlist",
+		env: []string{"CHOPI_TEST_TOKEN=t"}}.render()
+	if err != nil || string(config) != "/the/allowlist:t" || notes != "note" {
+		t.Errorf("rendered %q, notes %q, err %v", config, notes, err)
+	}
+}
+
+func TestRelayConfigSaysWhyItFailed(t *testing.T) {
+	cmd := filepath.Join(t.TempDir(), "render")
+	writeFile(t, cmd, "#!/bin/sh\necho partial\necho 'no token' >&2\nexit 1\n")
+	os.Chmod(cmd, 0o755)
+	config, notes, err := relayConfig{cmd: cmd, allowlist: "/a"}.render()
+	if err == nil || !strings.Contains(err.Error(), "no token") || config != nil || notes != "" {
+		t.Errorf("rendered %q, notes %q, err %v: want no config, and why", config, notes, err)
+	}
+}
+
+func TestOutputSinceIsTheRestOnOneLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "log")
+	writeFile(t, path, "old\nnew line\n  and more\n")
+	if got := outputSince(path, 4); got != "new line and more" {
+		t.Errorf("got %q", got)
+	}
+	if got := outputSince(filepath.Join(t.TempDir(), "missing"), 0); got != "" {
+		t.Errorf("got %q from no file", got)
 	}
 }
 

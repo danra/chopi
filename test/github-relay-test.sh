@@ -80,14 +80,35 @@ mkdir -p "$PROXY_RUN_DIR"
 
 # start_relays CONFIG LOG -- start the relays as chopi-proxy does, on the Caddy config CONFIG,
 # logging to LOG (and caddy to LOG.caddy, which LOG quotes if caddy fails to start). Sets RELAY_PID,
-# CADDY_PID, GITHUB_RELAY_PORT and git_url once they serve, or fails.
+# CADDY_PID, GITHUB_RELAY_PORT and git_url once they serve, or fails. The config is "rendered" by
+# cat from RELAY_CONFIG, for reload_relays to edit as chopi-proxy's allowlist is.
+RELAY_CONFIG="$WORK/relay.caddy"
 start_relays() {
     local config="$1" log="$2"
-    run_chopi_smokescreen "$WORK/rules.yaml" "$log.caddy" < <(printf '%s' "$config") >>"$log" 2>&1 &
+    printf '%s' "$config" > "$RELAY_CONFIG"
+    RELAY_LOG="$log"
+    run_chopi_smokescreen "$WORK/rules.yaml" "$RELAY_CONFIG" /bin/cat "$log.caddy" >>"$log" 2>&1 &
     RELAY_PID=$!
     wait_for_proxy_ports "$RELAY_PID" || return 1
     CADDY_PID="$(pgrep -P "$RELAY_PID" -x caddy)"
     git_url="http://127.0.0.1:$GITHUB_RELAY_PORT"
+}
+
+# reload_relays CONFIG -- have the running relays take up the Caddy config CONFIG, as an allowlist
+# edit does: on the same listeners, by a new Caddy. Sets CADDY_PID to it once it serves, or fails.
+reload_relays() {
+    local config="$1" _ before
+    before="$(grep -c 'GitHub allowlist reloaded' "$RELAY_LOG")"
+    printf '%s' "$config" > "$RELAY_CONFIG"
+    for _ in {1..300}; do
+        if [ "$(grep -c 'GitHub allowlist reloaded' "$RELAY_LOG")" -gt "$before" ]; then
+            CADDY_PID="$(pgrep -n -P "$RELAY_PID" -x caddy)"
+            return 0
+        fi
+        grep -q 'GitHub allowlist reload failed' "$RELAY_LOG" && return 1
+        sleep 0.1
+    done
+    return 1
 }
 
 # A denied git operation must fail, not hang on a credential prompt.
@@ -430,17 +451,25 @@ if [ -n "${ALLOW_REPO:-}" ] && [ -n "$TOKEN" ]; then
     fi
 fi
 
-# 5. credential rejected by GitHub: relaunch with an allowlist entry and a bogus token. Probe
-# with operations GitHub can never serve anonymously (a push; a fetch of a nonexistent repo),
-# so it must 401 the bogus credential rather than fall back to anonymous access.
-kill "$RELAY_PID" 2>/dev/null; wait "$RELAY_PID" 2>/dev/null
+# 5. credential rejected by GitHub: reload with an allowlist entry and a bogus token, as an
+# allowlist edit does -- so the rest runs on the Caddy the reload started, on the listeners the
+# first one served. Probe with operations GitHub can never serve anonymously (a push; a fetch of a
+# nonexistent repo), so it must 401 the bogus credential rather than fall back to anonymous access.
 printf 'octocat/*\n' > "$WORK/allow-bogus"
 bogus_cfg="$("$RENDER" "$WORK/allow-bogus")"
 bogus_cfg="${bogus_cfg//@@CHOPI_AUTH@@/Basic Ym9ndXM6Ym9ndXM=}"
 bogus_cfg="${bogus_cfg//@@CHOPI_API_AUTH@@/Bearer bogus}"
-if ! start_relays "$bogus_cfg" "$WORK/caddy-bogus.log"; then
-    bad "caddy failed to restart for the rejected-credential test"; sed 's/^/      /' "$WORK/caddy-bogus.log"
+first_caddy="$CADDY_PID"
+if ! reload_relays "$bogus_cfg"; then
+    bad "the relays did not reload for the rejected-credential test"; sed 's/^/      /' "$RELAY_LOG" "$RELAY_LOG.caddy"
 else
+    ok "an allowlist edit reloads the relays"
+    assert_not_eq "$CADDY_PID" "$first_caddy" "  -> on a new caddy"
+    assert_pid_exits "$first_caddy" "  -> the replaced caddy stopped, with no request left to finish"
+    assert_contains "$(lsof -a -p "$CADDY_PID" -iTCP -sTCP:LISTEN -P -n)" "127.0.0.1:$GITHUB_RELAY_PORT" \
+        "  -> serving the git relay's port as it was"
+    assert_contains "$(lsof -a -p "$CADDY_PID" -U)" "$GH_RELAY_SOCK" "  -> and the API relay's socket"
+
     if git -C "$WORK/pushsrc" push -q "$git_url/octocat/Hello-World" HEAD:refs/heads/chopi-e2e 2>"$WORK/e5"; then
         bad "push with a rejected credential unexpectedly succeeded"
     elif grep -q 'remote error: chopi: GitHub rejected the relay credential' "$WORK/e5"; then

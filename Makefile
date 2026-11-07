@@ -10,6 +10,7 @@ SHELL_SOURCES = \
 	.internal/classify-log.sh \
 	.internal/in-sandbox-wrapper.sh \
 	.internal/github-relays-caddyfile.sh \
+	.internal/github-relays-config.sh \
 	.internal/git-layout.sh \
 	.internal/git-preflight.sh \
 	.internal/git-isolate.sh \
