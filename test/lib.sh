@@ -100,6 +100,9 @@ assert_nonzero() {
 assert_pid_exits() {
     arity 2
     local _ st
+    case "$1" in
+        ''|*[!0-9]*) bad "$2 (no PID to watch: '$1')"; return ;;
+    esac
     for _ in {1..30}; do kill -0 "$1" 2>/dev/null || break; sleep 0.1; done
     kill -0 "$1" 2>/dev/null; st=$?
     assert_nonzero "$st" "$2"
