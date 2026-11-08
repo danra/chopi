@@ -77,6 +77,18 @@ for sig in TERM HUP; do
     assert_pid_exits "$child" "SIG$sig to lead_group's leader stops what it leads"
 done
 
+# chopi-smokescreen leads its group, for Caddy to go with it however it goes: here a stand-in for
+# Caddy, which COMMAND starts, left in the group as COMMAND is killed outright.
+st=0
+(
+    set -m
+    # shellcheck disable=SC2016 # expanded by the inner shells
+    bash -c '. "$1"; lead_group sh -c "sleep 30 & echo \$! > \"\$1\"; kill -KILL \$\$" sh "$2"' \
+        _ "$repo/.internal/util.sh" "$TMPDIR/lead-child" &
+    wait $!
+) 2>/dev/null || st=$?
+assert_eq "$st" 137 "lead_group exits with its command's status, a SIGKILL's included"
+assert_pid_exits "$(cat "$TMPDIR/lead-child")" "  -> stopping the rest of its group"
 
 # ---------------------------------------------------------------------------
 summary

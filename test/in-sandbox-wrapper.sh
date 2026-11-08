@@ -26,6 +26,11 @@ WRAP="$repo/.internal/in-sandbox-wrapper.sh"
 TMPDIR="$(mktemp -d)"; export TMPDIR
 trap 'rm -rf "$TMPDIR"' EXIT
 
+# The wrapper's `env bash` finds macOS's bash 3.2 in a session whose PATH holds no newer bash: run
+# it on that here, so a newer bash's features fail here as they would in such a session.
+mkdir "$TMPDIR/sandbox-bash" && ln -s /bin/bash "$TMPDIR/sandbox-bash/bash"
+export PATH="$TMPDIR/sandbox-bash:$PATH"
+
 # The wrapper gates every run on the GitHub->relay reroute being effective under the ambient git
 # config. For the config test cases, neutralize the developer's config and satisfy the gate by using
 # a global config and running from a clean dir.
@@ -189,6 +194,15 @@ assert_not_contains "$out" "insteadOf"                   "  -> not blamed on a c
 assert_not_contains "$out" "RAN"                         "  -> and the command does not run"
 assert_nonzero "$rc" "  -> and exits non-zero"
 
+# The gate checks against the GitHub relay's port, which only chopi knows.
+: > "$cleanup_marker"
+out=""; rc=0
+out="$(env -u GIT_CONFIG_COUNT -u CHOPI_GITHUB_RELAY_PORT \
+    "$WRAP" "$cleanup_script" "${relay_pairs[@]}" -- /bin/sh -c 'echo RAN' 2>&1)" || rc=$?
+assert_contains     "$out" "CHOPI_GITHUB_RELAY_PORT is not set" "a run without the relay port is refused"
+assert_not_contains "$out" "RAN"                                "  -> and the command does not run"
+assert_nonzero "$rc" "  -> and exits non-zero"
+assert_eq "$(cat "$cleanup_marker")" "" "  -> the cleanup is not run (no command ran)"
 
 # ---------------------------------------------------------------------------
 echo "the Claude-context refusal gate runs only for claude"
