@@ -212,7 +212,8 @@ pin_ancestries() {
                 pinned+=("$node")
                 rule 'deny file-write*' literal "$node"
             fi
-            node="$(dirname "$node")"
+            node="${node%/*}"
+            node="${node:-/}"
         done
     done
 }
@@ -498,7 +499,7 @@ make_private_dir() {
         echo "error: $dir is not a directory" >&2
         return 1
     fi
-    if [ "$(stat -f %u "$dir")" != "$(id -u)" ]; then
+    if [ "$(stat -f %u "$dir")" != "$EUID" ]; then
         echo "error: $dir belongs to another user" >&2
         return 1
     fi
