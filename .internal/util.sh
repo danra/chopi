@@ -515,9 +515,9 @@ make_private_dir() {
 # usage: lead_group COMMAND [ARGS...]
 lead_group() {
     local pid status
+    # Job control also keeps our stdin as COMMAND's: without it, a background job gets /dev/null.
     set -m
-    # Given our stdin explicitly: bash otherwise gives a background command /dev/null for it.
-    "$@" <&0 &
+    "$@" &
     pid=$!
     set +m
     # A trapped signal cuts the wait short, so wait again until COMMAND is gone.
