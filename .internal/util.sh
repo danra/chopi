@@ -514,16 +514,24 @@ make_private_dir() {
 # chopi-proxy calls it under `set -e`, so a command here that may fail harmlessly (a kill finding
 # nothing left to stop) must be guarded: unguarded, it would end lead_group short of its cleanup.
 #
+# COMMAND should be a shell function, which may exec a program, as chopi-proxy's does. Under
+# macOS's bash 3.2, a program run as COMMAND itself can drop a stop signal passed on to it just as
+# it starts, and run on.
+#
 # usage: lead_group COMMAND [ARGS...]
 lead_group() {
-    local pid status
+    local pid="" early="" status
+    # Trapped before COMMAND starts, lest a signal in between kill us and orphan it: one that comes
+    # as it starts, too early for the trap to pass on, is passed on once its pid is known.
+    trap 'if [ -n "$pid" ]; then kill -TERM "$pid" 2>/dev/null || :; else early=1; fi' \
+        TERM HUP INT
     # Job control also keeps our stdin as COMMAND's: without it, a background job gets /dev/null.
     set -m
     "$@" &
     pid=$!
     set +m
+    [ -z "$early" ] || kill -TERM "$pid" 2>/dev/null || :
     # A trapped signal cuts the wait short, so wait again until COMMAND is gone.
-    trap 'kill -TERM "$pid" 2>/dev/null || :' TERM HUP INT
     while :; do
         status=0
         wait "$pid" || status=$?
