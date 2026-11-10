@@ -268,7 +268,7 @@ func get(t *testing.T, client *http.Client, url string) string {
 	return string(body)
 }
 
-func TestSupervisorServesAndStopsOnINT(t *testing.T) {
+func TestSupervisorServesAndStopsOnTERM(t *testing.T) {
 	t.Parallel()
 	run := startSupervisor(t, "")
 	up := run.awaitPorts(t)
@@ -300,8 +300,8 @@ func TestSupervisorServesAndStopsOnINT(t *testing.T) {
 		t.Errorf("caddy got GH_TOKEN %q: the token is the render's alone", token)
 	}
 
-	// A Ctrl-C, as the terminal sends it.
-	run.cmd.Process.Signal(syscall.SIGINT)
+	// chopi's, as the session ends.
+	run.cmd.Process.Signal(syscall.SIGTERM)
 	if status := run.awaitExit(t); status != 0 {
 		t.Errorf("exit status %d once stopped", status)
 	}
@@ -322,7 +322,7 @@ func TestSupervisorRestartsOnTheSamePorts(t *testing.T) {
 	tmp := supervisorDir(t)
 	run := startSupervisorIn(t, tmp, "")
 	before := run.awaitPorts(t)
-	run.cmd.Process.Signal(syscall.SIGINT)
+	run.cmd.Process.Signal(syscall.SIGTERM)
 	run.awaitExit(t)
 
 	after := startSupervisorIn(t, tmp, "").awaitPorts(t)

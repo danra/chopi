@@ -44,7 +44,6 @@ signal_recorder='
 import signal, sys, time
 log, ready = sys.argv[1:]
 got = []
-signal.signal(signal.SIGINT, lambda sig, _: got.append(sig))
 signal.signal(signal.SIGTERM, lambda sig, _: got.append(sig))
 open(ready, "w").close()
 for _ in range(300):
@@ -54,21 +53,6 @@ for _ in range(300):
 time.sleep(0.2)  # for a signal that comes with the TERM
 open(log, "w").write(" ".join(signal.Signals(sig).name for sig in got))
 '
-
-# A Ctrl-C, sent to the terminal's whole foreground group, reaches COMMAND only as the one TERM
-# lead_group passes on: had it its own INT too, it (or Caddy) could stop in a way of its own first.
-# COMMAND handles INT itself, as chopi-smokescreen and Caddy do, so an INT that reached it shows.
-signals_file="$TMPDIR/lead-group-signals"
-ready_file="$TMPDIR/lead-group-ready"
-(
-    set -m
-    bash -c 'set -euo pipefail; . "$1"; lead_group python3 -I -c "$2" "$3" "$4"' lead "$repo/.internal/util.sh" "$signal_recorder" "$signals_file" "$ready_file" &
-    leader=$!
-    for _ in {1..50}; do [ -e "$ready_file" ] && break; sleep 0.1; done
-    kill -INT -- "-$leader"
-    wait "$leader"
-) 2>/dev/null
-assert_eq "$(cat "$signals_file" 2>/dev/null)" "SIGTERM" "a Ctrl-C reaches COMMAND as one TERM, not as its own INT"
 
 # A stop signal sent to the leader alone (a plain `kill <chopi-proxy pid>`) must stop what it leads
 # too: left behind, chopi-smokescreen and Caddy would serve on, with the GitHub token, unsupervised.

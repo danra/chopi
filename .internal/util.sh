@@ -633,11 +633,11 @@ make_private_dir() {
 # exits, a SIGKILL or a crash included -- TERM the rest of that group and exit with its status.
 # This keeps COMMAND's helpers (Caddy) from outliving it, while leaving our caller's group alone.
 # A stop signal sent to us is passed on to COMMAND as a TERM, so it stops as it would have stopped
-# itself; out of the terminal's foreground group, COMMAND gets no Ctrl-C of its own beside that.
-# chopi-proxy calls it under `set -e`, so a command here that may fail harmlessly (a kill finding
+# itself.
+# chopi-proxy.sh calls it under `set -e`, so a command here that may fail harmlessly (a kill finding
 # nothing left to stop) must be guarded: unguarded, it would end lead_group short of its cleanup.
 #
-# COMMAND should be a shell function, which may exec a program, as chopi-proxy's does. Under
+# COMMAND should be a shell function, which may exec a program, as chopi-proxy.sh's does. Under
 # macOS's bash 3.2, a program run as COMMAND itself can drop a stop signal passed on to it just as
 # it starts, and run on.
 #
@@ -647,8 +647,8 @@ lead_group() {
     # Trapped before COMMAND starts, lest a signal in between kill us and orphan it: one that comes
     # as it starts, too early for the trap to pass on, is passed on once its pid is known.
     trap 'signaled=1; if [ -n "$pid" ]; then kill -TERM "$pid" 2>/dev/null || :; else early=1; fi' \
-        TERM HUP INT
-    # Job control also keeps our stdin as COMMAND's: without it, a background job gets /dev/null.
+        TERM HUP
+    # Job control gives COMMAND a process group of its own, for its helpers to be stopped with it.
     set -m
     "$@" &
     pid=$!
@@ -663,7 +663,7 @@ lead_group() {
         wait "$pid" || status=$?
         [ -n "$signaled" ] || break
     done
-    trap '' TERM HUP INT
+    trap '' TERM HUP
     # The group outlives COMMAND, its ID with it, for as long as a helper of COMMAND's is in it.
     kill -TERM -- "-$pid" 2>/dev/null || :
     exit "$status"
