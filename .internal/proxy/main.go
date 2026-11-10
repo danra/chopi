@@ -25,9 +25,8 @@
 //     They are also recorded in FILE.last, which outlives the proxy, for its next run to reclaim.
 //     Until then, errors go to stderr, for chopi to show; from then on, everything goes to stdout,
 //     the log.
-//   - The proxy stops on INT, TERM or HUP, removing the socket and the ports file; if the Caddy
-//     serving exits, it stops too, so nothing is left serving half the session. Caddy is stopped
-//     with it.
+//   - The proxy stops on TERM or HUP, removing the socket and the ports file; if the Caddy serving
+//     exits, it stops too, so nothing is left serving half the session. Caddy is stopped with it.
 
 package main
 
