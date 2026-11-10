@@ -144,6 +144,32 @@ ready_file="$TMPDIR/lead-group-once-ready"
 assert_eq "$(cat "$signals_file" 2>/dev/null)" "SIGTERM" \
     "a stop signal right after COMMAND starts reaches it as one TERM"
 
+# A stop signal passed on to COMMAND cuts lead_group's wait short. lead_group's exit status must
+# still be COMMAND's, not the interrupted wait's 143. Here COMMAND exits 0 on the TERM. A `kill`
+# that lingers after sending keeps lead_group's trap busy until COMMAND has exited, so COMMAND is
+# gone by the time the cut-short wait returns.
+ready_file="$TMPDIR/lead-group-status-ready"
+st=0
+(
+    set -m
+    # shellcheck disable=SC2016 # expanded by the inner shell
+    bash -c '
+        set -euo pipefail; . "$1"
+        kill() { local st=0; builtin kill "$@" || st=$?; sleep 0.1; return "$st"; }
+        lead_group python3 -I -c "$2" "$3"
+    ' lead "$repo/.internal/util.sh" '
+import signal, sys, time
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+open(sys.argv[1], "w").close()
+time.sleep(30)
+' "$ready_file" &
+    leader=$!
+    for _ in {1..50}; do [ -e "$ready_file" ] && break; sleep 0.1; done
+    kill -TERM "$leader"
+    wait "$leader"
+) 2>/dev/null || st=$?
+assert_zero "$st" "a stop signal passed on leaves lead_group with COMMAND's own status"
+
 # chopi-smokescreen leads its group, for Caddy to go with it however it goes: here a stand-in for
 # Caddy, which COMMAND starts, left in the group as COMMAND is killed outright.
 st=0
