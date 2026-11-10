@@ -108,12 +108,24 @@ printf '%s\n' "$@"
 EOF
 chmod +x "$codex_shim"
 
-# Minimal config: no dir grants beyond the stub agent's (so denials are clean), PATH of
-# system binaries only
-cat > "$cfg" <<EOF
+# write_cfg FILE [LINE...] -- a minimal config: no dir grants beyond the stub agent's (so denials
+# are clean) and PATH of system binaries only, plus any LINEs: `+=` adds to those, `=` replaces.
+# With --template, the config first sources the shipped template, as a user's would.
+write_cfg() {
+    local file="$1"; shift
+    {
+        if [ "${1:-}" = --template ]; then
+            shift
+            echo ". '$repo/config/templates/sandbox.template.sh'"
+        fi
+        cat <<EOF
 CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$claudebin:$codexbin" )
 CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
 EOF
+        printf '%s\n' "$@"
+    } > "$file"
+}
+write_cfg "$cfg"
 
 # Test rules: exactly one host allowed.
 # A function because the hot-reload tests below restore this same baseline mid-run.
@@ -160,6 +172,27 @@ wait_for() {
     local f="$1" pat="$2"
     wait_for_count "$f" "$pat" 1
 }
+
+# Every sandboxed call: run from the workspace with the minimal config. The Claude-context
+# cases go through the stand-in agent, in another workspace or under another config when the
+# case calls for it.
+chopi_t() { ( cd "$ws" && "$repo/bin/chopi" --config "$cfg" -- "$@" ); }
+chopi_claude_in() {
+    local dir="$1" conf="$2"; shift 2
+    ( cd "$dir" && "$repo/bin/chopi" --config "$conf" -- "$claude_shim" "$@" )
+}
+chopi_claude() { chopi_claude_in "$ws" "$cfg" "$@"; }
+chopi_codex() { chopi_t "$codex_shim" "$@"; }
+
+# Run curl INSIDE the sandbox and echo its HTTP status code ("000" when the connection is
+# blocked/refused before any response).
+sandbox_curl() { chopi_t /usr/bin/curl -sS -o /dev/null -w '%{http_code}' "$@" 2>/dev/null; }
+
+# The CONNECT response code is the proxy's own verdict on a tunneled host: 200 = allowed (and
+# the upstream TCP dial succeeded), 407 = denied by the rules. Unlike %{http_code} it does not
+# depend on the full TLS+HTTP exchange with the remote host, which can stall mid-connection on
+# a flaky network path (curl then reports 000, indistinguishable from a deny).
+sandbox_curl_connect() { chopi_t /usr/bin/curl -sS -o /dev/null -w '%{http_connect}' "$@" 2>/dev/null; }
 
 # start_proxy LOG ARGS... -- start chopi-proxy with ARGS in the background, logging to LOG; $! is
 # its PID. It starts as a terminal starts it, in a process group of its own (set -m): without job
@@ -331,27 +364,6 @@ if ! wait_for_proxy_ports "$proxy_pid"; then
 fi
 ok "test proxy is listening on 127.0.0.1:$PROXY_PORT"
 
-# Every sandboxed call: run from the workspace with the minimal config. The Claude-context
-# cases go through the stand-in agent, in another workspace or under another config when the
-# case calls for it.
-chopi_t() { ( cd "$ws" && "$repo/bin/chopi" --config "$cfg" -- "$@" ); }
-chopi_claude_in() {
-    local dir="$1" conf="$2"; shift 2
-    ( cd "$dir" && "$repo/bin/chopi" --config "$conf" -- "$claude_shim" "$@" )
-}
-chopi_claude() { chopi_claude_in "$ws" "$cfg" "$@"; }
-chopi_codex() { chopi_t "$codex_shim" "$@"; }
-
-# Run curl INSIDE the sandbox and echo its HTTP status code ("000" when the connection is
-# blocked/refused before any response).
-sandbox_curl() { chopi_t /usr/bin/curl -sS -o /dev/null -w '%{http_code}' "$@" 2>/dev/null; }
-
-# The CONNECT response code is the proxy's own verdict on a tunneled host: 200 = allowed (and
-# the upstream TCP dial succeeded), 407 = denied by the rules. Unlike %{http_code} it does not
-# depend on the full TLS+HTTP exchange with the remote host, which can stall mid-connection on
-# a flaky network path (curl then reports 000, indistinguishable from a deny).
-sandbox_curl_connect() { chopi_t /usr/bin/curl -sS -o /dev/null -w '%{http_connect}' "$@" 2>/dev/null; }
-
 # Denied operations and captured exit codes below rely on errexit being off.
 set +e
 
@@ -412,10 +424,7 @@ assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
 # TMPDIR, which safehouse grants, and the config below grants it outright: chopi's deny must
 # still win, or a sandboxed command could aim the next session's proxy at a port of its choosing.
 cfg_run_dir="$base/config/sandbox-run-dir.sh"
-cat > "$cfg_run_dir" <<EOF
-CHOPI_SAFEHOUSE_FLAGS=( --add-dirs "$PROXY_RUN_DIR" )
-CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
-EOF
+write_cfg "$cfg_run_dir" "CHOPI_SAFEHOUSE_FLAGS+=( --add-dirs '$PROXY_RUN_DIR' )"
 ports_before="$(cat "$PROXY_PORTS_FILE")"
 out="$( ( cd "$ws" && "$repo/bin/chopi" --config "$cfg_run_dir" -- /bin/sh -c "
     cat '$PROXY_PORTS_FILE' >/dev/null 2>&1 && echo READ_OK || echo READ_FAIL
@@ -488,10 +497,8 @@ assert_contains     "$both" "$base/shared-claude/CLAUDE.md  (via the symlink at 
 assert_not_contains "$both" "RAN"                            "  -> and does not run the command"
 
 cfg_shared="$base/config/sandbox-shared-claude.sh"
-cat > "$cfg_shared" <<EOF
-CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$base/shared-claude:$claudebin" )
-CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
-EOF
+write_cfg "$cfg_shared" \
+    "CHOPI_SAFEHOUSE_FLAGS+=( --add-dirs-ro '$base/shared-claude' )"
 out="$(chopi_claude_in "$base/dev/ws2" "$cfg_shared" -c "cat '$base/dev/.claude/CLAUDE.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_contains "$out" "SHARED_DOTCLAUDE_MARKER"   "with the target granted, the CLAUDE.md behind the link is readable"
 assert_contains "$out" "READ_OK"                   "  -> and the read succeeds"
@@ -522,10 +529,8 @@ assert_not_contains "$both" "RAN"                            "  -> and does not 
 # the traversed link node and the kernel-resolved file -- lets the check follow it, which
 # surfaces its own nested import.
 cfg_imports="$base/config/sandbox-imports.sh"
-cat > "$cfg_imports" <<EOF
-CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$base/imports:$base/import-target:$claudebin" )
-CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
-EOF
+write_cfg "$cfg_imports" \
+    "CHOPI_SAFEHOUSE_FLAGS+=( --add-dirs-ro '$base/imports:$base/import-target' )"
 both="$(chopi_claude_in "$ws" "$cfg_imports" -c 'echo RAN' 2>&1)"; rc=$?
 assert_nonzero      "$rc"                                     "chopi still refuses: the now-followable import reveals its nested import"
 assert_contains     "$both" "$base/import-nested/deep.md"     "  -> listing the nested import"
@@ -534,10 +539,8 @@ assert_not_contains "$both" "RAN"                             "  -> and does not
 
 # With the whole chain granted, the run proceeds.
 cfg_imports_all="$base/config/sandbox-imports-all.sh"
-cat > "$cfg_imports_all" <<EOF
-CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$base/imports:$base/import-target:$base/import-nested:$claudebin" )
-CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
-EOF
+write_cfg "$cfg_imports_all" \
+    "CHOPI_SAFEHOUSE_FLAGS+=( --add-dirs-ro '$base/imports:$base/import-target:$base/import-nested' )"
 out="$(chopi_claude_in "$ws" "$cfg_imports_all" -c "cat '$base/imports/linked-import.md' '$base/import-nested/deep.md' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_contains "$out" "LINKED_IMPORT_MARKER"      "with the full chain granted the run proceeds"
 assert_contains "$out" "NESTED_IMPORT_MARKER"      "  -> the nested import is readable too"
@@ -637,11 +640,10 @@ EOF
 chmod +x "$agentbin/claude"
 
 cfg_agent="$base/config/sandbox-agent.sh"
-cat > "$cfg_agent" <<EOF
-CHOPI_SAFEHOUSE_FLAGS=()
-CHOPI_EXTRA_ENV=( PATH=$agentbin:/usr/bin:/bin:/usr/sbin:/sbin )
-CHOPI_GIT_CONFIG=( chopi.wrapped=wrappedmarker )
-EOF
+write_cfg "$cfg_agent" \
+    "CHOPI_SAFEHOUSE_FLAGS=()" \
+    "CHOPI_EXTRA_ENV=( PATH=$agentbin:/usr/bin:/bin:/usr/sbin:/sbin )" \
+    "CHOPI_GIT_CONFIG=( chopi.wrapped=wrappedmarker )"
 chopi_wrap() { ( cd "$wrap_repo" && "$repo/bin/chopi" --config "$cfg_agent" -- "$@" ); }
 
 # shellcheck disable=SC2016
@@ -690,11 +692,9 @@ mkdir -p "$swt_target"
 printf '# Guidelines\nBe kind.\n' > "$swt_target/Guidelines.md"
 
 cfg_swt="$base/config/sandbox-swt.sh"
-cat > "$cfg_swt" <<EOF
-CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$claudebin" )
-CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
-CHOPI_SAFE_WRITE_TARGETS=( "$swt_target" )
-EOF
+write_cfg "$cfg_swt" \
+    "CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro '$claudebin' )" \
+    "CHOPI_SAFE_WRITE_TARGETS=( '$swt_target' )"
 
 swt_repo_real="$(realpath "$swt_repo")"
 swt_queue="$CHOPI_PATCH_QUEUE_ROOT/$(path_id "$swt_repo_real")"
@@ -945,11 +945,7 @@ git -C "$gitrepo" commit -q -m root-marker
 
 # Default sandbox config comes from sourcing the shipped template,
 # so the suite tracks it; the grants and env are re-minimized like the main $cfg's.
-cat > "$cfg_git" <<EOF
-. '$repo/config/templates/sandbox.template.sh'
-CHOPI_SAFEHOUSE_FLAGS=()
-CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
-EOF
+write_cfg "$cfg_git" --template "CHOPI_SAFEHOUSE_FLAGS=()"
 
 nested_wt="$gitrepo_real/.worktrees/nested_wt"
 nested_wt_admin="$shared_git/worktrees/nested_wt"
@@ -1161,11 +1157,7 @@ pick1="$(git -C "$gitrepo" rev-parse HEAD~1)"
 pick2="$(git -C "$gitrepo" rev-parse HEAD)"
 git -C "$gitrepo" checkout -q "$mainbr"
 
-cat > "$cfg_wt" <<EOF
-. '$repo/config/templates/sandbox.template.sh'
-CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$claudebin" )
-CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
-EOF
+write_cfg "$cfg_wt" --template "CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro '$claudebin' )"
 
 chopi_wt() { ( cd "$gitrepo" && "$repo/bin/chopi" --worktree nested_wt2 --config "$cfg_wt" -- "$@" ); }
 
@@ -1394,13 +1386,9 @@ assert_eq "$(cat "$sub_cfg")" "$sub_cfg_before"    "  -> and the submodule's con
 
 # Host-forwarded git config (safehouse --env-pass) survives, and overridable by CHOPI_GIT_CONFIG
 cfg_envpass="$base/config/sandbox-envpass.sh"
-cat > "$cfg_envpass" <<EOF
-. '$repo/config/templates/sandbox.template.sh'
-CHOPI_SAFEHOUSE_FLAGS=( --enable xcode
-                    --env-pass GIT_CONFIG_COUNT,GIT_CONFIG_KEY_0,GIT_CONFIG_VALUE_0,GIT_CONFIG_KEY_1,GIT_CONFIG_VALUE_1,GIT_CONFIG_KEY_2,GIT_CONFIG_VALUE_2 )
-CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
-CHOPI_GIT_CONFIG=( chopi.conflict=fromconfig )
-EOF
+write_cfg "$cfg_envpass" --template \
+    "CHOPI_SAFEHOUSE_FLAGS=( --enable xcode --env-pass GIT_CONFIG_COUNT,GIT_CONFIG_KEY_0,GIT_CONFIG_VALUE_0,GIT_CONFIG_KEY_1,GIT_CONFIG_VALUE_1,GIT_CONFIG_KEY_2,GIT_CONFIG_VALUE_2 )" \
+    "CHOPI_GIT_CONFIG=( chopi.conflict=fromconfig )"
 chopi_ep() { ( cd "$gitrepo" && env \
     GIT_CONFIG_COUNT=3 \
     GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always \
@@ -1416,11 +1404,9 @@ assert_eq "$out" "fromconfig"                      "  -> and on a conflicting ke
 # CHOPI_WORKTREE_NAME expands to the worktree name at setup time.
 wt_cfg="$base/config/sandbox-setup.sh"
 setup_marker="$base/setup-marker.txt"
-cat > "$wt_cfg" <<EOF
-CHOPI_SAFEHOUSE_FLAGS=( --enable xcode )
-CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
-CHOPI_WORKTREE_SETUP=( 'echo "\$CHOPI_WORKTREE_NAME" > "$setup_marker"' )
-EOF
+write_cfg "$wt_cfg" \
+    "CHOPI_SAFEHOUSE_FLAGS=( --enable xcode )" \
+    "CHOPI_WORKTREE_SETUP=( 'echo \"\$CHOPI_WORKTREE_NAME\" > \"$setup_marker\"' )"
 ( cd "$gitrepo" && "$repo/bin/chopi" --worktree wtcfg --config "$wt_cfg" -- /bin/sh -c 'true' ) >/dev/null 2>&1
 assert_eq "$(cat "$setup_marker" 2>/dev/null)" "wtcfg" \
     "a custom CHOPI_WORKTREE_SETUP command runs (unsandboxed) with CHOPI_WORKTREE_NAME set"
@@ -1437,11 +1423,7 @@ assert_absent "$gitrepo/.worktrees/wtnone" "  -> and no worktree is created"
 #       isolated worktree can't write it. (Checking the invocation dir would wrongly
 #       refuse it.)
 repo_cfg="$gitrepo_real/wt-repo-cfg.sh"          # in the repo, outside the worktree
-cat > "$repo_cfg" <<EOF
-. '$repo/config/templates/sandbox.template.sh'
-CHOPI_SAFEHOUSE_FLAGS=()
-CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
-EOF
+write_cfg "$repo_cfg" --template "CHOPI_SAFEHOUSE_FLAGS=()"
 out="$(cd "$gitrepo" && "$repo/bin/chopi" --worktree nested_wt2 --config "$repo_cfg" -- /bin/sh -c 'echo CFG_OK' 2>&1)"; st=$?
 assert_contains "$out" "CFG_OK"                    "a --config in the repo but outside the target worktree is allowed"
 assert_zero "$st" "  -> and the run succeeds"
@@ -1449,11 +1431,7 @@ assert_zero "$st" "  -> and the run succeeds"
 #       read/write there and could rewrite the policy that confines its next run.
 #       (Checking the invocation dir would miss it entirely.)
 inside_cfg="$nested_wt2/inside-cfg.sh"           # inside the worktree (writable by the command)
-cat > "$inside_cfg" <<EOF
-. '$repo/config/templates/sandbox.template.sh'
-CHOPI_SAFEHOUSE_FLAGS=()
-CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
-EOF
+write_cfg "$inside_cfg" --template "CHOPI_SAFEHOUSE_FLAGS=()"
 out="$(cd "$gitrepo" && "$repo/bin/chopi" --worktree nested_wt2 --config "$inside_cfg" -- /bin/sh -c 'echo NOPE' 2>&1)"; st=$?
 assert_contains "$out" "is inside the workspace" "a --config inside the target worktree is refused"
 assert_not_contains "$out" "NOPE"                  "  -> and the command never runs"
