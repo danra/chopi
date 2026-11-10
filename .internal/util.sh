@@ -520,10 +520,10 @@ make_private_dir() {
 #
 # usage: lead_group COMMAND [ARGS...]
 lead_group() {
-    local pid="" early="" status
+    local pid="" signaled="" early="" status
     # Trapped before COMMAND starts, lest a signal in between kill us and orphan it: one that comes
     # as it starts, too early for the trap to pass on, is passed on once its pid is known.
-    trap 'if [ -n "$pid" ]; then kill -TERM "$pid" 2>/dev/null || :; else early=1; fi' \
+    trap 'signaled=1; if [ -n "$pid" ]; then kill -TERM "$pid" 2>/dev/null || :; else early=1; fi' \
         TERM HUP INT
     # Job control also keeps our stdin as COMMAND's: without it, a background job gets /dev/null.
     set -m
@@ -531,11 +531,14 @@ lead_group() {
     pid=$!
     set +m
     [ -z "$early" ] || kill -TERM "$pid" 2>/dev/null || :
-    # A trapped signal cuts the wait short, so wait again until COMMAND is gone.
+    # A trapped signal cuts the wait short, with the signal's status rather than COMMAND's, so wait
+    # again until a wait the trap left alone: its status is COMMAND's, even if an earlier wait
+    # already took it and the trap came just after.
     while :; do
+        signaled=""
         status=0
         wait "$pid" || status=$?
-        kill -0 "$pid" 2>/dev/null || break
+        [ -n "$signaled" ] || break
     done
     trap '' TERM HUP INT
     # The group outlives COMMAND, its ID with it, for as long as a helper of COMMAND's is in it.
