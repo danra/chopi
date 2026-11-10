@@ -511,6 +511,8 @@ make_private_dir() {
 # This keeps COMMAND's helpers (Caddy) from outliving it, while leaving our caller's group alone.
 # A stop signal sent to us is passed on to COMMAND as a TERM, so it stops as it would have stopped
 # itself; out of the terminal's foreground group, COMMAND gets no Ctrl-C of its own beside that.
+# chopi-proxy calls it under `set -e`, so a command here that may fail harmlessly (a kill finding
+# nothing left to stop) must be guarded: unguarded, it would end lead_group short of its cleanup.
 #
 # usage: lead_group COMMAND [ARGS...]
 lead_group() {
@@ -521,7 +523,7 @@ lead_group() {
     pid=$!
     set +m
     # A trapped signal cuts the wait short, so wait again until COMMAND is gone.
-    trap 'kill -TERM "$pid" 2>/dev/null' TERM HUP INT
+    trap 'kill -TERM "$pid" 2>/dev/null || :' TERM HUP INT
     while :; do
         status=0
         wait "$pid" || status=$?
@@ -529,6 +531,6 @@ lead_group() {
     done
     trap '' TERM HUP INT
     # The group outlives COMMAND, its ID with it, for as long as a helper of COMMAND's is in it.
-    kill -TERM -- "-$pid" 2>/dev/null
+    kill -TERM -- "-$pid" 2>/dev/null || :
     exit "$status"
 }
