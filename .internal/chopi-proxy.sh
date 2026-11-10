@@ -140,10 +140,12 @@ report_formatter_failure() {
          "but logs nothing more, and notifies of no more denials"
 }
 
-# A denial's banner replaces the session's last one, but not another session's.
+# The banners: a click on one opens the session's log, which has the event in context. Each kind
+# has its own group, lest a frequent kind (denials) bury a rare one. A denial replaces the session's
+# last one, but not another session's.
 notify_deny() {
     arity 1
-    notify "chopi-proxy-deny-$PARENT_PID" 'connection denied' "DENY $1"
+    notify "chopi-proxy-deny-$PARENT_PID" "$LOG" 'connection denied' "DENY $1"
 }
 
 # Each config file's reload failure has a banner group of its own: a reload of one says nothing of
@@ -157,7 +159,7 @@ notify_reload() {
         file="$GITHUB_ALLOWLIST" subtitle='GitHub allowlist reload failed'
     fi
     case "$1" in
-        failed) notify "$group" "$subtitle" "Your edit to ${file##*/} did not take effect" ;;
+        failed) notify "$group" "$LOG" "$subtitle" "Your edit to ${file##*/} did not take effect" ;;
         # The config now in effect is the user's latest: a failure banner still up is stale.
         ok) { alerter --remove "$group" >/dev/null 2>&1 || true; } & ;;
     esac
