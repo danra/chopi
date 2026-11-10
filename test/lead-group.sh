@@ -15,19 +15,22 @@ header "test/lead-group.sh -- unit tests for .internal/util.sh's lead_group"
 TMPDIR="$(mktemp -d)"; export TMPDIR
 trap 'rm -rf "$TMPDIR"' EXIT
 
+# Each lead_group runs in a shell with `set -euo pipefail`, as chopi-proxy runs it: a failing
+# command lead_group leaves unguarded would end it there, skipping the rest of its work.
+
 
 # ---------------------------------------------------------------------------
 echo "process group (lead_group stops what it leads, and nothing of its caller's)"
 # ---------------------------------------------------------------------------
 # lead_group's caller, and anything else in its group, outlive it. The caller is put in a group of
 # its own, for a lead_group stopping that group not to stop this script too.
-out="$(bash -c 'set -m; bash -c "bash -c \". \\\"\$1\\\"; lead_group true\" _ \"\$1\"; echo survived" _ "$1" & wait $!' \
+out="$(bash -c 'set -m; bash -c "bash -c \"set -euo pipefail; . \\\"\$1\\\"; lead_group true\" _ \"\$1\"; echo survived" _ "$1" & wait $!' \
     _ "$repo/.internal/util.sh" 2>/dev/null)"
 assert_contains "$out" "survived" "lead_group leaves its caller's process group alone"
 
 # A helper COMMAND leaves running as it exits (Caddy, after a crash) is stopped with it.
 helper_pid_file="$TMPDIR/lead-group-helper"
-bash -c 'set -m; bash -c ". \"\$1\"; lead_group sh -c \"sleep 30 & echo \\\$! > \\\"\\\$1\\\"\" sh \"\$2\"" _ "$1" "$2" & wait $!' \
+bash -c 'set -m; bash -c "set -euo pipefail; . \"\$1\"; lead_group sh -c \"sleep 30 & echo \\\$! > \\\"\\\$1\\\"\" sh \"\$2\"" _ "$1" "$2" & wait $!' \
     _ "$repo/.internal/util.sh" "$helper_pid_file" 2>/dev/null
 helper="$(cat "$helper_pid_file")"
 assert_pid_exits "$helper" "a helper COMMAND left running is stopped as COMMAND exits"
@@ -39,7 +42,7 @@ signals_file="$TMPDIR/lead-group-signals"
 ready_file="$TMPDIR/lead-group-ready"
 (
     set -m
-    bash -c '. "$1"; lead_group python3 -I -c "$2" "$3" "$4"' lead "$repo/.internal/util.sh" '
+    bash -c 'set -euo pipefail; . "$1"; lead_group python3 -I -c "$2" "$3" "$4"' lead "$repo/.internal/util.sh" '
 import signal, sys, time
 log, ready = sys.argv[1:]
 got = []
@@ -66,7 +69,7 @@ for sig in TERM HUP; do
     child_pid_file="$TMPDIR/lead-group-child-$sig"
     (
         set -m
-        bash -c '. "$1"; lead_group sh -c "echo \$\$ > \"\$1\"; exec sleep 30" sh "$2"' \
+        bash -c 'set -euo pipefail; . "$1"; lead_group sh -c "echo \$\$ > \"\$1\"; exec sleep 30" sh "$2"' \
             lead "$repo/.internal/util.sh" "$child_pid_file" &
         leader=$!
         for _ in {1..50}; do [ -s "$child_pid_file" ] && break; sleep 0.1; done
@@ -83,12 +86,19 @@ st=0
 (
     set -m
     # shellcheck disable=SC2016 # expanded by the inner shells
-    bash -c '. "$1"; lead_group sh -c "sleep 30 & echo \$! > \"\$1\"; kill -KILL \$\$" sh "$2"' \
+    bash -c 'set -euo pipefail; . "$1"; lead_group sh -c "sleep 30 & echo \$! > \"\$1\"; kill -KILL \$\$" sh "$2"' \
         _ "$repo/.internal/util.sh" "$TMPDIR/lead-child" &
     wait $!
 ) 2>/dev/null || st=$?
 assert_eq "$st" 137 "lead_group exits with its command's status, a SIGKILL's included"
 assert_pid_exits "$(cat "$TMPDIR/lead-child")" "  -> stopping the rest of its group"
+
+# A COMMAND that leaves no helper behind leaves no group to stop: lead_group must still exit with
+# its status.
+st=0
+bash -c 'set -euo pipefail; . "$1"; lead_group sh -c "exit 3"' _ "$repo/.internal/util.sh" \
+    2>/dev/null || st=$?
+assert_eq "$st" 3 "lead_group exits with its command's status, its group gone with it"
 
 # ---------------------------------------------------------------------------
 summary
