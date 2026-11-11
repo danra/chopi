@@ -273,13 +273,10 @@ overlaps_proxy_run_dir() {
 }
 
 # Resolve the GitHub token the relay authenticates with, following gh's own source precedence:
-# GH_TOKEN, then GITHUB_TOKEN, then gh's stored login. A variable that is SET wins over the next
-# source even when EMPTY -- an explicit GH_TOKEN='' (or GITHUB_TOKEN='' when GH_TOKEN is unset) means
-# "no token, and do NOT fall back to gh auth" -- so this tests set-vs-unset (the "+x" form), not
-# empty-vs-non-empty. A token pasted with a trailing newline or stray surrounding whitespace would
-# corrupt the Basic credential, so trim it. Read HERE on the host by both
-# chopi-proxy.sh and test/github-relay-test.sh, so the smoke test resolves the token the proxy would; it
-# never enters the sandbox.
+# GH_TOKEN, then GITHUB_TOKEN, then gh's stored login. A SET variable wins even when empty -- an
+# explicit GH_TOKEN='' means "no token, don't fall back to gh auth" -- hence the "+x" tests. Trimmed,
+# as stray whitespace from a paste would corrupt the Basic credential. Runs on the host only; the
+# token never enters the sandbox. Shared with the relay smoke test, so it resolves the same token.
 resolve_gh_token() {
     arity 0
     local token
@@ -297,9 +294,8 @@ resolve_gh_token() {
 }
 
 # Build the "Basic ..." Authorization header the GitHub relay injects: the git-smart-HTTP
-# Basic-auth of "x-access-token:<token>". Shared by chopi-proxy.sh (which ships it) and
-# test/github-relay-test.sh, so the smoke test exercises the exact bytes the relay sends. The tr drops the
-# line wrap GNU coreutils' base64 adds at 76 cols (macOS base64 doesn't wrap, but PATH may have GNU).
+# Basic-auth of "x-access-token:<token>". Shared with the tests, so they check the exact bytes the
+# relay sends. The tr drops the line wrap GNU base64 adds at 76 cols (PATH may have it on macOS).
 gh_basic_auth_header() {
     arity 1
     local token="$1" encoded

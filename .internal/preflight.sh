@@ -109,6 +109,10 @@ preflight_initial() {
     fi
 }
 
+# preflight_config_placement <config_file> <run_dir>
+#
+# Refuse a custom --config file inside the workspace run_dir; with CHOPI_ALLOW_SELF non-empty, only
+# warn. Also fails when either path can't be resolved, e.g. a missing --config file.
 preflight_config_placement() {
     arity 2
     local config_file="$1" run_dir="$2"
