@@ -710,6 +710,13 @@ lead_group() {
     exit "$status"
 }
 
+# Seconds a banner stays up, in Notification Center and on screen under the Alerts style, until
+# alerter withdraws it. The proxy has no terminal, so a banner may be the only word of a denial the
+# user gets, and they may be away when it comes: it waits for them a good while. Bounded all the
+# same, as each banner keeps an alerter waiting on it; a group keeps at most one up anyway, as an
+# alerter exits once another banner replaces its own.
+NOTIFY_TIMEOUT_SECS=3600
+
 # Pop a macOS banner with SUBTITLE and MESSAGE, in the background, replacing the last one in
 # GROUP. A click on it opens FILE in the user's editor -- or says on stderr why it couldn't.
 #
@@ -722,7 +729,7 @@ notify() {
                          --subtitle "$subtitle" \
                          --message "$message" \
                          --group "$group" \
-                         --timeout 10 2>/dev/null || true)
+                         --timeout "$NOTIFY_TIMEOUT_SECS" 2>/dev/null || true)
         case "$result" in
             @TIMEOUT | @CLOSED | '') ;;
             *) open_in_gui_editor "$file" >/dev/null || true ;;
