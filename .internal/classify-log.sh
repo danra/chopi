@@ -45,14 +45,10 @@ surface_raw() {
     [ "$verbose" = true ] || printf '%s\n' "$line"
 }
 
-# Returns 1 iff a denylist-matching host was already logged this session
+# Was the denylist-matching host $1 already logged this session?
 known_deny_seen() {
     arity 1
-    local host="$1" seen
-    for seen in "${known_seen[@]:-}"; do
-        if [ "$seen" = "$host" ]; then return 0; fi
-    done
-    return 1
+    is_item_in_list "$1" "${known_seen[@]+"${known_seen[@]}"}"
 }
 
 # classify_log <is_interactive> <script> <on_deny_cmd> <on_reload_cmd> <verbose>
