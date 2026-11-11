@@ -298,6 +298,7 @@ main() {
         "${queue_env[@]+"${queue_env[@]}"}" \
         CHOPI_DIR="$CHOPI_DIR" \
         CHOPI_GITHUB_RELAY_PORT="$SESSION_RELAY_PORT" \
+        CHOPI_PROXY_LOG="$SESSION_PROXY_LOG" \
         HTTP_PROXY="$proxy"  HTTPS_PROXY="$proxy" \
         http_proxy="$proxy"  https_proxy="$proxy" \
         NODE_USE_ENV_PROXY=1 \
