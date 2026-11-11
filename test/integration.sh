@@ -639,10 +639,11 @@ write_cfg "$cfg_agent" \
 chopi_wrap() { ( cd "$wrap_repo" && "$repo/bin/chopi" --config "$cfg_agent" -- "$@" ); }
 
 # shellcheck disable=SC2016
-out="$(chopi_wrap /bin/sh -c 'echo "$GIT_CONFIG_KEY_0=$GIT_CONFIG_VALUE_0"; echo "RELAY_PORT=$CHOPI_GITHUB_RELAY_PORT"; git ls-remote --get-url https://github.com/o/r; ls "$TMPDIR"' 2>/dev/null)"
+out="$(chopi_wrap /bin/sh -c 'echo "$GIT_CONFIG_KEY_0=$GIT_CONFIG_VALUE_0"; echo "RELAY_PORT=$CHOPI_GITHUB_RELAY_PORT"; echo "PROXY_LOG=$CHOPI_PROXY_LOG"; git ls-remote --get-url https://github.com/o/r; ls "$TMPDIR"' 2>/dev/null)"
 relay_port="$(printf '%s\n' "$out" | sed -n 's/^RELAY_PORT=//p')"
 assert_contains "$out" "chopi.wrapped=wrappedmarker"   "a CHOPI_GIT_CONFIG pair reaches the sandboxed command at a worktree root"
 assert_contains "$out" "http://127.0.0.1:${relay_port:-?}/o/r"   "  -> and github.com git reroutes to the session's relay in the sandbox"
+assert_contains "$out" "PROXY_LOG=$CHOPI_PROXY_LOG_DIR/proxy-" "  -> the sandboxed command is told where its session's proxy log is"
 assert_contains "$out" "$CHOPI_IN_SANDBOX_WRAPPER_PREFIX"  "  -> the in-sandbox wrapper profile is created for the run"
 assert_contains "$out" "$CHOPI_CMD_ALIAS_PREFIX"            "  -> as is the command-alias dir"
 
