@@ -66,8 +66,8 @@ known_deny_seen() {
 #                     config reloaded, "rules" or "allowlist" (the GitHub allowlist), or "" for
 #                     none. A failure means the user's edit did NOT take effect, which they must
 #                     hear about as surely as a DENY; a success makes any earlier failure of that
-#                     file's stale. The proxy passes notify_reload (pops, or withdraws, a macOS
-#                     banner).
+#                     file's stale. The proxy passes notify_reload (pops a macOS banner, a
+#                     success's replacing the file's failure).
 #   <verbose>         true/false -- when true, nothing is dropped or replaced: every raw
 #                     smokescreen line is passed through as-is, interleaved with chopi-proxy's
 #                     own output. Normally-dropped lines (allowed connections, known noise)

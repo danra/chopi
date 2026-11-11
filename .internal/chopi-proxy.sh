@@ -152,26 +152,29 @@ report_formatter_failure() {
 # last one, but not another session's.
 notify_deny() {
     arity 1
-    notify "chopi-proxy-deny-$PARENT_PID" "$LOG" 'connection denied' "DENY $1"
+    notify "chopi-proxy-deny-$PARENT_PID" "$LOG" 'connection denied' "DENY $1" "$NOTIFY_ALERT_SECS"
 }
 
-# Each config file's reload failure has a banner group of its own: a reload of one says nothing of
-# the other's last edit.
+# Each config file's reloads have a banner group of their own: a reload of one says nothing of the
+# other's last edit. A reload's banner replaces the file's last one: a failure stays up until the
+# user fixes it, and the fix's confirmation takes its place, briefly. With no terminal for the
+# proxy, the confirmation is the user's word that an edit took effect before they retry what it
+# allows -- or, by its absence, that the edit went to a file the session doesn't read.
 #
 # usage: notify_reload ok|failed rules|allowlist
 RULES_RELOAD_GROUP="$(reload_banner_group "$RULES" "")"
 ALLOWLIST_RELOAD_GROUP="$(reload_banner_group "$GITHUB_ALLOWLIST" "$(gh_token_source)")"
 notify_reload() {
     arity 2
-    local file="$RULES" subtitle='rules reload failed' group="$RULES_RELOAD_GROUP"
+    local file="$RULES" what='rules' group="$RULES_RELOAD_GROUP"
     if [ "$2" = allowlist ]; then
-        file="$GITHUB_ALLOWLIST" subtitle='GitHub allowlist reload failed'
-        group="$ALLOWLIST_RELOAD_GROUP"
+        file="$GITHUB_ALLOWLIST" what='GitHub allowlist' group="$ALLOWLIST_RELOAD_GROUP"
     fi
     case "$1" in
-        failed) notify "$group" "$LOG" "$subtitle" "Your edit to ${file##*/} did not take effect" ;;
-        # The config now in effect is the user's latest: a failure banner still up is stale.
-        ok) { alerter --remove "$group" >/dev/null 2>&1 || true; } & ;;
+        failed) notify "$group" "$LOG" "$what reload failed" \
+                    "Your edit to ${file##*/} did not take effect" "$NOTIFY_ALERT_SECS" ;;
+        ok)     notify "$group" "$LOG" "$what reloaded" \
+                    "Your edit to ${file##*/} took effect" "$NOTIFY_CONFIRM_SECS" ;;
     esac
 }
 
