@@ -300,8 +300,10 @@ Network path of the sandboxed command:
   session's proxy log under `~/Library/Logs/chopi` (or as a single plain `deny(known)`
   line if they match the known denylist); if the host should be allowed, add it to
   `config/proxy-rules.yaml`. The proxy hot-reloads the rules, so you don't need to
-  restart the session. A rules edit that fails to load pops a notification and shows in
-  the log as `RULES RELOAD FAILED`, with the previous rules kept.
+  restart the session. A rules edit that loads pops a brief notification naming the
+  file -- none means the session's proxy reads a different file (see `CHOPI_PROXY_RULES`
+  in `config/sandbox.sh`). One that fails to load pops a notification that stays until
+  you fix it, and shows in the log as `RULES RELOAD FAILED`, with the previous rules kept.
 - **A `gh` subcommand fails with `not an allowed API operation`, `none of the git
   remotes ... correspond to the GH_HOST environment variable`, or `unable to expand
   placeholder in path`** -- Use REST forms naming the repo explicitly (`-R OWNER/REPO`,

@@ -591,12 +591,12 @@ write_proxy_network_profile() {
     } >"$file"
 }
 
-# The macOS banner group of the proxy's reload failures for config file FILE, the rules or the
-# GitHub allowlist: one per file, shared by the proxy of every session reading it. They all reload
-# the same edit, so a broken one shows a single banner, rather than one per session, and the next
-# good one withdraws it, whichever session's proxy reloads it first. That holds only among sessions
-# whose reloads of FILE can't differ: a non-empty KEY sets apart those that can -- the allowlist's
-# render depends on where the session takes its GitHub token from (gh_token_source).
+# The macOS banner group of the proxy's reloads of config file FILE, the rules or the GitHub
+# allowlist: one per file, shared by the proxy of every session reading it. They all reload the same
+# edit, so a broken one shows a single banner, rather than one per session, and the next good one's
+# confirmation replaces it, whichever session's proxy reloads it first. That holds only among
+# sessions whose reloads of FILE can't differ: a non-empty KEY sets apart those that can -- the
+# allowlist's render depends on where the session takes its GitHub token from (gh_token_source).
 #
 # usage: reload_banner_group FILE KEY
 reload_banner_group() {
@@ -711,25 +711,30 @@ lead_group() {
 }
 
 # Seconds a banner stays up, in Notification Center and on screen under the Alerts style, until
-# alerter withdraws it. The proxy has no terminal, so a banner may be the only word of a denial the
-# user gets, and they may be away when it comes: it waits for them a good while. Bounded all the
-# same, as each banner keeps an alerter waiting on it; a group keeps at most one up anyway, as an
-# alerter exits once another banner replaces its own.
-NOTIFY_TIMEOUT_SECS=3600
+# alerter withdraws it -- for notify's callers to pass as its TIMEOUT:
+# - NOTIFY_ALERT_SECS for what the user must act on, a denial or a broken edit: the proxy has no
+#   terminal, so a banner may be the only word of it the user gets, and they may be away when it
+#   comes, so it waits for them a good while. Bounded all the same, as each banner keeps an alerter
+#   waiting on it; a group keeps at most one up anyway, as an alerter exits once another banner
+#   replaces its own.
+# - NOTIFY_CONFIRM_SECS for a confirmation, like an edit taking effect: news only as it comes.
+NOTIFY_ALERT_SECS=3600
+NOTIFY_CONFIRM_SECS=10
 
 # Pop a macOS banner with SUBTITLE and MESSAGE, in the background, replacing the last one in
-# GROUP. A click on it opens FILE in the user's editor -- or says on stderr why it couldn't.
+# GROUP, for TIMEOUT seconds. A click on it opens FILE in the user's editor -- or says on stderr
+# why it couldn't.
 #
-# usage: notify GROUP FILE SUBTITLE MESSAGE
+# usage: notify GROUP FILE SUBTITLE MESSAGE TIMEOUT
 notify() {
-    arity 4
-    local group="$1" file="$2" subtitle="$3" message="$4"
+    arity 5
+    local group="$1" file="$2" subtitle="$3" message="$4" timeout="$5"
     {
         result=$(alerter --title 'Chopi' \
                          --subtitle "$subtitle" \
                          --message "$message" \
                          --group "$group" \
-                         --timeout "$NOTIFY_TIMEOUT_SECS" 2>/dev/null || true)
+                         --timeout "$timeout" 2>/dev/null || true)
         case "$result" in
             @TIMEOUT | @CLOSED | '') ;;
             *) open_in_gui_editor "$file" >/dev/null || true ;;
