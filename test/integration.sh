@@ -722,6 +722,15 @@ swt_patch="$swt_slot/add-a-greeting-rule.patch"
 assert_present "$swt_patch" "the patch landed in the target's slot"
 assert_contains "$(cat "$swt_patch" 2>/dev/null)" '+Greet warmly.' "  -> proposing the draft's addition"
 
+# The queue's stat-only chain stops below the canonical HOME, leaving HOME itself to safehouse:
+# that holds only while safehouse grants metadata on HOME as resolved, not as spelled.
+ln -s "$base/home" "$base/home-link"
+home_metadata="$(cd "$ws" && HOME="$base/home-link" safehouse --stdout 2>/dev/null \
+    | sed -n '/#safehouse-test-id:home-ancestor-metadata#/,/^)$/p')"
+assert_contains "$home_metadata" '(literal "'"$base/home"'")' \
+    "safehouse grants metadata on a symlinked HOME as resolved, where the queue's chain stops"
+rm "$base/home-link"
+
 
 # ---------------------------------------------------------------------------
 echo "chopi refuses when a competing insteadOf would override the GitHub relay routing"

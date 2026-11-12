@@ -463,7 +463,7 @@ assert_contains "$profile" '(allow file-read-metadata (literal "'"$CHOPI_PATCH_Q
     "  -> but does need stat"
 assert_contains "$profile" '(allow file-read-metadata (literal "'"$HOME/.chopi"'"))' "  -> and so does its parent dir"
 assert_not_contains "$profile" '(allow file-read-metadata (literal "'"$HOME"'"))' \
-    "  -> No-need to grant HOME, already granted by safehouse"
+    "  -> No-need to grant HOME, already granted by safehouse, as resolved"
 use_home "$TMPDIR/fresh-home-link"
 write_patch_queue_profile "$TMPDIR/linked-home.sb" "$CHOPI_PATCH_QUEUE_ROOT/$(path_id "$work")"
 linked_profile="$(cat "$TMPDIR/linked-home.sb")"
