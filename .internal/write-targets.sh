@@ -15,10 +15,10 @@ _script_dir="$(dirname "${BASH_SOURCE[0]}")"
 . "$_script_dir/util.sh"
 unset _script_dir
 
-# Canonical, as the targets compared with it and the paths Seatbelt matches are. HOME always exists,
-# so it resolves; validate_queue_root refuses a symlink below it.
+# Canonical, as the targets compared with it and the paths Seatbelt matches are; validate_queue_root
+# refuses a symlink below it.
 CHOPI_REAL_HOME="$(realpath_or_self "$HOME")"
-CHOPI_PATCH_QUEUE_ROOT="$CHOPI_REAL_HOME/.chopi/patch-queue"
+CHOPI_PATCH_QUEUE_ROOT="${CHOPI_REAL_HOME%/}/.chopi/patch-queue"
 
 # Print the canonical path of configured target $1, resolving a relative one against workspace $2.
 target_real_path() {
@@ -277,6 +277,11 @@ create_patch_queue() {
     id="$(path_id "$real_run_dir")" || return 1
     queue_dir="$CHOPI_PATCH_QUEUE_ROOT/$id"
 
+    # The root is built from CHOPI_REAL_HOME: refuse it unless that names an existing directory and
+    # is already canonical. A missing HOME would be created by the mkdir below, slipping it past
+    # safehouse's own check; one resolved only after the lib was sourced leaves the root uncanonical.
+    [ "$(cd "$CHOPI_REAL_HOME" 2>/dev/null && pwd -P)" = "$CHOPI_REAL_HOME" ] \
+        || { echo "chopi: cannot resolve HOME '$HOME', which the patch queue lives under" >&2; return 1; }
     validate_queue_root || return 1
     mkdir -p "$CHOPI_PATCH_QUEUE_ROOT" \
         || { echo "chopi: cannot create the patch queue at '$CHOPI_PATCH_QUEUE_ROOT'" >&2; return 1; }

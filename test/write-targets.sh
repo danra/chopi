@@ -235,7 +235,7 @@ echo "create_patch_queue"
 # Run create_patch_queue in a fresh shell with HOME=$1, PATH prefixed by $2, after running $3
 # between sourcing the lib and the call.
 create_queue_under_home() {
-    CHOPI_RUN_DIR="$CHOPI_RUN_DIR" HOME="$1" PATH="$2:$PATH" bash -c \
+    CHOPI_RUN_DIR="$CHOPI_RUN_DIR" HOME="$1" PATH="${2:+$2:}$PATH" bash -c \
         '. "$1/.internal/util.sh"; . "$1/.internal/write-targets.sh"; eval "$3"; create_patch_queue "$2"' \
         _ "$repo" "$work" "$3" 2>&1
 }
@@ -255,13 +255,13 @@ parent="$(/bin/realpath "$(dirname "$1")")" || exit 1
 printf '%s/%s\n' "$parent" "$(basename "$1")"
 EOF
 chmod +x "$TMPDIR/gnu-bin/realpath"
-out="$(create_queue_under_home "$TMPDIR/no-home" "$TMPDIR/gnu-bin" :)"
+create_queue_under_home "$TMPDIR/no-home" "$TMPDIR/gnu-bin" : >/dev/null
 assert_nonzero $? "a HOME that does not exist is refused under GNU realpath too"
 assert_absent "$TMPDIR/no-home" "  -> before anything creates it"
 
 # The root is fixed when the lib is sourced: a HOME that only resolves afterwards, through a
 # symlink, left it spelled uncanonically.
-out="$(create_queue_under_home "$TMPDIR/late-home" "" "ln -s '$TMPDIR/fresh-home' '$TMPDIR/late-home'")"
+create_queue_under_home "$TMPDIR/late-home" "" "ln -s '$TMPDIR/fresh-home' '$TMPDIR/late-home'" >/dev/null
 assert_nonzero $? "a HOME resolved only after the lib was sourced is refused"
 assert_absent "$TMPDIR/fresh-home/.chopi/patch-queue" "  -> before anything creates the queue"
 rm "$TMPDIR/late-home"
