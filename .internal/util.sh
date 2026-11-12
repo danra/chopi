@@ -11,35 +11,32 @@ unset _util_dir
 
 SMOKESCREEN_BIN="$CHOPI_DIR/.internal/proxy/chopi-smokescreen"
 
-# The outgoing proxy's and the GitHub relay's loopback ports: the kernel picks them as chopi-proxy
-# first starts, and a restart takes them again where free (recorded in PROXY_PORTS_FILE.last), and
-# read_proxy_ports reads them from PROXY_PORTS_FILE.
-PROXY_PORT=""
-GITHUB_RELAY_PORT=""         # git-smart-HTTP -> github.com
-
-# The Caddy GitHub-API relay's endpoint. Unlike the git relay (a TCP port), gh reaches this over a
-# unix socket: chopi sets GH_HOST=github.localhost so gh addresses the API as plaintext
-# http://api.github.localhost/... (no CA needed), and gh's http_unix_socket config dials this path
-# instead of resolving that name. The relay therefore sees the cleartext API request and scopes it
-# to the same allowlist as git. chopi.sh opens a Seatbelt hole to this exact path.
-#
-# It and the ports file live in PROXY_RUN_DIR, which chopi-proxy.sh and chopi.sh share: run/ under
-# ~/.chopi, which the sandbox can neither read nor write. Not under TMPDIR, which it can write: the
-# ports decide which holes chopi opens, so a sandboxed command that rewrote them would aim the next
-# run's holes, and HTTP_PROXY, at a local service of its choosing. Setting CHOPI_RUN_DIR gives a
-# chopi-proxy, and the chopi runs started under it, a proxy of their own, as the tests do: its run/,
-# which chopi-proxy makes private (make_private_dir), leaving the dir CHOPI_RUN_DIR names as it is.
-# A relative one is taken from where it is given: chopi-proxy moves into chopi's directory and chopi
-# into a worktree, so left relative it would name a different dir for each.
+# PROXY_RUN_DIR holds each session's proxy dir (see session-proxy.sh), where its proxy reports its
+# ports and serves the GitHub API relay's socket: run/ under ~/.chopi, which the sandbox can neither
+# read nor write. Not under TMPDIR, which it can write: the ports decide which holes chopi opens, so
+# a sandboxed command -- another session's, say -- that rewrote them would aim the session's holes,
+# and HTTP_PROXY, at a local service of its choosing. Setting CHOPI_RUN_DIR moves it, as the tests
+# do: to its run/, which chopi makes private (make_private_dir), leaving the dir CHOPI_RUN_DIR names
+# as it is. A relative one is taken from where it is given: chopi moves into a worktree, so left
+# relative it would name a different dir there.
 CHOPI_RUN_DIR="${CHOPI_RUN_DIR:-$HOME/.chopi}"
 case "$CHOPI_RUN_DIR" in
     /*) ;;
     *) CHOPI_RUN_DIR="$PWD/$CHOPI_RUN_DIR" ;;
 esac
 PROXY_RUN_DIR="${CHOPI_RUN_DIR%/}/run"
-GH_RELAY_SOCK="$PROXY_RUN_DIR/chopi-gh-relay.sock"
-# Where chopi-proxy reports its ports once it serves, and removes them as it stops.
-PROXY_PORTS_FILE="$PROXY_RUN_DIR/chopi-proxy.ports"
+# PROXY_CONFIG_DIR is where a custom proxy config -- CHOPI_PROXY_RULES, CHOPI_GITHUB_ALLOWLIST -- must
+# be: config/ under ~/.chopi, which every session keeps the sandboxed command from changing, whatever
+# config it reads itself (see proxy_config_paths). A session's own config alone wouldn't do: its
+# command could rewrite another session's, which that session's proxy hot-reloads.
+PROXY_CONFIG_DIR="${CHOPI_RUN_DIR%/}/config"
+# The proxy's config files, each as the words VAR DEFAULT TEMPLATE: the sandbox config's variable
+# naming a custom one, else config/DEFAULT, which the installer creates from config/templates/
+# TEMPLATE. What chopi resolves and what every session protects both come from here.
+PROXY_CONFIGS=(
+    "CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml"
+    "CHOPI_GITHUB_ALLOWLIST github-allowlist github-allowlist.template"
+)
 
 # mktemp name prefixes of chopi's per-invocation temporaries (created under the private
 # TMPDIR); shared so the tests assert on the same names chopi creates.
@@ -265,29 +262,54 @@ overlaps_chopi_dir() {
     overlapping_dirs "$real" "$CHOPI_DIR"
 }
 
-# Does path $1 reach chopi-proxy's run dir, in either direction? Its ports file aims each run's
+# Does path $1 reach the proxy's run dir, in either direction? The ports in it aim each session's
 # network holes and HTTP_PROXY, so nothing a session can write may reach it.
 overlaps_proxy_run_dir() {
     arity 1
     overlapping_dirs "$(realpath_or_self "$1")" "$(realpath_or_self "$PROXY_RUN_DIR")"
 }
 
-# Resolve the GitHub token the relay authenticates with, following gh's own source precedence:
-# GH_TOKEN, then GITHUB_TOKEN, then gh's stored login. A SET variable wins even when empty -- an
-# explicit GH_TOKEN='' means "no token, don't fall back to gh auth" -- hence the "+x" tests. Trimmed,
-# as stray whitespace from a paste would corrupt the Basic credential. Runs on the host only; the
-# token never enters the sandbox. Shared with the relay smoke test, so it resolves the same token.
+# Does path $1 reach any session's proxy config (proxy_config_paths), in either direction? Printing
+# the config it reaches. The proxies hot-reload it, so nothing that changes it unreviewed may reach it.
+overlaps_proxy_config() {
+    arity 1
+    local config
+    while IFS= read -r config; do
+        if overlapping_dirs "$1" "$config"; then
+            printf '%s' "$config"
+            return 0
+        fi
+    done < <(proxy_config_paths)
+    return 1
+}
+
+# Print the GitHub token the environment sets, as it is: GH_TOKEN, then GITHUB_TOKEN. A SET variable
+# wins even when empty -- an explicit GH_TOKEN='' means "no token, don't fall back to gh auth" --
+# hence the "+x" tests. Fails when neither is set, leaving the token to gh's stored login.
+env_gh_token() {
+    arity 0
+    if [ -n "${GH_TOKEN+x}" ]; then
+        printf '%s' "$GH_TOKEN"
+    elif [ -n "${GITHUB_TOKEN+x}" ]; then
+        printf '%s' "$GITHUB_TOKEN"
+    else
+        return 1
+    fi
+}
+
+# Resolve the GitHub token the relay authenticates with, following gh's own source precedence: the
+# environment's (env_gh_token), else gh's stored login. Trimmed, as stray whitespace from a paste
+# would corrupt the Basic credential. Runs on the host only; the token never enters the sandbox.
+# Shared with the relay smoke test, so it resolves the same token.
 resolve_gh_token() {
     arity 0
     local token
-    if [ -n "${GH_TOKEN+x}" ]; then
-        token="$GH_TOKEN"
-    elif [ -n "${GITHUB_TOKEN+x}" ]; then
-        token="$GITHUB_TOKEN"
-    elif command -v gh >/dev/null 2>&1; then
-        token="$(gh auth token 2>/dev/null || true)"
-    else
-        token=""
+    if ! token="$(env_gh_token)"; then
+        if command -v gh >/dev/null 2>&1; then
+            token="$(gh auth token 2>/dev/null || true)"
+        else
+            token=""
+        fi
     fi
     trim_into token "$token"
     printf '%s' "$token"
@@ -367,25 +389,27 @@ github_relay_git_config() {
     printf '%s\n' "lfs.$relay/.locksverify=true"
 }
 
-# The env wiring (VAR=val lines) pointing gh at the API relay, writing CONFIG_DIR's config file on
-# the way: GH_HOST=github.localhost makes gh address the API as plaintext
+# The env wiring (VAR=val lines) pointing gh at the API relay on unix socket SOCK, writing
+# CONFIG_DIR's config file on the way. gh reaches the API relay over a unix socket rather than a TCP
+# port: GH_HOST=github.localhost makes gh address the API as plaintext
 # http://api.github.localhost/... (no CA), and http_unix_socket makes it dial the relay socket
 # instead of resolving that name -- it has no environment variable, so it goes in the config file.
+# The relay therefore sees the cleartext API request and scopes it to the same allowlist as git.
 # The GH_TOKEN placeholder only has to make gh consider itself logged in; the relay wipes it and
 # injects the real token host-side.
 github_relay_gh_env() {
-    arity 1
-    local config_dir="$1"
-    printf 'http_unix_socket: %s\n' "$GH_RELAY_SOCK" > "$config_dir/config.yml" || return 1
+    arity 2
+    local config_dir="$1" sock="$2"
+    printf 'http_unix_socket: %s\n' "$sock" > "$config_dir/config.yml" || return 1
     printf '%s\n' \
         "GH_HOST=github.localhost" \
         "GH_CONFIG_DIR=$config_dir" \
         "GH_TOKEN=x-chopi-relay"
 }
 
-# Write the Seatbelt profile denying the sandboxed command any access to chopi-proxy's run dir
-# RUN_DIR to FILE. Its ports file aims each run's network holes and HTTP_PROXY, so a command that
-# rewrote it would aim the next session's at a local port of its choosing. Preflight keeps the
+# Write the Seatbelt profile denying the sandboxed command any access to the proxy's run dir
+# RUN_DIR to FILE. The ports in it aim each session's network holes and HTTP_PROXY, so a command
+# that rewrote another session's would aim them at a local port of its choosing. Preflight keeps the
 # workspace off it, but other grants can cover it too: an --add-dirs path, a safe write target
 # (readable), or a CHOPI_RUN_DIR under a dir safehouse grants, like TMPDIR. Appended after every
 # file grant, so that among matching filtered rules this deny comes last and wins. Its ancestors
@@ -397,11 +421,49 @@ write_proxy_run_dir_profile() {
     arity 2
     local file="$1" run_dir
     run_dir="$(realpath "$2")" \
-        || { echo "chopi: cannot resolve chopi-proxy's run directory '$2'" >&2; return 1; }
+        || { echo "chopi: cannot resolve the proxy's run directory '$2'" >&2; return 1; }
     {
-        echo ";; chopi: chopi-proxy's run dir, whose ports aim the network holes, stays out of reach."
+        echo ";; chopi: the proxy's run dir, whose ports aim the network holes, stays out of reach."
         rule 'deny file-read* file-write*' subpath "$run_dir"
         pin_ancestries / "$(dirname "$run_dir")"
+    } >"$file"
+}
+
+# Print the real paths of every proxy config any session may read, one per line: PROXY_CONFIG_DIR,
+# where a custom one must be (see resolve_proxy_config), and the default files, which may link
+# elsewhere. Every session keeps its command from changing them all, as a safe write target must
+# not overlap them, whichever config the session reads itself.
+proxy_config_paths() {
+    arity 0
+    local config default
+    realpath_or_self "$PROXY_CONFIG_DIR"
+    for config in "${PROXY_CONFIGS[@]}"; do
+        read -r _ default _ <<< "$config"
+        realpath_or_self "$CHOPI_DIR/config/$default"
+    done
+}
+
+# Write the Seatbelt profile denying the sandboxed command any change to the proxies' config to FILE
+# (proxy_config_paths): a command that could rewrite rules or a GitHub allowlist could lift its own
+# outgoing limits, or another session's, mid-session even, as the proxies hot-reload them. Whatever
+# grant covers one -- the workspace, the sandbox config's, safehouse's own, a trusted .safehouse's --
+# this deny, appended after every file grant, comes last among the matching rules and wins: nothing
+# in them can be written, removed, or have another put in its place. Their ancestors are pinned, so
+# none can be renamed away and replaced, nor made where missing. Reading is left as granted. Another
+# name for a config file, a hard link, which these rules can't see, chopi refuses before launch (see
+# preflight_proxy_config_links).
+#
+# usage: write_proxy_config_profile FILE
+write_proxy_config_profile() {
+    arity 1
+    local file="$1" paths=() path
+    readarray -t paths < <(proxy_config_paths)
+    {
+        echo ";; chopi: the proxies' config, which sets the sessions' outgoing limits, stays unchangeable."
+        for path in "${paths[@]}"; do
+            rule 'deny file-write*' subpath "$path"
+        done
+        pin_ancestries / "${paths[@]%/*}"
     } >"$file"
 }
 
@@ -423,6 +485,34 @@ write_proxy_network_profile() {
     } >"$file"
 }
 
+# The macOS banner group of the proxy's reloads of config file FILE, the rules or the GitHub
+# allowlist: one per file, shared by the proxy of every session reading it. They all reload the same
+# edit, so a broken one shows a single banner, rather than one per session, and the next good one's
+# confirmation replaces it, whichever session's proxy reloads it first. That holds only among
+# sessions whose reloads of FILE can't differ: a non-empty KEY sets apart those that can -- the
+# allowlist's render depends on where the session takes its GitHub token from (gh_token_source).
+#
+# usage: reload_banner_group FILE KEY
+reload_banner_group() {
+    arity 2
+    local hash
+    hash="$(md5 -q -s "$1${2:+
+$2}")"
+    printf 'chopi-proxy-reload-%s' "${hash:0:12}"
+}
+
+# Where resolve_gh_token takes the GitHub token from, which decides whether the relays' config
+# renders for a non-empty allowlist: "env" for a non-empty one in the environment (env_gh_token),
+# "none" for an empty one, which resolve_gh_token takes as it is, and "gh" for gh's own, the same
+# for every session. Its value alone matters to nothing a reload checks, so it is no part of this.
+gh_token_source() {
+    arity 0
+    local token
+    token="$(env_gh_token)" || { echo gh; return; }
+    trim_into token "$token"
+    if [ -n "$token" ]; then echo env; else echo none; fi
+}
+
 # Do github remote URLs resolve to the git relay on PORT under the ambient git config (all
 # scopes, read from the current directory)? The in-sandbox wrapper runs this after exporting
 # chopi's rewrites into the command scope, so it checks exactly the config the sandboxed command
@@ -442,46 +532,18 @@ is_github_relay_reroute_effective() {
     return 0
 }
 
-port_has_listener() {
-    arity 1
-    nc -z 127.0.0.1 "$1" 2>/dev/null
-}
-
-# True when something accepts connections on unix socket PATH. curl does the dialing because
-# macOS nc cannot -z-scan a unix socket; any HTTP outcome after a successful connect counts.
-sock_has_listener() {
-    arity 1
-    curl -s -o /dev/null --max-time 2 --unix-socket "$1" http://sock/ 2>/dev/null
-}
-
-# Set PROXY_PORT and GITHUB_RELAY_PORT from PROXY_PORTS_FILE, one "NAME PORT" line each, as
-# chopi-proxy reports them once it serves. Fails, setting neither, when the file is missing or
-# malformed.
-read_proxy_ports() {
-    arity 0
-    local name port proxy="" relay=""
-    [ -f "$PROXY_PORTS_FILE" ] || return 1
-    while read -r name port; do
-        case "$name" in
-            proxy) proxy="$port" ;;
-            relay) relay="$port" ;;
-        esac
-    done <"$PROXY_PORTS_FILE"
-    [[ "$proxy" =~ ^[0-9]+$ && "$relay" =~ ^[0-9]+$ ]] || return 1
-    PROXY_PORT="$proxy"
-    GITHUB_RELAY_PORT="$relay"
-}
-
-# run_chopi_smokescreen RULES ALLOWLIST RENDER RELAY_LOG -- run chopi's proxy and the GitHub relays,
-# on the rules file RULES, with Caddy's config the output of RENDER run on ALLOWLIST, again on each
-# edit to it, and Caddy's output in RELAY_LOG; the API relay on GH_RELAY_SOCK, and the ports
-# reported in PROXY_PORTS_FILE. It execs, for its PID to be the proxy's: run it in the background.
+# run_chopi_smokescreen DIR PARENT RULES ALLOWLIST RENDER RELAY_LOG -- run a session's proxy and
+# its GitHub relays, on the rules file RULES, with Caddy's config the output of RENDER run on
+# ALLOWLIST, again on each edit to it, and Caddy's output in RELAY_LOG; the API relay on DIR/gh.sock,
+# and the ports reported in DIR/ports; stopping once process PARENT exits. It execs, for its PID to
+# be the proxy's: run it in the background.
 run_chopi_smokescreen() {
-    arity 4
-    exec "$SMOKESCREEN_BIN" --relay-log "$4" --gh-sock "$GH_RELAY_SOCK" --ports-file "$PROXY_PORTS_FILE" \
-        --github-allowlist "$2" --relay-config "$3" -- \
+    arity 6
+    local dir="$1" parent="$2" rules="$3" allowlist="$4" render="$5" relay_log="$6"
+    exec "$SMOKESCREEN_BIN" --dir "$dir" --parent "$parent" --relay-log "$relay_log" \
+        --github-allowlist "$allowlist" --relay-config "$render" -- \
         --config-file "$CHOPI_DIR/.internal/smokescreen-config.yaml" \
-        --egress-acl-file "$1"
+        --egress-acl-file "$rules"
 }
 
 # Make dir $1, in an existing parent, a directory only we can reach: created so if missing, else
@@ -540,4 +602,56 @@ lead_group() {
     # The group outlives COMMAND, its ID with it, for as long as a helper of COMMAND's is in it.
     kill -TERM -- "-$pid" 2>/dev/null || :
     exit "$status"
+}
+
+# Seconds a banner stays up, in Notification Center and on screen under the Alerts style, until
+# alerter withdraws it -- for notify's callers to pass as its TIMEOUT:
+# - NOTIFY_ALERT_SECS for what the user must act on, a denial or a broken edit: the proxy has no
+#   terminal, so a banner may be the only word of it the user gets, and they may be away when it
+#   comes, so it waits for them a good while. Bounded all the same, as each banner keeps an alerter
+#   waiting on it; a group keeps at most one up anyway, as an alerter exits once another banner
+#   replaces its own.
+# - NOTIFY_CONFIRM_SECS for a confirmation, like an edit taking effect: news only as it comes.
+NOTIFY_ALERT_SECS=3600
+NOTIFY_CONFIRM_SECS=10
+
+# Pop a macOS banner with SUBTITLE and MESSAGE, in the background, replacing the last one in
+# GROUP, for TIMEOUT seconds. A click on it opens FILE in the user's editor -- or says on stderr
+# why it couldn't.
+#
+# usage: notify GROUP FILE SUBTITLE MESSAGE TIMEOUT
+notify() {
+    arity 5
+    local group="$1" file="$2" subtitle="$3" message="$4" timeout="$5"
+    {
+        result=$(alerter --title 'Chopi' \
+                         --subtitle "$subtitle" \
+                         --message "$message" \
+                         --group "$group" \
+                         --timeout "$timeout" 2>/dev/null || true)
+        case "$result" in
+            @TIMEOUT | @CLOSED | '') ;;
+            *) open_in_gui_editor "$file" >/dev/null || true ;;
+        esac
+    } &
+}
+
+# Open FILE for the user from a process with no terminal, like the proxy's notifications: in
+# their editor, VISUAL or else EDITOR, when it's one known to open a window of its own, and in the
+# default text editor macOS has for it otherwise -- a terminal editor would have nowhere to show.
+# The setting is split into words as a shell would, its quotes and backslashes included, so a path
+# or an argument with spaces stays whole -- by xargs, which expands nothing. One it can't split, an
+# unterminated quote, is as good as none.
+open_in_gui_editor() {
+    arity 1
+    local file="$1" editor=() word command
+    while IFS= read -r -d '' word; do
+        editor+=("$word")
+    done < <(printf '%s' "${VISUAL:-${EDITOR:-}}" | xargs printf '%s\0' 2>/dev/null)
+    command="${editor[0]:-}"
+    case "${command##*/}" in
+        code|code-insiders|codium|cursor|windsurf|zed|subl|mate|bbedit)
+            "${editor[@]}" "$file" ;;
+        *)  open -t "$file" ;;
+    esac
 }

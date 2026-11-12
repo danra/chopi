@@ -2,16 +2,17 @@
 #
 # test/integration.sh -- chopi's end-to-end integration tests
 #
-# starts the real outgoing proxy (bin/chopi-proxy.sh) and runs real sandbox-protected
-# commands through the `chopi` command (bin/chopi -> chopi.sh), then asserts that filesystem
-# and network access are exactly what the policy allows -- no more, no less:
+# runs real sandbox-protected commands through the `chopi` command (bin/chopi -> chopi.sh), each
+# with the real outgoing proxy it starts for its session, then asserts that filesystem and
+# network access are exactly what the policy allows -- no more, no less:
 #
 #   * filesystem: read/write inside the workspace works; reads/writes OUTSIDE it (incl.
 #     chopi's own dir) are denied.
 #   * network: an allowed host is reachable THROUGH the proxy; a host that's not allowed
 #     is refused by the proxy (and the denial is logged + notified); any direct outgoing connection
-#     that bypasses the proxy, or aims at a non-allowlisted loopback port, is blocked by Seatbelt.
-#   * rules hot reload: an edit to the rules file takes effect while the proxy runs; a
+#     that bypasses the proxy, or aims at a non-allowlisted loopback port -- another session's
+#     proxy included -- is blocked by Seatbelt. A session's proxy stops with the session.
+#   * rules hot reload: an edit to the rules file takes effect while the session runs; a
 #     broken edit is refused loudly and the previous rules stay in effect.
 
 set -euo pipefail
@@ -19,12 +20,13 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
 # A private TMPDIR, exported so the scripts under test leave their temporaries here too. It is the
-# CHOPI_RUN_DIR too, set before sourcing util.sh, which derives GH_RELAY_SOCK and PROXY_PORTS_FILE
-# from it, so the proxy this test starts, and the chopi runs it starts, are its own, whatever
-# chopi-proxy may be running beside it; trap it now so an early skip still cleans up (the rest of
-# the fixtures, and the fuller trap, come after the skip guards below).
+# CHOPI_RUN_DIR too, so the sessions' proxies this test starts keep their dirs in it, not the user's
+# run dir; trap it now so an early skip still cleans up (the rest of the fixtures, and the fuller
+# trap, come after the skip guards below). The run dir is canonical, as the custom proxy config in
+# it is: chopi hands the proxy its real path, which names the config's reload banners, for the
+# assertions below to name alike.
 TMPDIR="$(mktemp -d)"; export TMPDIR
-CHOPI_RUN_DIR="$TMPDIR"; export CHOPI_RUN_DIR
+CHOPI_RUN_DIR="$(cd "$TMPDIR" && pwd -P)"; export CHOPI_RUN_DIR
 trap 'rm -rf "$TMPDIR"' EXIT
 
 . "$repo/.internal/util.sh"
@@ -61,7 +63,10 @@ done
 # ---------------------------------------------------------------------------
 vartmp="$(cd /var/tmp && pwd -P)" || { echo "error: cannot resolve /var/tmp" >&2; exit 1; }
 base="$(mktemp -d "$vartmp/chopi-itest.XXXXXX")" || { echo "error: mktemp failed" >&2; exit 1; }
-trap 'if [ -n "${proxy_pid:-}" ]; then stop_proxy "$proxy_pid"; fi; rm -rf "$base" "$TMPDIR"' EXIT
+# The background sessions below each run while a dir of theirs in the workspace exists, so removing
+# the fixtures ends any still running: they ignore INT, as background commands here do. They, and
+# their proxies, are then waited for.
+trap 'rm -rf "$base" "$TMPDIR"; wait' EXIT
 
 ws="$base/workspace"            # the sandbox workspace (read/write granted, as the workdir)
 outside="$base/outside"         # sibling of the workspace -> reliably denied
@@ -69,17 +74,21 @@ alerter_stub="$base/bin"        # a recording `alerter` shim on the proxy's PATH
 claudebin="$base/claudebin"     # a stand-in `claude` for the Claude-context cases
 codexbin="$base/codexbin"       # a stand-in `codex` for checking Chopi's argv
 cfg="$base/config/sandbox.sh"   # minimal sandbox config, OUTSIDE the workspace
-rules="$base/config/itest-rules.yaml"
-proxy_log="$base/proxy.log"
+# Custom proxy config must be in PROXY_CONFIG_DIR, here under the test's CHOPI_RUN_DIR.
+rules="$PROXY_CONFIG_DIR/itest-rules.yaml"
+empty_github_allow="$PROXY_CONFIG_DIR/itest-github-allowlist-empty"
 alerter_log="$base/alerter-calls.log"
-mkdir -p "$ws" "$outside" "$alerter_stub" "$claudebin" "$codexbin" "$base/config" "$base/home"
+mkdir -p "$ws" "$outside" "$alerter_stub" "$claudebin" "$codexbin" "$base/config" "$base/home" \
+    "$PROXY_CONFIG_DIR"
 
 # Fixture HOME under $base, automatically cleaned-up and avoids dirtying actual ~
 # Belongs in /var/tmp for the same reason $base does; under $TMPDIR, safehouse's blanket
 # /var/folders grant would make that file readable to any command, agent profile or not.
 HOME="$base/home"; export HOME
-# Sourced here, not with the libs above: it derives the patch queue root from $HOME.
+# Sourced here, not with the libs above: they derive the patch queue root and the proxy log dir
+# from $HOME.
 . "$repo/.internal/write-targets.sh"
+. "$repo/.internal/session-proxy.sh"
 # A commit identity, the one thing the fixture takes away from the developer's global git config
 printf '[user]\n\tname = t\n\temail = t@t.t\n' > "$HOME/.gitconfig"
 
@@ -108,8 +117,12 @@ printf '%s\n' "$@"
 EOF
 chmod +x "$codex_shim"
 
+: > "$empty_github_allow"
+
 # write_cfg FILE [LINE...] -- a minimal config: no dir grants beyond the stub agent's (so denials
-# are clean) and PATH of system binaries only, plus any LINEs: `+=` adds to those, `=` replaces.
+# are clean), PATH of system binaries only, and the test's proxy rules and empty GitHub allowlist,
+# plus any LINEs: `+=` adds to those, `=` replaces. The proxy config keeps every session from
+# falling back to the developer's own config/proxy-rules.yaml.
 # With --template, the config first sources the shipped template, as a user's would.
 write_cfg() {
     local file="$1"; shift
@@ -121,6 +134,8 @@ write_cfg() {
         cat <<EOF
 CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$claudebin:$codexbin" )
 CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
+CHOPI_PROXY_RULES="$rules"
+CHOPI_GITHUB_ALLOWLIST="$empty_github_allow"
 EOF
         printf '%s\n' "$@"
     } > "$file"
@@ -144,14 +159,30 @@ EOF
 write_test_rules
 
 # alerter shim: record each invocation (so we can prove the denial-notification path fired)
-# instead of popping a real macOS banner per DENY.
+# instead of popping a real macOS banner per DENY. First on PATH, which chopi passes on to the
+# sessions' proxies; jq/nc/etc. stay reachable via the rest. It records only after a second, as
+# a banner stays up a while: by then its session has ended and stopped the proxy, which must
+# leave the notification be.
 : > "$alerter_log"
 cat > "$alerter_stub/alerter" <<EOF
 #!/bin/sh
+sleep 1
 printf '%s\n' "\$*" >> "$alerter_log"
 exit 0
 EOF
 chmod +x "$alerter_stub/alerter"
+PATH="$alerter_stub:$PATH"
+
+# The log of the latest session's proxy.
+latest_proxy_log() {
+    arity 0
+    local latest
+    # Not the relays' logs beside it (proxy-*.caddy.log), which Caddy, starting alongside the
+    # proxy, may write last.
+    # shellcheck disable=SC2012,SC2010  # chopi names the logs, so odd names are moot
+    latest="$(ls -t "$CHOPI_PROXY_LOG_DIR"/proxy-*.log 2>/dev/null | grep -v '\.caddy\.log$' | head -n 1)"
+    printf '%s' "${latest:-$CHOPI_PROXY_LOG_DIR/none.log}"
+}
 
 # Poll FILE until PATTERN (literal) appears on at least COUNT lines -- for asserting a
 # repeat of an already-seen log line (e.g. a second rules reload).
@@ -176,99 +207,40 @@ wait_for() {
 # Every sandboxed call: run from the workspace with the minimal config. The Claude-context
 # cases go through the stand-in agent, in another workspace or under another config when the
 # case calls for it.
-chopi_t() { ( cd "$ws" && "$repo/bin/chopi" --config "$cfg" -- "$@" ); }
+chopi_t() { chopi_cfg "$cfg" "$@"; }
 chopi_claude_in() {
     local dir="$1" conf="$2"; shift 2
     ( cd "$dir" && "$repo/bin/chopi" --config "$conf" -- "$claude_shim" "$@" )
 }
 chopi_claude() { chopi_claude_in "$ws" "$cfg" "$@"; }
 chopi_codex() { chopi_t "$codex_shim" "$@"; }
+# chopi_cfg CONF CMD... -- run from the workspace under another config
+chopi_cfg() { local conf="$1"; shift; ( cd "$ws" && "$repo/bin/chopi" --config "$conf" -- "$@" ); }
 
 # Run curl INSIDE the sandbox and echo its HTTP status code ("000" when the connection is
 # blocked/refused before any response).
 sandbox_curl() { chopi_t /usr/bin/curl -sS -o /dev/null -w '%{http_code}' "$@" 2>/dev/null; }
 
-# The CONNECT response code is the proxy's own verdict on a tunneled host: 200 = allowed (and
-# the upstream TCP dial succeeded), 407 = denied by the rules. Unlike %{http_code} it does not
-# depend on the full TLS+HTTP exchange with the remote host, which can stall mid-connection on
-# a flaky network path (curl then reports 000, indistinguishable from a deny).
-sandbox_curl_connect() { chopi_t /usr/bin/curl -sS -o /dev/null -w '%{http_connect}' "$@" 2>/dev/null; }
-
-# start_proxy LOG ARGS... -- start chopi-proxy with ARGS in the background, logging to LOG; $! is
-# its PID. It starts as a terminal starts it, in a process group of its own (set -m): without job
-# control, bash starts a background command with INT ignored, past any trap's reach.
-start_proxy() {
-    local log="$1"; shift
-    set -m
-    "$repo/bin/chopi-proxy.sh" "$@" > "$log" 2>&1 &
-    set +m
-}
-
-# stop_proxy PID -- stop the chopi-proxy PID as a Ctrl-C would: an INT to its whole process group.
-stop_proxy() {
-    arity 1
-    kill -INT -- "-$1" 2>/dev/null || true
-    wait "$1" 2>/dev/null || true
-}
-
-# Poll ~5s for child PID to exit and reap it: returns 0 with its exit status in
-# WAIT_FOR_EXIT_RC. On timeout stops PID's process group, reaps it, and returns 1.
-wait_for_exit() {
-    arity 1
-    local pid="$1" _
-    for _ in {1..50}; do
-        if ! kill -0 "$pid" 2>/dev/null; then
-            WAIT_FOR_EXIT_RC=0
-            wait "$pid" || WAIT_FOR_EXIT_RC=$?
-            return 0
-        fi
-        sleep 0.1
-    done
-    stop_proxy "$pid"
-    return 1
-}
-
-# proxy_left_traces -- whether a stopped chopi-proxy left its ports file or API relay socket behind.
-proxy_left_traces() {
-    [ -e "$PROXY_PORTS_FILE" ] || [ -e "$GH_RELAY_SOCK" ]
-}
-
-# assert_no_traces STAGE -- a refused chopi-proxy start must exit before binding anything:
-# assert it reported no ports and left no API relay socket ("refused before STAGE").
-assert_no_traces() {
-    arity 1
-    local stage="$1"
-    if proxy_left_traces; then
-        bad "  -> but it reported ports or left its socket (it must refuse before $stage)"
-    else
-        ok  "  -> and it reported no ports, nor left its socket (refused before $stage)"
-    fi
-}
+# Denied operations and captured exit codes below rely on errexit being off.
+set +e
 
 
 # ---------------------------------------------------------------------------
-echo "the proxy refuses a populated allowlist with no GitHub token"
+echo "the session's proxy refuses a populated allowlist with no GitHub token"
 # ---------------------------------------------------------------------------
-nonempty_github_allow="$base/config/itest-github-allowlist-nonempty"
+nonempty_github_allow="$PROXY_CONFIG_DIR/itest-github-allowlist-nonempty"
 printf 'soundradix/*\n' > "$nonempty_github_allow"
-refuse_log="$base/refuse.log"
-
-GH_TOKEN='' start_proxy "$refuse_log" --rules "$rules" --github-allowlist "$nonempty_github_allow"
-refuse_pid=$!
-
-if ! wait_for_exit "$refuse_pid"; then
-    bad "chopi-proxy kept running for a populated allowlist with no token (it must refuse)"
-else
-    assert_nonzero  "$WAIT_FOR_EXIT_RC" "chopi-proxy refuses a populated allowlist with no token"
-    assert_contains "$(cat "$refuse_log")" "no GitHub token is set" "  -> and logs the reason"
-    assert_no_traces "starting Caddy"
-fi
+write_cfg "$base/config/no-token.sh" "CHOPI_GITHUB_ALLOWLIST=\"$nonempty_github_allow\""
+out="$(GH_TOKEN='' chopi_cfg "$base/config/no-token.sh" /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_nonzero      "$rc"                         "chopi refuses to run when its proxy refuses a populated allowlist with no token"
+assert_contains     "$out" "no GitHub token is set" "  -> and shows the proxy's reason"
+assert_not_contains "$out" "RAN"                  "  -> and the command does not run"
 
 
 # ---------------------------------------------------------------------------
-echo "the proxy refuses rules that allow github.com/api.github.com (pre-relay leftovers)"
+echo "the session's proxy refuses rules that allow github.com/api.github.com (pre-relay leftovers)"
 # ---------------------------------------------------------------------------
-exfil_rules="$base/config/itest-rules-exfil.yaml"
+exfil_rules="$PROXY_CONFIG_DIR/itest-rules-exfil.yaml"
 cat > "$exfil_rules" <<EOF
 version: v1
 services: []
@@ -280,92 +252,107 @@ default:
     - github.com
     - api.github.com
 EOF
-exfil_github_allow="$base/config/itest-github-allowlist-exfil"
-: > "$exfil_github_allow"
-exfil_log="$base/exfil-refuse.log"
-
-start_proxy "$exfil_log" --rules "$exfil_rules" --github-allowlist "$exfil_github_allow"
-exfil_pid=$!
-
-if ! wait_for_exit "$exfil_pid"; then
-    bad "chopi-proxy kept running with github.com allowed in the rules (it must refuse)"
-else
-    assert_nonzero  "$WAIT_FOR_EXIT_RC" "chopi-proxy refuses rules that allow github.com and api.github.com"
-    assert_contains "$(cat "$exfil_log")" "github.com, api.github.com"  "  -> the refusal names the domains"
-    assert_contains "$(cat "$exfil_log")" "dedicated relays"            "  -> and says both git and the API are relayed"
-    assert_contains "$(cat "$exfil_log")" "proxy-rules.template.yaml"   "  -> and directs to the current template"
-    assert_contains "$(cat "$exfil_log")" "global_deny_list"            "  -> or to moving the domains to the denylist"
-    assert_contains "$(cat "$exfil_log")" "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY" "  -> and names the override"
-    assert_no_traces "starting anything"
-fi
+write_cfg "$base/config/exfil.sh" "CHOPI_PROXY_RULES=\"$exfil_rules\""
+out="$(chopi_cfg "$base/config/exfil.sh" /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_nonzero      "$rc" "chopi refuses to run when its proxy refuses rules that allow github.com and api.github.com"
+assert_not_contains "$out" "RAN"                         "  -> and the command does not run"
+assert_contains     "$out" "github.com, api.github.com"  "  -> the refusal names the domains"
+assert_contains     "$out" "dedicated relays"            "  -> and says both git and the API are relayed"
+assert_contains     "$out" "proxy-rules.template.yaml"   "  -> and directs to the current template"
+assert_contains     "$out" "global_deny_list"            "  -> or to moving the domains to the denylist"
+assert_contains     "$out" "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY" "  -> and names the override"
 
 # The override: the same rules only warn with CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1,
-# and the proxy comes up.
-override_log="$base/exfil-override.log"
-CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1 start_proxy "$override_log" \
-    --rules "$exfil_rules" --github-allowlist "$exfil_github_allow"
-override_pid=$!
-if wait_for_proxy_ports "$override_pid"; then
-    ok "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1 lets the proxy start"
-    assert_contains "$(cat "$override_log")" "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY is set" \
-        "  -> with the refusal downgraded to a warning"
-else
-    bad "the proxy did not come up with CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1"
-    sed 's/^/  /' "$override_log" >&2 || true
-fi
-stop_proxy "$override_pid"
+# and the session runs.
+out="$(CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1 \
+    chopi_cfg "$base/config/exfil.sh" /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_zero     "$rc"        "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY=1 lets the session run"
+assert_contains "$out" "RAN" "  -> the command runs"
+assert_contains "$out" "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY is set" \
+    "  -> with the refusal downgraded to a warning the user sees"
 
 
 # ---------------------------------------------------------------------------
-echo "a chopi-smokescreen that dies without its cleanup (a SIGKILL) leaves no ports behind"
+echo "the proxy config stays out of the sandboxed command's reach to change, wherever it is"
 # ---------------------------------------------------------------------------
-# Left behind, the ports would send the next chopi session to whatever later took them.
-killed_log="$base/killed.log"
-start_proxy "$killed_log" --rules "$rules" --github-allowlist "$exfil_github_allow"
-killed_pid=$!
-if wait_for_proxy_ports "$killed_pid"; then
-    # By its command line: the process name macOS matches -x against is cut to 16 characters.
-    if ! pkill -KILL -P "$killed_pid" -f "^$SMOKESCREEN_BIN "; then
-        bad "found no chopi-smokescreen under chopi-proxy to kill"
-        stop_proxy "$killed_pid"
-    elif ! wait_for_exit "$killed_pid"; then
-        bad "chopi-proxy kept running after chopi-smokescreen was killed"
+# upper_case_name FILE -- FILE, its name in upper case: the same file on a case-insensitive volume.
+upper_case_name() {
+    arity 1
+    printf '%s/%s' "${1%/*}" "$(basename "$1" | tr '[:lower:]' '[:upper:]')"
+}
+
+# config_tamper FILE -- what a sandboxed command manages of every way of changing FILE: writing it,
+# removing it, putting another in its place, by a rename or a link, or by a name differing only in
+# case, and renaming its dir away, to put another in its place. Each says _OK or _FAIL.
+config_tamper() {
+    arity 1
+    local file="$1" dir="${1%/*}" upper
+    upper="$(upper_case_name "$file")"
+    printf '%s' "
+    (echo 1 >> '$file') 2>/dev/null && echo WRITE_OK || echo WRITE_FAIL
+    (echo 1 >> '$upper') 2>/dev/null && echo CASE_OK || echo CASE_FAIL
+    rm -f '$file' 2>/dev/null && echo RM_OK || echo RM_FAIL
+    echo 1 > '$dir/other' 2>/dev/null
+    mv -f '$dir/other' '$file' 2>/dev/null && echo REPLACE_OK || echo REPLACE_FAIL
+    ln '$file' '$dir/link' 2>/dev/null && echo LINK_OK || echo LINK_FAIL
+    mv '$dir' '$dir.moved' 2>/dev/null && echo MOVE_OK || echo MOVE_FAIL
+    echo RAN"
+}
+
+# assert_config_kept OUT FILE ORIG WHERE -- the session OUT, tampering with FILE, which was ORIG,
+# ran and changed nothing of it.
+assert_config_kept() {
+    arity 4
+    local out="$1" file="$2" orig="$3" where="$4"
+    assert_contains "$out" "RAN"         "chopi runs a command with the proxy rules $where"
+    assert_contains "$out" "WRITE_FAIL"  "  -> it can't write them"
+    # On a case-sensitive volume, the name in another case is another file, for the command to make.
+    if [ "$(upper_case_name "$file")" -ef "$file" ]; then
+        assert_contains "$out" "CASE_FAIL" "  -> by another case of their name either"
     else
-        assert_nonzero "$WAIT_FOR_EXIT_RC" "chopi-proxy fails when chopi-smokescreen is killed"
-        if proxy_left_traces; then
-            bad "  -> but it left the ports file or the API relay socket behind"
-        else
-            ok  "  -> and removes the ports file and the API relay socket"
-        fi
+        echo "  SKIP writing them by another case of their name (a case-sensitive volume)"
     fi
-else
-    bad "the proxy did not come up for the SIGKILL test"
-    sed 's/^/  /' "$killed_log" >&2 || true
-    stop_proxy "$killed_pid"
-fi
+    assert_contains "$out" "RM_FAIL"     "  -> or remove them"
+    assert_contains "$out" "REPLACE_FAIL" "  -> or put others in their place"
+    assert_contains "$out" "LINK_FAIL"   "  -> or link them to a name it could write through"
+    assert_contains "$out" "MOVE_FAIL"   "  -> or rename their dir away"
+    assert_eq "$(cat "$file")" "$orig"   "  -> the rules are as written"
+}
 
+# Custom proxy config elsewhere -- in the workspace, say -- is refused: another session's command,
+# in the same workspace, could rewrite it, lifting this session's limits.
+mkdir -p "$ws/config"
+cp "$rules" "$ws/config/rules.yaml"
+write_cfg "$base/config/rules-inside.sh" "CHOPI_PROXY_RULES=\"$ws/config/rules.yaml\""
+out="$(chopi_cfg "$base/config/rules-inside.sh" /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_nonzero      "$rc"                                  "chopi refuses proxy rules outside the config dir"
+assert_contains     "$out" "must be in $PROXY_CONFIG_DIR"  "  -> saying where they must be"
+assert_not_contains "$out" "RAN"                           "  -> and the command does not run"
+rm -rf "$ws/config"
 
-# ---------------------------------------------------------------------------
-# Start the real proxy.
-# ---------------------------------------------------------------------------
-echo "proxy + sandbox setup"
+# In the config dir, under a grant covering it, read-only: the command is the file's owner, free to
+# make it writable.
+other_rules="$PROXY_CONFIG_DIR/itest-rules-other.yaml"
+cp "$rules" "$other_rules"; chmod a-w "$other_rules"
+write_cfg "$base/config/rules-granted.sh" \
+    "CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro \"$claudebin:$codexbin\" --add-dirs \"$PROXY_CONFIG_DIR\" )" \
+    "CHOPI_PROXY_RULES=\"$other_rules\""
+out="$(chopi_cfg "$base/config/rules-granted.sh" /bin/sh -c \
+    "chmod u+w '$other_rules' 2>/dev/null && echo CHMOD_OK || echo CHMOD_FAIL
+    $(config_tamper "$other_rules")" 2>&1)"
+assert_config_kept "$out" "$other_rules" "$(cat "$rules")" "read-only in the config dir, granted to the command"
+assert_contains "$out" "CHMOD_FAIL" "  -> nor make them writable"
 
-empty_github_allow="$base/config/itest-github-allowlist-empty"
-: > "$empty_github_allow"
+# Another session's: a command whose session reads other rules can't change these either.
+chmod u+w "$other_rules"
+out="$(chopi_cfg "$base/config/rules-granted.sh" /bin/sh -c "$(config_tamper "$rules")" 2>&1)"
+assert_config_kept "$out" "$rules" "$(cat "$other_rules")" "another session reads, under the same grant"
 
-# The stub alerter goes first on the proxy's PATH; jq/nc/etc. stay reachable via the rest.
-PATH="$alerter_stub:$PATH" start_proxy "$proxy_log" --rules "$rules" --github-allowlist "$empty_github_allow"
-proxy_pid=$!
-
-if ! wait_for_proxy_ports "$proxy_pid"; then
-    echo "error: the test proxy did not come up, reporting its ports in $PROXY_PORTS_FILE" >&2
-    echo "--- proxy.log ---" >&2; cat "$proxy_log" >&2
-    exit 1
-fi
-ok "test proxy is listening on 127.0.0.1:$PROXY_PORT"
-
-# Denied operations and captured exit codes below rely on errexit being off.
-set +e
+write_cfg "$base/config/rules-relative.sh" "CHOPI_PROXY_RULES=rules.yaml"
+out="$(chopi_cfg "$base/config/rules-relative.sh" /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_nonzero      "$rc"                              "chopi refuses relative proxy rules paths"
+assert_contains     "$out" "must be an absolute path"  "  -> saying why"
+assert_not_contains "$out" "RAN"                       "  -> and the command does not run"
 
 
 # ---------------------------------------------------------------------------
@@ -420,23 +407,28 @@ out="$(chopi_t /bin/sh -c "cat '$repo/.internal/preflight.sh' && echo READ_OK ||
 assert_not_contains "$out" "preflight"             "read of chopi's OWN dir is denied (config stays out of reach)"
 assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
 
-# The ports file aims the next run's network holes and HTTP_PROXY. Here the run dir sits under
-# TMPDIR, which safehouse grants, and the config below grants it outright: chopi's deny must
-# still win, or a sandboxed command could aim the next session's proxy at a port of its choosing.
+# The run dir holds the sessions' proxy dirs, whose ports aim their network holes and HTTP_PROXY.
+# Here it sits under TMPDIR, which safehouse grants, and the config below grants it outright:
+# chopi's deny must still win, or a sandboxed command could aim a session's proxy at a port of its
+# choosing. A file planted there stands in for another session's ports.
 cfg_run_dir="$base/config/sandbox-run-dir.sh"
 write_cfg "$cfg_run_dir" "CHOPI_SAFEHOUSE_FLAGS+=( --add-dirs '$PROXY_RUN_DIR' )"
-ports_before="$(cat "$PROXY_PORTS_FILE")"
-out="$( ( cd "$ws" && "$repo/bin/chopi" --config "$cfg_run_dir" -- /bin/sh -c "
-    cat '$PROXY_PORTS_FILE' >/dev/null 2>&1 && echo READ_OK || echo READ_FAIL
-    (echo 1 > '$PROXY_PORTS_FILE') 2>/dev/null && echo WRITE_OK || echo WRITE_FAIL
+mkdir -p "$PROXY_RUN_DIR"
+planted="$PROXY_RUN_DIR/planted-ports"
+printf 'proxy 24760\nrelay 24761\n' > "$planted"
+out="$(chopi_cfg "$cfg_run_dir" /bin/sh -c "
+    ls '$PROXY_RUN_DIR' >/dev/null 2>&1 && echo LIST_OK || echo LIST_FAIL
+    cat '$planted' >/dev/null 2>&1 && echo READ_OK || echo READ_FAIL
+    (echo 1 > '$planted') 2>/dev/null && echo WRITE_OK || echo WRITE_FAIL
     (echo 1 > '$PROXY_RUN_DIR/new') 2>/dev/null && echo CREATE_OK || echo CREATE_FAIL
     mv '$PROXY_RUN_DIR' '$PROXY_RUN_DIR.moved' 2>/dev/null && echo MOVE_OK || echo MOVE_FAIL
-" ) 2>/dev/null )"
-assert_contains "$out" "READ_FAIL"   "the proxy's run dir is unreadable, even under a grant covering it"
-assert_contains "$out" "WRITE_FAIL"  "  -> its ports file can't be rewritten"
+" 2>/dev/null)"
+assert_contains "$out" "LIST_FAIL"   "the proxies' run dir is unlistable, even under a grant covering it"
+assert_contains "$out" "READ_FAIL"   "  -> the ports in it are unreadable"
+assert_contains "$out" "WRITE_FAIL"  "  -> and can't be rewritten"
 assert_contains "$out" "CREATE_FAIL" "  -> nothing can be created in it"
 assert_contains "$out" "MOVE_FAIL"   "  -> and it can't be renamed away"
-assert_eq "$(cat "$PROXY_PORTS_FILE")" "$ports_before" "  -> the ports file is as the proxy wrote it"
+assert_eq "$(cat "$planted")" $'proxy 24760\nrelay 24761' "  -> the ports are as written"
 
 
 # ---------------------------------------------------------------------------
@@ -647,9 +639,11 @@ write_cfg "$cfg_agent" \
 chopi_wrap() { ( cd "$wrap_repo" && "$repo/bin/chopi" --config "$cfg_agent" -- "$@" ); }
 
 # shellcheck disable=SC2016
-out="$(chopi_wrap /bin/sh -c 'echo "$GIT_CONFIG_KEY_0=$GIT_CONFIG_VALUE_0"; git ls-remote --get-url https://github.com/o/r; ls "$TMPDIR"' 2>/dev/null)"
+out="$(chopi_wrap /bin/sh -c 'echo "$GIT_CONFIG_KEY_0=$GIT_CONFIG_VALUE_0"; echo "RELAY_PORT=$CHOPI_GITHUB_RELAY_PORT"; echo "PROXY_LOG=$CHOPI_PROXY_LOG"; git ls-remote --get-url https://github.com/o/r; ls "$TMPDIR"' 2>/dev/null)"
+relay_port="$(printf '%s\n' "$out" | sed -n 's/^RELAY_PORT=//p')"
 assert_contains "$out" "chopi.wrapped=wrappedmarker"   "a CHOPI_GIT_CONFIG pair reaches the sandboxed command at a worktree root"
-assert_contains "$out" "http://127.0.0.1:$GITHUB_RELAY_PORT/o/r"   "  -> and github.com git reroutes to the relay in the sandbox"
+assert_contains "$out" "http://127.0.0.1:${relay_port:-?}/o/r"   "  -> and github.com git reroutes to the session's relay in the sandbox"
+assert_contains "$out" "PROXY_LOG=$CHOPI_PROXY_LOG_DIR/proxy-" "  -> the sandboxed command is told where its session's proxy log is"
 assert_contains "$out" "$CHOPI_IN_SANDBOX_WRAPPER_PREFIX"  "  -> the in-sandbox wrapper profile is created for the run"
 assert_contains "$out" "$CHOPI_CMD_ALIAS_PREFIX"            "  -> as is the command-alias dir"
 
@@ -764,7 +758,7 @@ fi
 # notification path firing (the recording alerter stub).
 code="$(sandbox_curl --max-time 20 "https://$DENIED_HOST")"
 assert_not_contains "$code" "200"                  "a host not allowed in the rules is refused by the proxy"
-if wait_for "$proxy_log" "$DENIED_HOST"; then
+if wait_for "$(latest_proxy_log)" "$DENIED_HOST"; then
     ok  "  -> the proxy logged a DENY for $DENIED_HOST"
 else
     bad "  -> the proxy did NOT log a DENY for $DENIED_HOST"
@@ -780,8 +774,8 @@ fi
 code="$(sandbox_curl --max-time 15 --noproxy '*' "https://$ALLOWED_HOST")"
 assert_not_contains "$code" "200"                  "a direct outgoing connection bypassing the proxy is blocked by the sandbox"
 
-# (4) Outgoing connections are pinned to the proxy ports SPECIFICALLY: any other loopback port is
-# blocked by Seatbelt. Offline-safe.
+# (4) Outgoing connections are pinned to the session's proxy ports SPECIFICALLY: any other
+# loopback port is blocked by Seatbelt. Offline-safe.
 code="$(sandbox_curl --max-time 15 --proxy "http://127.0.0.1:9999" "https://$ALLOWED_HOST")"
 assert_not_contains "$code" "200"                  "an outgoing connection to a non-allowlisted loopback port is blocked by the sandbox"
 
@@ -789,7 +783,6 @@ assert_not_contains "$code" "200"                  "an outgoing connection to a 
 # env, and opens the socket's Seatbelt hole -- and the real gh consumes all of it from inside
 # the sandbox. GraphQL is denied by the relay itself, so this stays offline-safe: Caddy answers
 # the 403 locally, and gh displays the JSON deny message.
-[ -S "$GH_RELAY_SOCK" ] || bad "the GitHub API relay socket file is missing on the host: $GH_RELAY_SOCK"
 # The config's in-sandbox PATH is system-only, so gh (a homebrew tool) must be invoked by
 # absolute path, like the other in-sandbox commands; the profile allows reading+exec under /opt.
 gh_bin="$(command -v gh)"
@@ -798,20 +791,43 @@ assert_nonzero  "$rc"       "in-sandbox gh api graphql is refused"
 assert_contains "$api_deny" 'not an allowed API operation' "  -> gh reached the relay through its socket and displays the deny"
 assert_contains "$api_deny" 'HTTP 403'                     "  -> as the relay's own 403"
 
-# (6) Conversely, chopi refuses upfront when no relay socket is present at the path it derives from
-# CHOPI_RUN_DIR -- though the ports file there, the test proxy's, names ports that serve.
-no_sock_dir="$(mktemp -d "$base/chopi-no-sock.XXXXXX")"
-mkdir -m 700 "$no_sock_dir/run"
-cp "$PROXY_PORTS_FILE" "$no_sock_dir/run/$(basename "$PROXY_PORTS_FILE")"
-refuse_out="$(CHOPI_RUN_DIR="$no_sock_dir" chopi_t /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
-assert_nonzero     "$rc"         "chopi refuses when the GitHub API relay socket is absent"
-assert_contains    "$refuse_out" "no GitHub API relay listening at $no_sock_dir/run/chopi-gh-relay.sock" \
-    "  -> the refusal names the missing relay socket"
-assert_not_contains "$refuse_out" "RAN"                "  -> the sandboxed command never runs"
+# (6) Each session has a proxy of its own, which another session cannot reach. A first session
+# reports its proxy and waits; a second one, started meanwhile, tries going out through it.
+handoff="$ws/handoff"; mkdir -p "$handoff"
+# shellcheck disable=SC2016  # expands in the sandboxed shell, not here
+chopi_t /bin/sh -c 'printf "%s\n" "$HTTP_PROXY" > handoff/proxy;
+    for _ in $(seq 1 300); do [ -d handoff ] || exit 0; sleep 0.1; done' >/dev/null 2>&1 &
+first_session=$!
+for _ in {1..150}; do [ -s "$handoff/proxy" ] && break; sleep 0.1; done
+first_proxy="$(cat "$handoff/proxy" 2>/dev/null)"
+if [ -n "$first_proxy" ]; then
+    # shellcheck disable=SC2016  # expands in the sandboxed shell, not here
+    second_proxy="$(chopi_t /bin/sh -c 'printf "%s" "$HTTP_PROXY"' 2>/dev/null)"
+    assert_not_contains "$second_proxy" "$first_proxy" "concurrent sessions each get a proxy of their own"
+    # The CONNECT's code (curl takes the last -w), as a reachable proxy's deny, 407, leaves
+    # http_code at 000 too.
+    code="$(sandbox_curl -w '%{http_connect}' --max-time 15 --proxy "$first_proxy" "https://$DENIED_HOST")"
+    assert_eq "$code" "000" "  -> and a session cannot reach another session's proxy"
+else
+    bad "the first session did not report its proxy"
+fi
+rm -rf "$handoff"
+wait "$first_session"
+
+# (7) A session's proxy stops with the session.
+first_port="${first_proxy##*:}"
+if [ -n "$first_port" ]; then
+    for _ in {1..100}; do nc -z 127.0.0.1 "$first_port" 2>/dev/null || break; sleep 0.1; done
+    if nc -z 127.0.0.1 "$first_port" 2>/dev/null; then
+        bad "a session's proxy keeps running after the session ends (port $first_port)"
+    else
+        ok "a session's proxy stops with the session"
+    fi
+fi
 
 
 # ---------------------------------------------------------------------------
-echo "github git public fetch through the relay (end-to-end: sandbox -> :$GITHUB_RELAY_PORT -> Caddy -> github.com)"
+echo "github git public fetch through the relay (end-to-end: sandbox -> relay port -> Caddy -> github.com)"
 # ---------------------------------------------------------------------------
 if ! curl -sS -o /dev/null --max-time 15 "https://github.com" 2>/dev/null; then
     echo "  SKIP github-through-relay (no host connectivity to github.com)"
@@ -831,19 +847,94 @@ fi
 
 
 # ---------------------------------------------------------------------------
-echo "rules hot reload (edits take effect without restarting the proxy)"
+echo "rules and GitHub allowlist hot reload (edits take effect within a running session)"
 # ---------------------------------------------------------------------------
-# The proxy polls the rules file and swaps freshly loaded rules.
-# (1) Allowing the denied host must lift its denial with no proxy restart; the log
-# confirms the reload happened.
+# The proxy polls the rules file and the allowlist, and takes up each edit. All of it happens
+# within one session, stepped from here: the session runs each probe the test asks for in step
+# files -- a curl to a host, or a git ls-remote of a URL.
+steps="$ws/steps"; mkdir -p "$steps"
+# shellcheck disable=SC2016  # expands in the sandboxed shell, not here
+chopi_t /bin/sh -c '
+    n=1
+    while [ -d steps ]; do
+        if [ -e "steps/$n.host" ]; then
+            /usr/bin/curl -sS -o /dev/null -w "%{$(cat "steps/$n.what")}" --max-time 20 \
+                "https://$(cat "steps/$n.host")" > "steps/$n.tmp" 2>/dev/null
+        elif [ -e "steps/$n.git" ]; then
+            git ls-remote "$(cat "steps/$n.git")" > "steps/$n.tmp" 2>/dev/null
+        else
+            sleep 0.1
+            continue
+        fi
+        mv "steps/$n.tmp" "steps/$n.out"
+        n=$((n + 1))
+    done' >/dev/null 2>&1 &
+reload_session=$!
+reload_step=0
+
+# session_probe WHAT HOST -- have the session curl HOST, setting code to the curl %{WHAT}. Not
+# for a $(...): the step count must advance in this shell, or the next probe reads a stale answer.
+# The CONNECT response code (http_connect) is the proxy's own verdict on a tunneled host: 200 =
+# allowed (and the upstream TCP dial succeeded), 407 = denied by the rules. Unlike http_code it
+# does not depend on the full TLS+HTTP exchange with the remote host, which can stall
+# mid-connection on a flaky network path (curl then reports 000, indistinguishable from a deny).
+session_probe() {
+    arity 2
+    printf '%s' "$1" > "$steps/$((reload_step + 1)).what"
+    run_step host "$2"
+}
+
+# session_ls_remote URL -- have the session git ls-remote URL, setting code to its output, as
+# session_probe does.
+session_ls_remote() {
+    arity 1
+    run_step git "$1"
+}
+
+# run_step KIND CONTENT -- have the session run the next step, of KIND, on CONTENT, setting code to
+# its answer. The step file, which the session runs once it exists, is renamed into place whole: a
+# redirection would have it exist, empty, before it is written.
+run_step() {
+    arity 2
+    reload_step=$((reload_step + 1))
+    local file="$steps/$reload_step.$1"
+    printf '%s' "$2" > "$file.part" && mv "$file.part" "$file"
+    await_step
+}
+
+# await_step -- set code to the session's answer to the last step, or "timeout".
+await_step() {
+    arity 0
+    local _
+    for _ in {1..300}; do
+        [ -e "$steps/$reload_step.out" ] && { code="$(cat "$steps/$reload_step.out")"; return 0; }
+        sleep 0.1
+    done
+    code="timeout"
+}
+
+# The session's proxy is up once a probe went through it.
+session_probe http_code "$OTHER_DENIED_HOST"
+reload_log="$(latest_proxy_log)"
+
+# (1) Allowing the denied host must lift its denial with no new session; the log confirms the
+# reload happened.
 printf '    - %s\n' "$DENIED_HOST" >> "$rules"
-if wait_for "$proxy_log" "rules reloaded"; then
+if wait_for "$reload_log" "rules reloaded"; then
     ok "the proxy reloaded the rules after the file changed"
 else
     bad "the proxy did NOT log a rules reload after the file changed"
 fi
+# In the file's group, replacing any failure banner of its, and naming the file: the user's word
+# that the edit took effect, with no terminal for the proxy.
+rules_reloaded_banner="rules reloaded --message Your edit to $(basename -- "$rules") took effect --group $(reload_banner_group "$rules" "") --timeout $NOTIFY_CONFIRM_SECS"
+if wait_for "$alerter_log" "$rules_reloaded_banner"; then
+    ok "  -> and notifies, briefly, that the edit took effect"
+else
+    bad "  -> but did NOT notify that the edit took effect"
+fi
 if curl -sS -o /dev/null --max-time 10 "https://$DENIED_HOST" 2>/dev/null; then
-    code="$(sandbox_curl_connect --max-time 20 "https://$DENIED_HOST")"
+    session_probe http_connect "$DENIED_HOST"
     assert_eq "$code" "200"                        "the previously denied host is now allowed through the proxy"
 else
     echo "  SKIP hot-reloaded host reachability (no connectivity to $DENIED_HOST)"
@@ -852,22 +943,22 @@ fi
 # (2) A broken edit is refused loudly and the previous rules stay in effect: hosts not
 # on the allowlist stay refused.
 printf 'all rules have been broken\n' > "$rules"
-if wait_for "$proxy_log" "RULES RELOAD FAILED"; then
+if wait_for "$reload_log" "RULES RELOAD FAILED"; then
     ok "a broken rules edit is logged loudly as a failed reload"
 else
     bad "a broken rules edit did NOT log a failed reload"
 fi
 # In its own group, so the next DENY banner doesn't replace it before the user sees it.
-if wait_for "$alerter_log" "rules reload failed --message Your edit to $(basename -- "$rules") did not take effect --group chopi-proxy-reload-rules"; then
+if wait_for "$alerter_log" "rules reload failed --message Your edit to $(basename -- "$rules") did not take effect --group $(reload_banner_group "$rules" "") --timeout $NOTIFY_ALERT_SECS"; then
     ok "a broken rules edit notifies that the edit did not take effect"
 else
     bad "a broken rules edit did NOT notify"
 fi
-code="$(sandbox_curl --max-time 20 "https://$OTHER_DENIED_HOST")"
+session_probe http_code "$OTHER_DENIED_HOST"
 assert_not_contains "$code" "200"                  "after a failed reload the previous rules still refuse other hosts"
 # ...and the host the last good edit ALLOWED stays allowed.
 if curl -sS -o /dev/null --max-time 10 "https://$DENIED_HOST" 2>/dev/null; then
-    code="$(sandbox_curl_connect --max-time 20 "https://$DENIED_HOST")"
+    session_probe http_connect "$DENIED_HOST"
     assert_eq "$code" "200"                        "after a failed reload the previously allowed host stays allowed"
 else
     echo "  SKIP still-allowed host reachability (no connectivity to $DENIED_HOST)"
@@ -875,65 +966,65 @@ fi
 
 # (3) Fixing the file reloads again.
 write_test_rules
-if wait_for_count "$proxy_log" "rules reloaded" 2; then
+if wait_for_count "$reload_log" "rules reloaded" 2; then
     ok "the proxy reloaded again once the rules were fixed"
 else
     bad "the proxy did NOT reload after the rules were fixed"
 fi
-# Each successful reload withdraws the failure banner; (1) already did once.
-if wait_for_count "$alerter_log" "remove chopi-proxy-reload-rules" 2; then
-    ok "the fixed rules withdraw the now-stale reload-failure notification"
+# Each successful reload's banner replaces the failure's in the file's group; (1) popped one too.
+if wait_for_count "$alerter_log" "$rules_reloaded_banner" 2; then
+    ok "the fixed rules' confirmation replaces the now-stale reload-failure notification"
 else
-    bad "the fixed rules did NOT withdraw the reload-failure notification"
+    bad "the fixed rules did NOT replace the reload-failure notification"
 fi
-code="$(sandbox_curl --max-time 20 "https://$DENIED_HOST")"
+session_probe http_code "$DENIED_HOST"
 assert_not_contains "$code" "200"                  "the restored rules refuse the host again"
 
-
-# ---------------------------------------------------------------------------
-echo "GitHub allowlist hot reload (edits take effect on the same relay port, without a restart)"
-# ---------------------------------------------------------------------------
-# The proxy polls the allowlist, and on an edit, a Caddy on the new config replaces the one
-# serving, on the same listeners: running sessions keep the port and socket they were confined to.
-ports_before="$(cat "$PROXY_PORTS_FILE")"
+# On an allowlist edit, a Caddy on the new config replaces the one serving, on the same listeners:
+# the session keeps the port and socket it was confined to. The session's fetch is made through
+# them, so its success says the relays serve there.
+# relay_fetch WHAT -- assert the session fetches a public repo through the git relay.
 relay_fetch() {
+    arity 1
     if [ -n "${relay_repo:-}" ]; then
-        assert_contains "$(chopi_relay git ls-remote https://github.com/octocat/Hello-World 2>/dev/null)" \
-            "refs/heads/master" "$1"
+        session_ls_remote https://github.com/octocat/Hello-World
+        assert_contains "$code" "refs/heads/master" "$1"
     else
         echo "  SKIP $1 (no host connectivity to github.com)"
     fi
 }
 
-# (1) A broken edit is refused loudly, and the relays serving keep serving.
+# (4) A broken allowlist edit is refused loudly, and the relays serving keep serving.
 printf 'no-slash-here\n' > "$empty_github_allow"
-if wait_for "$proxy_log" "GITHUB ALLOWLIST RELOAD FAILED"; then
+if wait_for "$reload_log" "GITHUB ALLOWLIST RELOAD FAILED"; then
     ok "a broken allowlist edit is logged loudly as a failed reload"
-    assert_contains "$(cat "$proxy_log")" "allowlist entry needs owner/repo" "  -> saying why"
+    assert_contains "$(cat "$reload_log")" "allowlist entry needs owner/repo" "  -> saying why"
 else
     bad "a broken allowlist edit did NOT log a failed reload"
 fi
-if wait_for "$alerter_log" "GitHub allowlist reload failed --message Your edit to $(basename -- "$empty_github_allow") did not take effect --group chopi-proxy-reload-allowlist"; then
+if wait_for "$alerter_log" "GitHub allowlist reload failed --message Your edit to $(basename -- "$empty_github_allow") did not take effect --group $(reload_banner_group "$empty_github_allow" "$(gh_token_source)") --timeout $NOTIFY_ALERT_SECS"; then
     ok "a broken allowlist edit notifies that the edit did not take effect"
 else
     bad "a broken allowlist edit did NOT notify"
 fi
 relay_fetch "after a failed allowlist reload the relay still serves"
 
-# (2) Fixing it reloads the relays, on the same port, and withdraws the failure banner.
+# (5) Fixing it reloads the relays, on the same port, and its banner replaces the failure's.
 : > "$empty_github_allow"
-if wait_for "$proxy_log" "GitHub allowlist reloaded"; then
+if wait_for "$reload_log" "GitHub allowlist reloaded"; then
     ok "the proxy reloaded the relays once the allowlist was fixed"
 else
     bad "the proxy did NOT reload the relays after the allowlist was fixed"
 fi
-if wait_for "$alerter_log" "remove chopi-proxy-reload-allowlist"; then
-    ok "the fixed allowlist withdraws the now-stale reload-failure notification"
+if wait_for "$alerter_log" "GitHub allowlist reloaded --message Your edit to $(basename -- "$empty_github_allow") took effect --group $(reload_banner_group "$empty_github_allow" "$(gh_token_source)") --timeout $NOTIFY_CONFIRM_SECS"; then
+    ok "the fixed allowlist's confirmation replaces the now-stale reload-failure notification"
 else
-    bad "the fixed allowlist did NOT withdraw the reload-failure notification"
+    bad "the fixed allowlist did NOT replace the reload-failure notification"
 fi
-assert_eq "$(cat "$PROXY_PORTS_FILE")" "$ports_before" "the reloaded relays report the same ports"
-relay_fetch "after an allowlist reload the relay serves, on the same port"
+relay_fetch "after an allowlist reload the session's relay serves, on the port it was confined to"
+
+rm -rf "$steps"
+wait "$reload_session"
 
 
 # ---------------------------------------------------------------------------

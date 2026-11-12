@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -27,7 +28,8 @@ const (
 )
 
 // relayStartTimeout bounds Caddy's start, from launch to serving: time enough for macOS to scan
-// a freshly installed Caddy on its first run.
+// a freshly installed Caddy on its first run. chopi sets no deadline of its own for the proxy's
+// start, so a Caddy that never serves fails the session by this one, with its own reason.
 const relayStartTimeout = 25 * time.Second
 
 // relayDrainTimeout bounds the stop of a Caddy a reload replaced, from TERM to exit, before it is
@@ -36,9 +38,9 @@ const relayDrainTimeout = 10 * time.Minute
 
 // options are chopi's own flags, given before "--" and smokescreen's flags.
 type options struct {
+	dir         string // where the ports are reported and the API relay's socket is
+	parent      int    // the process whose exit stops the proxy: chopi
 	relayLog    string // Caddy's output
-	ghSock      string // the API relay's unix socket
-	portsFile   string // where the ports are reported once the proxy is up
 	allowlist   string // the GitHub allowlist, watched for changes
 	relayConfig string // the command rendering the relays' Caddy config from the allowlist
 	smokeArgs   []string
@@ -49,9 +51,9 @@ func parseOptions(args []string) (options, error) {
 	var opts options
 	fs := flag.NewFlagSet("chopi-smokescreen", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	fs.StringVar(&opts.dir, "dir", "", "")
+	fs.IntVar(&opts.parent, "parent", 0, "")
 	fs.StringVar(&opts.relayLog, "relay-log", "", "")
-	fs.StringVar(&opts.ghSock, "gh-sock", "", "")
-	fs.StringVar(&opts.portsFile, "ports-file", "", "")
 	fs.StringVar(&opts.allowlist, "github-allowlist", "", "")
 	fs.StringVar(&opts.relayConfig, "relay-config", "", "")
 	if err := fs.Parse(args); err != nil {
@@ -61,10 +63,10 @@ func parseOptions(args []string) (options, error) {
 	if rest := len(args) - fs.NArg(); rest > 0 && args[rest-1] == "--" {
 		opts.smokeArgs = fs.Args()
 	}
-	if opts.relayLog == "" || opts.ghSock == "" || opts.portsFile == "" || opts.allowlist == "" ||
-		opts.relayConfig == "" || opts.smokeArgs == nil {
-		return opts, errors.New("usage: chopi-smokescreen --relay-log FILE --gh-sock PATH " +
-			"--ports-file FILE --github-allowlist FILE --relay-config CMD -- SMOKESCREEN_FLAGS...")
+	if opts.dir == "" || opts.parent <= 0 || opts.relayLog == "" ||
+		opts.allowlist == "" || opts.relayConfig == "" || opts.smokeArgs == nil {
+		return opts, errors.New("usage: chopi-smokescreen --dir DIR --parent PID " +
+			"--relay-log FILE --github-allowlist FILE --relay-config CMD -- SMOKESCREEN_FLAGS...")
 	}
 	return opts, nil
 }
@@ -73,8 +75,8 @@ func parseOptions(args []string) (options, error) {
 // take them first, and so Caddy, unable to report a port it picked, need not pick one. Kept open
 // here, for each Caddy a reload starts to serve them in turn.
 type relays struct {
-	git *net.TCPListener  // git smart-HTTP, on a loopback port
-	api *net.UnixListener // the gh REST API, on a unix socket
+	git *net.TCPListener  // git smart-HTTP, on a loopback port the kernel picks
+	api *net.UnixListener // the gh REST API, on DIR/gh.sock
 }
 
 // portOf is the port l listens on.
@@ -117,11 +119,19 @@ type relayConfig struct {
 	env            []string
 }
 
+// renderCancelGrace bounds how long a cancelled render's output pipes are waited on, once its
+// process group is TERMed, before they are closed on whatever still holds them.
+const renderCancelGrace = 2 * time.Second
+
 // render returns the relays' config, with any notes cmd had for the user on stderr -- or, failing,
-// an error with what cmd said on stderr: why.
-func (c relayConfig) render() (config []byte, notes string, err error) {
-	cmd := exec.Command(c.cmd, c.allowlist)
+// an error with what cmd said on stderr: why. Cancelling ctx TERMs cmd's whole process group: what
+// it waits on, like gh at a keychain prompt for the token, is a child of its own.
+func (c relayConfig) render(ctx context.Context) (config []byte, notes string, err error) {
+	cmd := exec.CommandContext(ctx, c.cmd, c.allowlist)
 	cmd.Env = append(os.Environ(), c.env...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
+	cmd.WaitDelay = renderCancelGrace
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	config, err = cmd.Output()
@@ -169,15 +179,23 @@ type relaySupervisor struct {
 	mu      sync.Mutex
 	live    map[*caddyProc]bool // every Caddy running: starting, serving, or finishing up once replaced
 	serving *caddyProc
-	stopped bool // by stopAll: no Caddy starts from then on
+	stopped bool // by stopAll: no Caddy starts from then on, nor a render
+
+	// A reload's render, maybe at a keychain prompt, is stopped by stopAll, which cancels it and
+	// waits for it: its process group is its own, out of reach of a stop of ours.
+	stopRenders context.CancelFunc
+	renderCtx   context.Context
+	rendering   sync.WaitGroup
 
 	failed     chan struct{} // closed once the serving Caddy exits unasked
 	failedOnce sync.Once
 }
 
 func newRelaySupervisor(r *relays, logPath string, config relayConfig, log *logrus.Entry) *relaySupervisor {
+	renderCtx, stopRenders := context.WithCancel(context.Background())
 	return &relaySupervisor{relays: r, logPath: logPath, config: config, log: log,
-		live: map[*caddyProc]bool{}, failed: make(chan struct{})}
+		live: map[*caddyProc]bool{}, failed: make(chan struct{}),
+		renderCtx: renderCtx, stopRenders: stopRenders}
 }
 
 // start starts a Caddy on the relays' listeners, with config on stdin -- never in argv, as it
@@ -202,7 +220,7 @@ func (s *relaySupervisor) start(config []byte) (*caddyProc, error) {
 		return nil, err
 	}
 	defer logFile.Close()
-	pingback, err := listenLoopback(0)
+	pingback, err := listenLoopback()
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +306,15 @@ func (s *relaySupervisor) serve(proc *caddyProc) (replaced *caddyProc) {
 // is, unless that is the config it already serves (a save with no edit). On failure, the serving
 // Caddy stays.
 func (s *relaySupervisor) reload() error {
-	config, notes, err := s.config.render()
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return errors.New("the proxy is stopping")
+	}
+	s.rendering.Add(1)
+	s.mu.Unlock()
+	config, notes, err := s.config.render(s.renderCtx)
+	s.rendering.Done()
 	if err != nil {
 		return err
 	}
@@ -331,7 +357,8 @@ func (s *relaySupervisor) reloadIfChanged(lastMod time.Time, warned bool) (time.
 	return applyIfChanged(s.log, s.config.allowlist, allowlistReloaded, allowlistReloadFailed, lastMod, warned, s.reload)
 }
 
-// stopAll stops every Caddy running, at once, returning once they have all exited.
+// stopAll stops every Caddy running, and any reload's render, at once, returning once they have
+// all exited.
 func (s *relaySupervisor) stopAll() {
 	s.mu.Lock()
 	s.serving = nil // stopping it now is asked
@@ -341,6 +368,7 @@ func (s *relaySupervisor) stopAll() {
 		procs = append(procs, proc)
 	}
 	s.mu.Unlock()
+	s.stopRenders()
 	var wg sync.WaitGroup
 	for _, proc := range procs {
 		wg.Add(1)
@@ -350,6 +378,41 @@ func (s *relaySupervisor) stopAll() {
 		}(proc)
 	}
 	wg.Wait()
+	s.rendering.Wait()
+}
+
+// watchExit returns a context derived from parent, cancelled too once process pid exits: the
+// kernel reports it, with kqueue, so nothing polls. It is cancelled right away for a process
+// already gone.
+func watchExit(parent context.Context, pid int) (context.Context, error) {
+	kq, err := syscall.Kqueue()
+	if err != nil {
+		return nil, err
+	}
+	syscall.CloseOnExec(kq)
+	ctx, exited := context.WithCancel(parent)
+	var ev syscall.Kevent_t
+	syscall.SetKevent(&ev, pid, syscall.EVFILT_PROC, syscall.EV_ADD|syscall.EV_ONESHOT)
+	ev.Fflags = syscall.NOTE_EXIT
+	if _, err := syscall.Kevent(kq, []syscall.Kevent_t{ev}, nil, nil); err != nil {
+		syscall.Close(kq)
+		exited()
+		if errors.Is(err, syscall.ESRCH) {
+			return ctx, nil
+		}
+		return nil, err
+	}
+	go func() {
+		defer syscall.Close(kq)
+		events := make([]syscall.Kevent_t, 1)
+		for {
+			if _, err := syscall.Kevent(kq, nil, events, nil); !errors.Is(err, syscall.EINTR) {
+				break
+			}
+		}
+		exited()
+	}()
+	return ctx, nil
 }
 
 // writeAtomically writes content to path, whole or not at all: it is written beside path and
@@ -381,40 +444,9 @@ func reportPorts(path string, p ports) error {
 	return writeAtomically(path, fmt.Sprintf("proxy %d\nrelay %d\n", p.proxy, p.relay))
 }
 
-// lastPortsFile is where the ports reported in portsFile are recorded for the proxy's next run: kept
-// beside it, but left as the proxy stops, unlike portsFile, which says the proxy is up.
-func lastPortsFile(portsFile string) string {
-	return portsFile + ".last"
-}
-
-// readPorts reads the ports reportPorts wrote to path: zero for a port missing, invalid, or in a
-// file missing or unreadable.
-func readPorts(path string) ports {
-	var p ports
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return p
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		var name string
-		var port int
-		if n, _ := fmt.Sscan(line, &name, &port); n != 2 || port <= 0 || port > 65535 {
-			continue
-		}
-		switch name {
-		case "proxy":
-			p.proxy = port
-		case "relay":
-			p.relay = port
-		}
-	}
-	return p
-}
-
-// stopSignals are the signals that stop the proxy: a Ctrl-C's INT, a TERM, and a closing
-// terminal's HUP.
-func stopSignals() <-chan os.Signal {
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
-	return ch
+// stopSignals returns a context done once the proxy is asked to stop: by chopi's TERM as the
+// session ends, or a closing terminal's HUP.
+func stopSignals() context.Context {
+	ctx, _ := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGHUP)
+	return ctx
 }

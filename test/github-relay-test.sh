@@ -5,8 +5,8 @@
 # NOT run by `make test`; it needs a repo you can push to to run fully, set in env
 # as ALLOW_REPO=<owner/repo>
 #
-# It renders the relay config for a throwaway allowlist, starts the relays as chopi-proxy does
-# (chopi-smokescreen, starting caddy), and checks that:
+# It renders the relay config for a throwaway allowlist, starts the relays as a session's proxy
+# does (chopi-smokescreen, starting caddy), and checks that:
 #   0. the relay listens on loopback only                          (not on all interfaces)
 #   1. anonymous public fetch works through the relay
 #   1b. a gzipped fetch is decoded by GitHub
@@ -40,12 +40,12 @@ _test_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # skip guards).
 TMPDIR="$(mktemp -d)"; export TMPDIR
 trap 'rm -rf "$TMPDIR"' EXIT
-# The test's own relay socket and ports file, rather than a running chopi-proxy's: util.sh derives
-# both from CHOPI_RUN_DIR.
+# The test's own run dir, rather than the user's: util.sh derives PROXY_RUN_DIR from CHOPI_RUN_DIR.
 # shellcheck disable=SC2034  # read by util.sh
 CHOPI_RUN_DIR="$TMPDIR"
 
 . "$_test_dir/../.internal/util.sh"
+. "$_test_dir/../.internal/session-proxy.sh"
 . "$_test_dir/lib.sh"
 
 header "End-to-end GitHub relay test"
@@ -67,8 +67,7 @@ fi
 
 RENDER="$CHOPI_DIR/.internal/github-relays-caddyfile.sh"
 WORK="$(mktemp -d "$TMPDIR/chopi-github-relay-test.XXXXXX")"
-RELAY_PID=""
-cleanup() { [ -n "$RELAY_PID" ] && kill "$RELAY_PID" 2>/dev/null; rm -rf "$TMPDIR"; }
+cleanup() { stop_session_proxy; rm -rf "$TMPDIR"; }
 trap cleanup EXIT
 
 # The outgoing proxy, which serves beside the relays, gets rules allowing nothing: only the relays
@@ -78,20 +77,27 @@ printf 'version: v1\nservices: []\ndefault:\n  name: default\n  action: enforce\
 
 mkdir -p "$PROXY_RUN_DIR"
 
-# start_relays CONFIG LOG -- start the relays as chopi-proxy does, on the Caddy config CONFIG,
-# logging to LOG (and caddy to LOG.caddy, which LOG quotes if caddy fails to start). Sets RELAY_PID,
-# CADDY_PID, GITHUB_RELAY_PORT and git_url once they serve, or fails. The config is "rendered" by
-# cat from RELAY_CONFIG, for reload_relays to edit as chopi-proxy's allowlist is.
+# start_relays CONFIG LOG -- start the proxy as a session's would, the relays on the Caddy config
+# CONFIG, logging to LOG (and caddy to LOG.caddy, which LOG quotes if caddy fails to start); sets
+# SESSION_PROXY_PID, CADDY_PID, SESSION_RELAY_PORT, SESSION_GH_SOCK and git_url once they serve, or
+# fails. Awaited as chopi awaits a session's proxy, sharing its handshake. The config is "rendered"
+# by cat from RELAY_CONFIG, for reload_relays to edit as a session's allowlist is.
 RELAY_CONFIG="$WORK/relay.caddy"
 start_relays() {
     local config="$1" log="$2"
     printf '%s' "$config" > "$RELAY_CONFIG"
     RELAY_LOG="$log"
-    run_chopi_smokescreen "$WORK/rules.yaml" "$RELAY_CONFIG" /bin/cat "$log.caddy" >>"$log" 2>&1 &
-    RELAY_PID=$!
-    wait_for_proxy_ports "$RELAY_PID" || return 1
-    CADDY_PID="$(pgrep -P "$RELAY_PID" -x caddy)"
-    git_url="http://127.0.0.1:$GITHUB_RELAY_PORT"
+    # shellcheck disable=SC2034 # consumed by await_session_proxy
+    SESSION_PROXY_DIR="$(mktemp -d "$PROXY_RUN_DIR/proxy.XXXXXX")"
+    # shellcheck disable=SC2034 # consumed by await_session_proxy
+    SESSION_PROXY_LOG="$log"
+    SESSION_PROXY_ERR="$WORK/startup.err"
+    run_chopi_smokescreen "$SESSION_PROXY_DIR" $$ "$WORK/rules.yaml" "$RELAY_CONFIG" /bin/cat \
+        "$log.caddy" >>"$log" 2>"$SESSION_PROXY_ERR" &
+    SESSION_PROXY_PID=$!
+    await_session_proxy 2>>"$log" || return 1
+    CADDY_PID="$(pgrep -P "$SESSION_PROXY_PID" -x caddy)"
+    git_url="http://127.0.0.1:$SESSION_RELAY_PORT"
 }
 
 # reload_relays CONFIG -- have the running relays take up the Caddy config CONFIG, as an allowlist
@@ -102,7 +108,7 @@ reload_relays() {
     printf '%s' "$config" > "$RELAY_CONFIG"
     for _ in {1..300}; do
         if [ "$(grep -c 'GitHub allowlist reloaded' "$RELAY_LOG")" -gt "$before" ]; then
-            CADDY_PID="$(pgrep -n -P "$RELAY_PID" -x caddy)"
+            CADDY_PID="$(pgrep -n -P "$SESSION_PROXY_PID" -x caddy)"
             return 0
         fi
         grep -q 'GitHub allowlist reload failed' "$RELAY_LOG" && return 1
@@ -141,7 +147,7 @@ fi
 #    not a bind, so without an explicit bind caddy listens on all interfaces -- where a LAN
 #    client sending "Host: 127.0.0.1" reaches the credentialed routes.
 listeners="$(lsof -a -p "$CADDY_PID" -iTCP -sTCP:LISTEN -P -n | awk 'NR>1 {print $9}')"
-assert_contains     "$listeners" "127.0.0.1:$GITHUB_RELAY_PORT" "git relay listener is bound to loopback"
+assert_contains     "$listeners" "127.0.0.1:$SESSION_RELAY_PORT" "git relay listener is bound to loopback"
 assert_not_contains "$listeners" '*:'                           "no relay listener on the wildcard interface"
 
 # 1. anonymous public fetch through the relay
@@ -258,15 +264,15 @@ fi
 # sandboxed command (github_relay_gh_env), so the config key, the socket dial, and the host
 # derivation are all pinned by gh itself.
 mkdir -p "$WORK/gh-config"
-readarray -t gh_env < <(github_relay_gh_env "$WORK/gh-config")
+readarray -t gh_env < <(github_relay_gh_env "$WORK/gh-config" "$SESSION_GH_SOCK")
 gh_relay() { env "${gh_env[@]}" gh "$@"; }
 
 # curl fills in for gh to test forged Hosts, unclean paths, bogus storage blobs etc.
 api_url="http://api.github.localhost"
 # api_code [curl-opts...] URL -- HTTP code of a request over the API-relay socket
-api_code() { curl -s -o /dev/null -w '%{http_code}' --unix-socket "$GH_RELAY_SOCK" "$@"; }
+api_code() { curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SESSION_GH_SOCK" "$@"; }
 # api_body HDRS BODY [curl-opts...] URL -- request over the socket, saving headers and body
-api_body() { local hdrs="$1" body="$2"; shift 2; curl -s -D "$hdrs" -o "$body" --unix-socket "$GH_RELAY_SOCK" "$@"; }
+api_body() { local hdrs="$1" body="$2"; shift 2; curl -s -D "$hdrs" -o "$body" --unix-socket "$SESSION_GH_SOCK" "$@"; }
 
 # 4a. anonymous API read is driven by gh and no token leaks to a non-allowlisted repo.
 #     torvalds/linux isn't allowlisted, so the relay must wipe gh's placeholder Authorization
@@ -466,9 +472,9 @@ else
     ok "an allowlist edit reloads the relays"
     assert_not_eq "$CADDY_PID" "$first_caddy" "  -> on a new caddy"
     assert_pid_exits "$first_caddy" "  -> the replaced caddy stopped, with no request left to finish"
-    assert_contains "$(lsof -a -p "$CADDY_PID" -iTCP -sTCP:LISTEN -P -n)" "127.0.0.1:$GITHUB_RELAY_PORT" \
+    assert_contains "$(lsof -a -p "$CADDY_PID" -iTCP -sTCP:LISTEN -P -n)" "127.0.0.1:$SESSION_RELAY_PORT" \
         "  -> serving the git relay's port as it was"
-    assert_contains "$(lsof -a -p "$CADDY_PID" -U)" "$GH_RELAY_SOCK" "  -> and the API relay's socket"
+    assert_contains "$(lsof -a -p "$CADDY_PID" -U)" "$SESSION_GH_SOCK" "  -> and the API relay's socket"
 
     if git -C "$WORK/pushsrc" push -q "$git_url/octocat/Hello-World" HEAD:refs/heads/chopi-e2e 2>"$WORK/e5"; then
         bad "push with a rejected credential unexpectedly succeeded"

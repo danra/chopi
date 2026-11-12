@@ -9,8 +9,8 @@
 # the proxy starts, and again on every edit to the allowlist, piping the output to Caddy over stdin:
 # the token never touches disk or any argv. A token gh rotates is thus taken up at the next edit.
 #
-# Notes for the user, and why it fails, go to stderr: where the proxy starts, to the terminal, and
-# on a reload, to the proxy's log.
+# Notes for the user, and why it fails, go to stderr: chopi-smokescreen logs the notes, and shows
+# why it fails in chopi's terminal where the proxy starts, and in its log on a reload.
 
 set -euo pipefail
 

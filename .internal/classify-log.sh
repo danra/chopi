@@ -22,7 +22,7 @@
 # That is a couple of extra jq invocations per line, which is nothing at log volumes, in
 # exchange for filters that each do exactly one thing.
 #
-# Both the live proxy (bin/chopi-proxy.sh) and the unit tests source this file and call
+# Both the live proxy (.internal/chopi-proxy.sh) and the unit tests source this file and call
 # classify_log, so the tests exercise the real routing rather than a copy that can drift.
 
 # The filter files sit next to this one in .internal/. Resolve them from this file's own
@@ -51,14 +51,11 @@ known_deny_seen() {
     is_item_in_list "$1" "${known_seen[@]+"${known_seen[@]}"}"
 }
 
-# classify_log <is_interactive> <script> <on_deny_cmd> <on_reload_cmd> <verbose>
+# classify_log <script> <on_deny_cmd> <on_reload_cmd> <verbose>
 #
 # Read smokescreen log lines on stdin; write the display output to stdout, one line in to
 # zero-or-one line out (empty == the line is dropped) -- or, in verbose mode, one-or-two.
 #
-#   <is_interactive>  true/false -- enables the DENY bell + red color in format-deny.jq;
-#                     both are noise in a file or a pipe, so the proxy passes the result of
-#                     its own `[ -t 1 ]` and the tests drive both values explicitly.
 #   <script>          name shown in the "[<script>] DENY host @ time" prefix.
 #   <on_deny_cmd>     called as `<on_deny_cmd> <host>` once per denied connection -- except
 #                     known denies, see below -- or "" for none. The proxy passes notify_deny
@@ -69,8 +66,8 @@ known_deny_seen() {
 #                     config reloaded, "rules" or "allowlist" (the GitHub allowlist), or "" for
 #                     none. A failure means the user's edit did NOT take effect, which they must
 #                     hear about as surely as a DENY; a success makes any earlier failure of that
-#                     file's stale. The proxy passes notify_reload (pops, or withdraws, a macOS
-#                     banner).
+#                     file's stale. The proxy passes notify_reload (pops a macOS banner, a
+#                     success's replacing the file's failure).
 #   <verbose>         true/false -- when true, nothing is dropped or replaced: every raw
 #                     smokescreen line is passed through as-is, interleaved with chopi-proxy's
 #                     own output. Normally-dropped lines (allowed connections, known noise)
@@ -79,7 +76,7 @@ known_deny_seen() {
 #
 # Denials of hosts matching the configured denylist (smokescreen's global_deny_list, recognized
 # by known-deny.jq) are *known* denies -- the user listed the host precisely because its
-# blocked traffic is expected -- so they stay quiet: no <on_deny_cmd>, no color, and a
+# blocked traffic is expected -- so they stay quiet: no <on_deny_cmd>, and a
 # single plain "deny(known)" line per host per session, with the repeats dropped (their
 # raw lines still show in verbose mode). The classification errs loud: only a line
 # known-deny.jq is certain about takes the quiet route.
@@ -93,8 +90,8 @@ known_deny_seen() {
 # consumer for good -- silencing every later DENY. Degraded formatting on a broken line is fine; a
 # silently dropped DENY is not, so a failed classifier always errs toward surfacing the raw line.
 classify_log() {
-    arity 5
-    local is_interactive="$1" script="$2" on_deny="$3" on_reload="$4" verbose="$5" line host known reload_line
+    arity 4
+    local script="$1" on_deny="$2" on_reload="$3" verbose="$4" line host known reload_line
     # Hosts whose denylist denial was already logged this session (read by known_deny_seen)
     local -a known_seen=()
     while IFS= read -r line || [ -n "$line" ]; do
@@ -126,13 +123,13 @@ classify_log() {
                     [ -n "$on_deny" ] && "$on_deny" "$host"
                 fi
                 printf '%s\n' "$line" | jq -R -r -L "$JQ_LIB_DIR" \
-                    --argjson is_interactive "$is_interactive" --arg script "$script" \
+                    --arg script "$script" \
                     --arg host "$host" --arg known "$known" \
                     -f "$FORMAT_DENY_FILTER" || surface_raw "$verbose" "$line"
             fi
         elif [[ "$line" == *'"msg":"egress ACL reload'* || "$line" == *'"msg":"GitHub allowlist reload'* ]] && \
              reload_line=$(printf '%s\n' "$line" | jq -R -r -L "$JQ_LIB_DIR" \
-                --argjson is_interactive "$is_interactive" --arg script "$script" \
+                --arg script "$script" \
                 -f "$FORMAT_RELOAD_FILTER") && [ -n "$reload_line" ]; then
             printf '%s\n' "$reload_line"
         elif [ "$verbose" != true ]; then

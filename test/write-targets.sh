@@ -144,13 +144,32 @@ refuses "  -> and so is a directory inside it, which is where the sandbox config
 
 # The proxy's run dir holds the ports that aim each session's network holes.
 mkdir -p "$PROXY_RUN_DIR"
-refuses "chopi-proxy's run directory is refused as a target" \
-    "overlaps chopi-proxy's run directory" "$PROXY_RUN_DIR"
+refuses "the proxy's run directory is refused as a target" \
+    "overlaps the proxy's run directory" "$PROXY_RUN_DIR"
 refuses "  -> and so is a directory holding it" \
-    "overlaps chopi-proxy's run directory" "$TMPDIR/chopi-run"
+    "overlaps the proxy's run directory" "$TMPDIR/chopi-run"
 ln -s "$TMPDIR/chopi-run" "$TMPDIR/chopi-run-link"
 refuses "  -> and so is the run directory reached through a symlink" \
-    "overlaps chopi-proxy's run directory" "$TMPDIR/chopi-run-link/run"
+    "overlaps the proxy's run directory" "$TMPDIR/chopi-run-link/run"
+
+# Custom proxy config, in its own dir outside chopi's, sets the sessions' outgoing limits all the
+# same: any session's, whatever config this one reads.
+cfg_dir="$TMPDIR/chopi-home/config"
+mkdir -p "$cfg_dir"
+touch "$cfg_dir/rules.yaml"
+PROXY_CONFIG_DIR="$cfg_dir" refuses "the custom proxy config dir is refused as a target" \
+    "overlaps the proxy's config" "$cfg_dir"
+PROXY_CONFIG_DIR="$cfg_dir" refuses "  -> as is a file in it, another session's rules say" \
+    "overlaps the proxy's config" "$cfg_dir/rules.yaml"
+PROXY_CONFIG_DIR="$cfg_dir" refuses "  -> and a directory holding it" \
+    "overlaps the proxy's config" "$TMPDIR/chopi-home"
+# A default file linking elsewhere, as chopi-review sees it: unresolved, the setting unset.
+mkdir -p "$TMPDIR/fake-chopi/config" "$TMPDIR/linked-config"
+: > "$TMPDIR/linked-config/rules.yaml"
+ln -s "$TMPDIR/linked-config/rules.yaml" "$TMPDIR/fake-chopi/config/proxy-rules.yaml"
+CHOPI_DIR="$TMPDIR/fake-chopi" refuses \
+    "  -> and one holding the default rules, linked from chopi's directory, unresolved" \
+    "overlaps the proxy's config" "$TMPDIR/linked-config"
 
 # Inside the workspace is allowed: the profile denies writing to the target to enforce review
 mkdir -p "$work/sub"

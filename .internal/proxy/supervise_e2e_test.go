@@ -101,25 +101,18 @@ func fakeCaddy() {
 
 type supervisorRun struct {
 	cmd       *exec.Cmd
-	sock      string
-	portsFile string
+	dir       string
 	allowlist string // what the fake render prints as Caddy's config
 	logFile   string // the supervisor's stdout
 	state     string
+	parent    *exec.Cmd
 	stderr    *strings.Builder
 	exited    chan struct{}
 }
 
-// startSupervisor runs chopi-smokescreen, on ports the kernel picks, with a fake caddy behaving as
-// caddyPlan says.
+// startSupervisor runs chopi-smokescreen with a fake caddy behaving as caddyPlan says, and a
+// `sleep` as the parent it watches.
 func startSupervisor(t *testing.T, caddyPlan string) *supervisorRun {
-	t.Helper()
-	return startSupervisorIn(t, supervisorDir(t), caddyPlan)
-}
-
-// supervisorDir makes a dir for supervisors to run in, one after another: its fake caddy, rules,
-// and run dir.
-func supervisorDir(t *testing.T) string {
 	t.Helper()
 	exe, err := os.Executable()
 	if err != nil {
@@ -132,17 +125,19 @@ func supervisorDir(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(tmp) })
-	for _, d := range []string{"bin", "state"} {
+	for _, d := range []string{"bin", "dir", "state"} {
 		if err := os.Mkdir(filepath.Join(tmp, d), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	caddy := filepath.Join(tmp, "bin", "caddy")
+	bin := filepath.Join(tmp, "bin")
+	state := filepath.Join(tmp, "state")
+	caddy := filepath.Join(bin, "caddy")
 	writeFile(t, caddy, "#!/bin/sh\nCHOPI_TEST_ROLE=caddy exec '"+exe+"' \"$@\"\n")
 	os.Chmod(caddy, 0o755)
 	// The relays' config is the "allowlist" as it is, unless it holds RENDER-FAILS; the render
 	// records the GH_TOKEN it gets.
-	render := filepath.Join(tmp, "bin", "render")
+	render := filepath.Join(bin, "render")
 	writeFile(t, render, `#!/bin/sh
 printf '%s' "${GH_TOKEN-(unset)}" > "$CHOPI_TEST_STATE/render-token"
 case "$(cat "$1")" in
@@ -152,32 +147,27 @@ echo "render says: a note" >&2
 cat "$1"
 `)
 	os.Chmod(render, 0o755)
-	writeFile(t, filepath.Join(tmp, "rules.yaml"), rulesAllowing("example.com"))
-	writeFile(t, filepath.Join(tmp, "allowlist"), "THE CADDY CONFIG")
-	return tmp
-}
-
-// startSupervisorIn runs chopi-smokescreen in tmp, a supervisorDir, as startSupervisor does.
-func startSupervisorIn(t *testing.T, tmp, caddyPlan string) *supervisorRun {
-	t.Helper()
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	bin := filepath.Join(tmp, "bin")
-	state := filepath.Join(tmp, "state")
 	rules := filepath.Join(tmp, "rules.yaml")
+	writeFile(t, rules, rulesAllowing("example.com"))
+	writeFile(t, filepath.Join(tmp, "allowlist"), "THE CADDY CONFIG")
 	config, err := filepath.Abs("../smokescreen-config.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	run := &supervisorRun{sock: filepath.Join(tmp, "gh.sock"), portsFile: filepath.Join(tmp, "ports"),
-		allowlist: filepath.Join(tmp, "allowlist"), logFile: filepath.Join(tmp, "supervisor.log"),
-		state: state, stderr: &strings.Builder{}, exited: make(chan struct{})}
-	run.cmd = exec.Command(exe, "--relay-log", filepath.Join(tmp, "caddy.log"),
-		"--gh-sock", run.sock, "--ports-file", run.portsFile,
-		"--github-allowlist", run.allowlist, "--relay-config", filepath.Join(bin, "render"), "--",
+	dir := filepath.Join(tmp, "dir")
+	parent := exec.Command("sleep", "30")
+	if err := parent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { parent.Process.Kill(); parent.Wait() })
+
+	run := &supervisorRun{dir: dir, allowlist: filepath.Join(tmp, "allowlist"),
+		logFile: filepath.Join(tmp, "supervisor.log"), state: state, parent: parent,
+		stderr: &strings.Builder{}, exited: make(chan struct{})}
+	run.cmd = exec.Command(exe, "--dir", dir, "--parent", strconv.Itoa(parent.Process.Pid),
+		"--relay-log", filepath.Join(tmp, "caddy.log"),
+		"--github-allowlist", run.allowlist, "--relay-config", render, "--",
 		"--config-file", config, "--egress-acl-file", rules)
 	run.cmd.Env = append(os.Environ(), "CHOPI_TEST_ROLE=supervisor", "CHOPI_TEST_STATE="+state,
 		"CHOPI_TEST_CADDY="+caddyPlan, "PATH="+bin+":"+os.Getenv("PATH"), "GH_TOKEN=the-token")
@@ -209,8 +199,10 @@ func (run *supervisorRun) awaitPorts(t *testing.T) ports {
 	t.Helper()
 	deadline := time.After(20 * time.Second)
 	for {
-		if _, err := os.Stat(run.portsFile); err == nil {
-			return readPorts(run.portsFile)
+		if data, err := os.ReadFile(filepath.Join(run.dir, "ports")); err == nil {
+			var p ports
+			fmt.Sscanf(string(data), "proxy %d\nrelay %d\n", &p.proxy, &p.relay)
+			return p
 		}
 		select {
 		case <-run.exited:
@@ -254,7 +246,7 @@ var directClient = &http.Client{Transport: &http.Transport{Proxy: nil}}
 // apiClient goes to the API relay's socket, whatever the URL's host.
 func (run *supervisorRun) apiClient() *http.Client {
 	return &http.Client{Transport: &http.Transport{Proxy: nil,
-		Dial: func(_, _ string) (net.Conn, error) { return net.Dial("unix", run.sock) }}}
+		Dial: func(_, _ string) (net.Conn, error) { return net.Dial("unix", filepath.Join(run.dir, "gh.sock")) }}}
 }
 
 func get(t *testing.T, client *http.Client, url string) string {
@@ -268,7 +260,7 @@ func get(t *testing.T, client *http.Client, url string) string {
 	return string(body)
 }
 
-func TestSupervisorServesAndStopsOnINT(t *testing.T) {
+func TestSupervisorServesAndStopsWithItsParent(t *testing.T) {
 	t.Parallel()
 	run := startSupervisor(t, "")
 	up := run.awaitPorts(t)
@@ -287,8 +279,11 @@ func TestSupervisorServesAndStopsOnINT(t *testing.T) {
 	if config, _ := os.ReadFile(filepath.Join(run.state, "caddy-config")); string(config) != "THE CADDY CONFIG" {
 		t.Errorf("caddy got config %q, want the render's output", config)
 	}
-	if !strings.Contains(run.stderr.String(), "render says: a note") {
-		t.Errorf("stderr %q, want the render's note, for the user to see as the proxy starts", run.stderr)
+	if log, _ := os.ReadFile(run.logFile); !strings.Contains(string(log), "render says: a note") {
+		t.Errorf("the log lacks the render's note:\n%s", log)
+	}
+	if strings.Contains(run.stderr.String(), "render says: a note") {
+		t.Errorf("stderr %q: a session that starts says nothing", run.stderr)
 	}
 	if token, _ := os.ReadFile(filepath.Join(run.state, "render-token")); string(token) != "the-token" {
 		t.Errorf("the render got GH_TOKEN %q, want the supervisor's", token)
@@ -297,34 +292,12 @@ func TestSupervisorServesAndStopsOnINT(t *testing.T) {
 		t.Errorf("caddy got GH_TOKEN %q: the token is the render's alone", token)
 	}
 
-	// A Ctrl-C, as the terminal sends it.
-	run.cmd.Process.Signal(syscall.SIGINT)
+	run.parent.Process.Kill()
 	if status := run.awaitExit(t); status != 0 {
-		t.Errorf("exit status %d once stopped", status)
+		t.Errorf("exit status %d once the parent is gone", status)
 	}
 	if !run.caddyGone(t) {
 		t.Error("caddy outlives the supervisor")
-	}
-	if _, err := os.Stat(run.sock); !os.IsNotExist(err) {
-		t.Errorf("the API relay's socket is left behind (%v)", err)
-	}
-	if _, err := os.Stat(run.portsFile); !os.IsNotExist(err) {
-		t.Errorf("the ports file is left behind, naming ports nothing serves (%v)", err)
-	}
-}
-
-// Running chopi sessions are confined to the ports they started with: a restart must keep them.
-func TestSupervisorRestartsOnTheSamePorts(t *testing.T) {
-	t.Parallel()
-	tmp := supervisorDir(t)
-	run := startSupervisorIn(t, tmp, "")
-	before := run.awaitPorts(t)
-	run.cmd.Process.Signal(syscall.SIGINT)
-	run.awaitExit(t)
-
-	after := startSupervisorIn(t, tmp, "").awaitPorts(t)
-	if after != before {
-		t.Errorf("ports %v after a restart, were %v: running sessions lose the proxy", after, before)
 	}
 }
 
@@ -345,7 +318,7 @@ func (run *supervisorRun) caddyGoneNow(t *testing.T) bool {
 	return syscall.Kill(run.mustCaddyPID(t), 0) != nil
 }
 
-// The socket and the ports file name Caddy's relays: they go only once Caddy is gone.
+// The supervisor's exit says the relays are down: Caddy must be gone by then.
 func TestSupervisorWaitsForCaddyToStop(t *testing.T) {
 	t.Parallel()
 	run := startSupervisor(t, "slow")
@@ -388,7 +361,7 @@ func TestSupervisorReportsACaddyThatFailsToStart(t *testing.T) {
 		!strings.Contains(run.stderr.String(), "caddy says: bad config") {
 		t.Errorf("stderr %q, want the failure and caddy's log", run.stderr)
 	}
-	if _, err := os.Stat(run.portsFile); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(run.dir, "ports")); !os.IsNotExist(err) {
 		t.Error("ports reported for a proxy that didn't start")
 	}
 }
