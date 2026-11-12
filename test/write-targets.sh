@@ -20,9 +20,17 @@ header "test/write-targets.sh -- unit tests for the patch queue's config and gra
 
 # The queue root is $HOME-derived, so point HOME into the temp dir: the tests must never
 # touch the developer's real ~/.chopi. The lib under test is sourced after, for the same reason.
-HOME="$TMPDIR/home"; export HOME
-mkdir -p "$HOME"
-. "$repo/.internal/write-targets.sh"
+# use_home re-sources it so the HOME-derived roots follow a HOME switched mid-suite.
+use_home() {
+    HOME="$1"
+    . "$repo/.internal/write-targets.sh"
+}
+export HOME
+mkdir -p "$TMPDIR/home"
+use_home "$TMPDIR/home"
+# A second HOME, reached through a symlink, with no patch queue yet.
+mkdir -p "$TMPDIR/fresh-home/.chopi"
+ln -s "$TMPDIR/fresh-home" "$TMPDIR/fresh-home-link"
 
 # The dev environment may set the override; the refusal tests need it off.
 unset CHOPI_ALLOW_SAFE_WRITE_TARGET
@@ -196,6 +204,12 @@ refuses "  -> and a directory inside one" "git directory" "$TMPDIR/detached-gitd
 mkdir -p "$CHOPI_PATCH_QUEUE_ROOT"
 refuses "a target reaching the patch queue is refused" "queue" "$CHOPI_PATCH_QUEUE_ROOT"
 refuses "  -> and one enclosing the queue" "queue" "$HOME/.chopi"
+# Targets are canonical, so the queue root must be too, even where HOME is reached through a
+# symlink, and before the queue exists: validation runs ahead of creating it on first launch.
+use_home "$TMPDIR/fresh-home-link"
+refuses "  -> also where HOME is a symlink and the queue does not exist yet" \
+    "queue" "$TMPDIR/fresh-home/.chopi"
+use_home "$TMPDIR/home"
 
 
 # ---------------------------------------------------------------------------
