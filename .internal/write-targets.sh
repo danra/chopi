@@ -15,7 +15,10 @@ _script_dir="$(dirname "${BASH_SOURCE[0]}")"
 . "$_script_dir/util.sh"
 unset _script_dir
 
-CHOPI_PATCH_QUEUE_ROOT="$HOME/.chopi/patch-queue"
+# Canonical, as the targets compared with it and the paths Seatbelt matches are. HOME always exists,
+# so it resolves; validate_queue_root refuses a symlink below it.
+CHOPI_REAL_HOME="$(realpath_or_self "$HOME")"
+CHOPI_PATCH_QUEUE_ROOT="$CHOPI_REAL_HOME/.chopi/patch-queue"
 
 # Print the canonical path of configured target $1, resolving a relative one against workspace $2.
 target_real_path() {
@@ -254,7 +257,7 @@ validate_queue_root() {
             return 1
         fi
         node="$(dirname "$node")"
-        case "$node" in "$HOME" | / | .) return 0 ;; esac
+        case "$node" in "$CHOPI_REAL_HOME" | / | .) return 0 ;; esac
     done
 }
 
@@ -382,7 +385,7 @@ write_patch_queue_profile() {
         local node="$queue_dir"
         while :; do
             node="$(dirname "$node")"
-            case "$node" in "$HOME" | / | .) break ;; esac
+            case "$node" in "$CHOPI_REAL_HOME" | / | .) break ;; esac
             rule 'allow file-read-metadata' literal "$node"
         done
         echo ";; chopi: the safe write targets: read-only so the review is the only way to write"

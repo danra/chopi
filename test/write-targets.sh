@@ -428,6 +428,14 @@ assert_contains "$profile" '(allow file-read-metadata (literal "'"$CHOPI_PATCH_Q
 assert_contains "$profile" '(allow file-read-metadata (literal "'"$HOME/.chopi"'"))' "  -> and so does its parent dir"
 assert_not_contains "$profile" '(allow file-read-metadata (literal "'"$HOME"'"))' \
     "  -> No-need to grant HOME, already granted by safehouse"
+use_home "$TMPDIR/fresh-home-link"
+write_patch_queue_profile "$TMPDIR/linked-home.sb" "$CHOPI_PATCH_QUEUE_ROOT/$(path_id "$work")"
+linked_profile="$(cat "$TMPDIR/linked-home.sb")"
+assert_contains "$linked_profile" '(allow file-read-metadata (literal "'"$TMPDIR/fresh-home/.chopi"'"))' \
+    "  -> where HOME is a symlink, the chain is granted as resolved"
+assert_not_contains "$linked_profile" '(allow file-read-metadata (literal "'"$TMPDIR/fresh-home"'"))' \
+    "  -> and still stops below HOME"
+use_home "$TMPDIR/home"
 
 assert_contains "$profile" '(allow file-read* (subpath "'"$guidelines"'"))' \
     "a directory target is granted read, so a patch can be diffed against it"
