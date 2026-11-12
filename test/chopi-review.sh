@@ -10,7 +10,6 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 . "$repo/.internal/util.sh"
-. "$repo/.internal/write-targets.sh"
 . "$repo/test/lib.sh"
 
 header "test/chopi-review.sh -- unit tests for reviewing and applying queued patches"
@@ -19,12 +18,13 @@ TMPDIR="$(mktemp -d)"; export TMPDIR
 TMPDIR="$(cd "$TMPDIR" && pwd -P)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
-# chopi-review resolves the queue from $HOME, so keep it away from the developer's own: for the
-# command under test through its environment, and for this suite's own calls through the root
-# the lib resolved when it was sourced.
+# The queue root is $HOME-derived, so point HOME into the temp dir before sourcing the lib: the
+# suite's own calls and the command under test then resolve the same root, and never the
+# developer's own.
 home="$TMPDIR/home"
 mkdir -p "$home"
-CHOPI_PATCH_QUEUE_ROOT="$home/.chopi/patch-queue"
+HOME="$home"; export HOME
+. "$repo/.internal/write-targets.sh"
 
 target="$TMPDIR/guidelines"
 config="$TMPDIR/config.sh"

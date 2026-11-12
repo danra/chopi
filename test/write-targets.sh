@@ -20,9 +20,17 @@ header "test/write-targets.sh -- unit tests for the patch queue's config and gra
 
 # The queue root is $HOME-derived, so point HOME into the temp dir: the tests must never
 # touch the developer's real ~/.chopi. The lib under test is sourced after, for the same reason.
-HOME="$TMPDIR/home"; export HOME
-mkdir -p "$HOME"
-. "$repo/.internal/write-targets.sh"
+# use_home re-sources it so the HOME-derived roots follow a HOME switched mid-suite.
+use_home() {
+    HOME="$1"
+    . "$repo/.internal/write-targets.sh"
+}
+export HOME
+mkdir -p "$TMPDIR/home"
+use_home "$TMPDIR/home"
+# A second HOME, reached through a symlink, with no patch queue yet.
+mkdir -p "$TMPDIR/fresh-home/.chopi"
+ln -s "$TMPDIR/fresh-home" "$TMPDIR/fresh-home-link"
 
 # The dev environment may set the override; the refusal tests need it off.
 unset CHOPI_ALLOW_SAFE_WRITE_TARGET
@@ -196,6 +204,12 @@ refuses "  -> and a directory inside one" "git directory" "$TMPDIR/detached-gitd
 mkdir -p "$CHOPI_PATCH_QUEUE_ROOT"
 refuses "a target reaching the patch queue is refused" "queue" "$CHOPI_PATCH_QUEUE_ROOT"
 refuses "  -> and one enclosing the queue" "queue" "$HOME/.chopi"
+# Targets are canonical, so the queue root must be too, even where HOME is reached through a
+# symlink, and before the queue exists: validation runs ahead of creating it on first launch.
+use_home "$TMPDIR/fresh-home-link"
+refuses "  -> also where HOME is a symlink and the queue does not exist yet" \
+    "queue" "$TMPDIR/fresh-home/.chopi"
+use_home "$TMPDIR/home"
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +230,42 @@ assert_eq "${#CHOPI_WRITE_TARGET_PATHS[@]}" 0 "  -> and leaves no paths behind, 
 # ---------------------------------------------------------------------------
 echo "create_patch_queue"
 # ---------------------------------------------------------------------------
+# HOME that does not exist has no canonical form to compare targets with or to grant, and creating
+# the queue would create HOME as a side effect, hiding it from safehouse's own check.
+# Run create_patch_queue in a fresh shell with HOME=$1, PATH prefixed by $2, after running $3
+# between sourcing the lib and the call.
+create_queue_under_home() {
+    CHOPI_RUN_DIR="$CHOPI_RUN_DIR" HOME="$1" PATH="${2:+$2:}$PATH" bash -c \
+        '. "$1/.internal/util.sh"; . "$1/.internal/write-targets.sh"; eval "$3"; create_patch_queue "$2"' \
+        _ "$repo" "$work" "$3" 2>&1
+}
+out="$(create_queue_under_home "$TMPDIR/no-home" "" :)"
+assert_nonzero $? "a HOME that does not exist is refused"
+assert_contains "$out" "$TMPDIR/no-home" "  -> naming it"
+assert_absent "$TMPDIR/no-home" "  -> before anything creates it"
+
+# GNU realpath, as Homebrew's coreutils may put ahead of /bin, resolves a path whose last component
+# alone is missing, so resolving HOME cannot be what tells a missing one apart.
+mkdir -p "$TMPDIR/gnu-bin"
+cat >"$TMPDIR/gnu-bin/realpath" <<'EOF'
+#!/bin/sh
+# GNU realpath's default mode: every component but the last must exist.
+[ -e "$1" ] && exec /bin/realpath "$1"
+parent="$(/bin/realpath "$(dirname "$1")")" || exit 1
+printf '%s/%s\n' "$parent" "$(basename "$1")"
+EOF
+chmod +x "$TMPDIR/gnu-bin/realpath"
+create_queue_under_home "$TMPDIR/no-home" "$TMPDIR/gnu-bin" : >/dev/null
+assert_nonzero $? "a HOME that does not exist is refused under GNU realpath too"
+assert_absent "$TMPDIR/no-home" "  -> before anything creates it"
+
+# The root is fixed when the lib is sourced: a HOME that only resolves afterwards, through a
+# symlink, left it spelled uncanonically.
+create_queue_under_home "$TMPDIR/late-home" "" "ln -s '$TMPDIR/fresh-home' '$TMPDIR/late-home'" >/dev/null
+assert_nonzero $? "a HOME resolved only after the lib was sourced is refused"
+assert_absent "$TMPDIR/fresh-home/.chopi/patch-queue" "  -> before anything creates the queue"
+rm "$TMPDIR/late-home"
+
 mkdir -p "$TMPDIR/notes"
 CHOPI_SAFE_WRITE_TARGETS=("$guidelines" "$TMPDIR/notes" "$work/docs" "$work/CLAUDE.md")
 validate_write_targets "$work" chopi
@@ -413,7 +463,15 @@ assert_contains "$profile" '(allow file-read-metadata (literal "'"$CHOPI_PATCH_Q
     "  -> but does need stat"
 assert_contains "$profile" '(allow file-read-metadata (literal "'"$HOME/.chopi"'"))' "  -> and so does its parent dir"
 assert_not_contains "$profile" '(allow file-read-metadata (literal "'"$HOME"'"))' \
-    "  -> No-need to grant HOME, already granted by safehouse"
+    "  -> No-need to grant HOME, already granted by safehouse, as resolved"
+use_home "$TMPDIR/fresh-home-link"
+write_patch_queue_profile "$TMPDIR/linked-home.sb" "$CHOPI_PATCH_QUEUE_ROOT/$(path_id "$work")"
+linked_profile="$(cat "$TMPDIR/linked-home.sb")"
+assert_contains "$linked_profile" '(allow file-read-metadata (literal "'"$TMPDIR/fresh-home/.chopi"'"))' \
+    "  -> where HOME is a symlink, the chain is granted as resolved"
+assert_not_contains "$linked_profile" '(allow file-read-metadata (literal "'"$TMPDIR/fresh-home"'"))' \
+    "  -> and still stops below HOME"
+use_home "$TMPDIR/home"
 
 assert_contains "$profile" '(allow file-read* (subpath "'"$guidelines"'"))' \
     "a directory target is granted read, so a patch can be diffed against it"
