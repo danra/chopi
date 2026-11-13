@@ -20,10 +20,12 @@ chopi to find them. Running chopi sessions keep the ports they started with, so 
 restart only on the same ports.
 
   --rules FILE       use FILE as the proxy rules instead of the default
-                     config/proxy-rules.yaml
+                     config/$DEFAULT_PROXY_RULES
   --github-allowlist FILE
                      use FILE as the GitHub allowlist instead of the default
-                     config/github-allowlist
+                     config/$DEFAULT_GITHUB_ALLOWLIST
+                     A custom FILE must be in $PROXY_CONFIG_DIR, which chopi keeps every
+                     sandboxed command from changing.
   --verbose          show smokescreen's output verbatim, interleaved with chopi-proxy's
                      own: nothing is dropped or replaced.
 
@@ -85,7 +87,11 @@ fi
 
 # Print the config file to use: CUSTOM, as passed with FLAG (relative to where chopi-proxy was
 # started), or else config/DEFAULT, which the installer creates from config/templates/TEMPLATE.
-# Fails when the file is missing.
+# Fails when the file is missing. A custom one must be in PROXY_CONFIG_DIR, which every chopi session
+# keeps its command from changing (see write_proxy_config_profile): elsewhere, a session that could
+# write it could lift the outgoing limits of them all, as the proxy hot-reloads it. Either is resolved
+# once, here, for the proxy to read its real path: no symlink is followed past this point, so none
+# can be repointed to change the config it reads.
 #
 # usage: config_file DESCRIPTION FLAG CUSTOM DEFAULT TEMPLATE
 config_file() {
@@ -96,11 +102,20 @@ config_file() {
             /*) ;;
             *)  custom="$INVOCATION_DIR/$custom" ;;
         esac
-        [ -f "$custom" ] || { echo "error: $flag file not found: $custom" >&2; return 1; }
-        echo "[$SCRIPT_NAME] using custom $description: $custom" >&2
-        printf '%s' "$custom"
+        local resolved
+        resolved="$(realpath "$custom" 2>/dev/null)" && [ -f "$resolved" ] \
+            || { echo "error: $flag file not found: $custom" >&2; return 1; }
+        if ! is_path_within "$resolved" "$(realpath_or_self "$PROXY_CONFIG_DIR")"; then
+            echo "error: the $flag file must be in $PROXY_CONFIG_DIR, got: $custom" >&2
+            echo "Every chopi session keeps its command from changing what is there; elsewhere, one that" >&2
+            echo "could write it could lift its own outgoing limits, and every other session's. Move it" >&2
+            echo "there, and pass its path there to $flag." >&2
+            return 1
+        fi
+        echo "[$SCRIPT_NAME] using custom $description: $resolved" >&2
+        printf '%s' "$resolved"
     elif [ -f "$default" ]; then
-        printf '%s' "$default"
+        realpath "$default"
     else
         echo "error: no $description at $default" >&2
         echo "Run the installer to create it from the template:  $CHOPI_DIR/install.sh" >&2
@@ -110,7 +125,7 @@ config_file() {
 }
 
 RULES="$(config_file "proxy rules" --rules "$CUSTOM_RULES" \
-    proxy-rules.yaml proxy-rules.template.yaml)" || exit 1
+    "$DEFAULT_PROXY_RULES" proxy-rules.template.yaml)" || exit 1
 
 # Rules that allow GitHub's own domains defeat the GitHub repos allowlist: a sandboxed
 # command could push data to ANY repo directly, skipping the relays. The expected case is
@@ -129,7 +144,7 @@ if [ -n "$github_exfil_domains" ]; then
         echo "A sandboxed command could push stolen data to ANY GitHub repo." >&2
         echo "github.com git and gh's api.github.com REST calls now go through" >&2
         echo "dedicated relays which limit push and private-repo access to the" >&2
-        echo "repos in config/github-allowlist." >&2
+        echo "repos in config/$DEFAULT_GITHUB_ALLOWLIST." >&2
         echo >&2
         echo "To migrate, overwrite your proxy rules with the current template:" >&2
         echo "    cp \"$CHOPI_DIR/config/templates/proxy-rules.template.yaml\" \"$RULES\"" >&2
@@ -141,14 +156,7 @@ if [ -n "$github_exfil_domains" ]; then
 fi
 
 GITHUB_ALLOWLIST="$(config_file "GitHub allowlist" --github-allowlist "$CUSTOM_GITHUB_ALLOWLIST" \
-    github-allowlist github-allowlist.template)" || exit 1
-
-if [ -n "$CUSTOM_RULES$CUSTOM_GITHUB_ALLOWLIST" ]; then
-    # The proxy doesn't know which dirs will be sandboxed later, so it can't enforce no overlap with a custom rules file.
-    # Warn instead
-    echo "[$SCRIPT_NAME] warning: keep custom config files OUTSIDE any workspace you sandbox with chopi --" >&2
-    echo "              a sandboxed command that can write one can lift its own outgoing limits." >&2
-fi
+    "$DEFAULT_GITHUB_ALLOWLIST" github-allowlist.template)" || exit 1
 
 . "$CHOPI_DIR/.internal/classify-log.sh"
 for f in "$CONNECTION_FILTER" "$DENY_HOST_FILTER" "$KNOWN_DENY_FILTER" \
@@ -259,10 +267,13 @@ fi
 mkdir -p "$CHOPI_RUN_DIR"
 make_private_dir "$PROXY_RUN_DIR" || exit 1
 rm -f "$GH_RELAY_SOCK" "$PROXY_PORTS_FILE"
+# For each session to keep its command from changing the files read, whatever their links point
+# at by the time it starts (see proxy_config_paths).
+printf '%s\n' "$RULES" "$GITHUB_ALLOWLIST" >"$PROXY_CONFIGS_FILE"
 
 # chopi-smokescreen clears these as it stops, but not if it dies (a SIGKILL, a crash): left, the
 # ports would point the next chopi session at whatever later takes them.
-trap 'rm -rf "$TMPDIR"; rm -f "$PROXY_PORTS_FILE" "$GH_RELAY_SOCK"' EXIT
+trap 'rm -rf "$TMPDIR"; rm -f "$PROXY_PORTS_FILE" "$GH_RELAY_SOCK" "$PROXY_CONFIGS_FILE"' EXIT
 
 # Run chopi-smokescreen with the GitHub token the user exported, if any: exporting an unset
 # variable puts nothing in the environment.

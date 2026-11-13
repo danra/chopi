@@ -85,6 +85,11 @@ main() {
     if [ "$#" -eq 0 ]; then echo "$usage" >&2; return 1; fi
 
     preflight_initial || return $?
+    # Made where missing, for every session to deny writes to its real path: Seatbelt matches real
+    # paths, and one with a symlink on the way can only be resolved once it exists.
+    mkdir -p "$PROXY_CONFIG_DIR" \
+        || { echo "chopi: could not create the proxy config dir '$PROXY_CONFIG_DIR'" >&2; return 1; }
+    preflight_proxy_config_links || return $?
 
     local CHOPI_SAFEHOUSE_FLAGS=()
     local CHOPI_EXTRA_ENV=()
@@ -235,6 +240,8 @@ main() {
 
     local run_dir_profile
     run_dir_profile="$(new_profile proxy-run-dir write_proxy_run_dir_profile "$PROXY_RUN_DIR")" || return 1
+    local proxy_config_profile
+    proxy_config_profile="$(new_profile proxy-config write_proxy_config_profile)" || return 1
 
     local proxy="http://127.0.0.1:$PROXY_PORT"
 
@@ -244,8 +251,8 @@ main() {
 
     # chopi's network profiles are always appended last so that (deny network*) lands after
     # safehouse's own profile, pinning outgoing traffic to the subsequent holes allowed for the proxy
-    # and the GitHub relay servers. The run-dir profile goes just before them, after every file
-    # grant, so its deny outranks them all.
+    # and the GitHub relay servers. The run-dir and proxy config profiles go just before them, after
+    # every file grant, so their denies outrank them all.
     #
     # errexit off around safehouse so a non-zero exit from the sandboxed command is captured
     # and propagated (so `chopi cmd && next` short-circuits) instead of aborting here.
@@ -258,6 +265,7 @@ main() {
         "${protection_flags[@]}" \
         "${wrapper_flags[@]}" \
         --append-profile "$run_dir_profile" \
+        --append-profile "$proxy_config_profile" \
         --append-profile "$CHOPI_DIR/.internal/network.sb" \
         --append-profile "$proxy_net_profile" \
         -- \

@@ -134,3 +134,35 @@ preflight_config_placement() {
             || return 1
     fi
 }
+
+# Refuse a proxy config file (proxy_config_paths) with extra hard links: write_proxy_config_profile
+# denies changes by path, so the sandboxed command could write the live rules through another link.
+# The sandbox keeps the command from making one, but not one made outside it. The proxy refuses a
+# change to a file with one made once the session is up (see its applyIfChanged).
+#
+# usage: preflight_proxy_config_links
+preflight_proxy_config_links() {
+    arity 0
+    local path file existing=()
+    while IFS= read -r path; do
+        [ -e "$path" ] && existing+=("$path")
+    done < <(proxy_config_paths)
+    [ "${#existing[@]}" -gt 0 ] || return 0
+    # Run to the end before any refusal, for find's status: a file it couldn't check (an unreadable
+    # dir) may be one with other hard links.
+    local linked
+    if ! linked="$(find "${existing[@]}" -type f -links +1)"; then
+        echo "error: could not check every proxy config file for other hard links, which the sandboxed" >&2
+        echo "       command may write through (see find's error above)." >&2
+        echo "Make everything under ${existing[*]} readable to you." >&2
+        return 1
+    fi
+    [ -n "$linked" ] || return 0
+    while IFS= read -r file; do
+        refuse_or_warn \
+            "the proxy's config file '$file' has other hard links, which the sandboxed command may write through" \
+            "the sandboxed command could lift its own outgoing limits, and every other session's" \
+            "Replace it with a fresh copy, e.g.: cp '$file' '$file.tmp' && mv '$file.tmp' '$file'" \
+            || return 1
+    done <<<"$linked"
+}

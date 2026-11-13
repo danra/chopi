@@ -481,6 +481,27 @@ done
 
 
 # ---------------------------------------------------------------------------
+echo "custom config files (must be in the config dir every session protects)"
+# ---------------------------------------------------------------------------
+# The rules are checked first: the allowlist's cases pass rules from the config dir, which get past
+# their checks, so that only the allowlist can stop the run.
+cfg_home="$(mktemp -d)"; cfg_home="$(realpath "$cfg_home")"
+mkdir -p "$cfg_home/config" "$cfg_home/elsewhere"
+echo 'allow: []' >"$cfg_home/elsewhere/rules.yaml"
+echo 'allow: []' >"$cfg_home/config/rules.yaml"
+ln -s "$cfg_home/elsewhere/rules.yaml" "$cfg_home/config/escaping.yaml"
+for opt in --rules --github-allowlist; do
+    others=()
+    [ "$opt" = --rules ] || others=(--rules "$cfg_home/config/rules.yaml")
+    for file in elsewhere/rules.yaml config/escaping.yaml; do
+        out="$(CHOPI_RUN_DIR="$cfg_home" "$repo/bin/chopi-proxy.sh" "${others[@]}" "$opt" "$cfg_home/$file" 2>&1)"; st=$?
+        assert_nonzero "$st" "a custom $opt file $file, resolving outside the config dir, is refused"
+        assert_contains "$out" "the $opt file must be in $cfg_home/config" "  -> naming where it must be"
+    done
+done
+
+
+# ---------------------------------------------------------------------------
 echo "make_private_dir (the run dir holding the token-bearing socket is ours alone)"
 # ---------------------------------------------------------------------------
 perms() { stat -f %Lp "$1"; }

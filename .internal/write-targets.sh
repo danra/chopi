@@ -133,6 +133,13 @@ validate_write_target() {
         echo "$prog: safe write target overlaps chopi-proxy's run directory: $path" >&2
         return 1
     fi
+    # The proxy's config sets the sessions' outgoing limits, which it hot-reloads: an approved patch
+    # must not be the way to lift them.
+    local config
+    if config="$(overlaps_proxy_config "$path")"; then
+        echo "$prog: safe write target overlaps the proxy's config $config: $path" >&2
+        return 1
+    fi
     if has_git_component "$path"; then
         echo "$prog: safe write target has a .git component: $path" >&2
         return 1

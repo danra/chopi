@@ -152,6 +152,46 @@ ln -s "$TMPDIR/chopi-run" "$TMPDIR/chopi-run-link"
 refuses "  -> and so is the run directory reached through a symlink" \
     "overlaps chopi-proxy's run directory" "$TMPDIR/chopi-run-link/run"
 
+# Custom proxy config, in its own dir outside chopi's, sets the sessions' outgoing limits all the
+# same, whichever config the running proxy was started with.
+cfg_dir="$TMPDIR/chopi-home/config"
+mkdir -p "$cfg_dir"
+touch "$cfg_dir/rules.yaml"
+PROXY_CONFIG_DIR="$cfg_dir" refuses "the custom proxy config dir is refused as a target" \
+    "overlaps the proxy's config" "$cfg_dir"
+PROXY_CONFIG_DIR="$cfg_dir" refuses "  -> as is a file in it" \
+    "overlaps the proxy's config" "$cfg_dir/rules.yaml"
+PROXY_CONFIG_DIR="$cfg_dir" refuses "  -> and a directory holding it" \
+    "overlaps the proxy's config" "$TMPDIR/chopi-home"
+# A default file linking elsewhere, as chopi-review sees it: unresolved.
+mkdir -p "$TMPDIR/fake-chopi/config" "$TMPDIR/linked-config"
+: > "$TMPDIR/linked-config/rules.yaml"
+ln -s "$TMPDIR/linked-config/rules.yaml" "$TMPDIR/fake-chopi/config/$DEFAULT_PROXY_RULES"
+CHOPI_DIR="$TMPDIR/fake-chopi" refuses \
+    "  -> and one holding the default rules, linked from chopi's directory, unresolved" \
+    "overlaps the proxy's config" "$TMPDIR/linked-config"
+# The profile protects what proxy_config_paths lists: every link on the way to a default file, each
+# in its real dir, which chopi-proxy follows as it starts, so repointing one would change the config
+# like writing it would. Here the chain has a second link, and a linked dir.
+mkdir -p "$TMPDIR/hop" "$TMPDIR/real-config"
+: > "$TMPDIR/real-config/rules.yaml"
+ln -s "$TMPDIR/real-config" "$TMPDIR/hop/dir-link"
+ln -s ../hop/dir-link/rules.yaml "$TMPDIR/linked-config/second-link.yaml"
+ln -sf "$TMPDIR/linked-config/second-link.yaml" "$TMPDIR/fake-chopi/config/$DEFAULT_PROXY_RULES"
+real_tmp="$(realpath "$TMPDIR")"
+config_paths="$(CHOPI_DIR="$TMPDIR/fake-chopi" PROXY_CONFIGS_FILE="$TMPDIR/none" proxy_config_paths)"
+assert_contains "$config_paths" "$real_tmp/fake-chopi/config/$DEFAULT_PROXY_RULES" \
+    "  -> the proxy's config paths list a default file's link, in its real dir"
+assert_contains "$config_paths" "$real_tmp/linked-config/second-link.yaml" "  -> the link it points at"
+assert_contains "$config_paths" "$real_tmp/hop/dir-link" "  -> a linked dir on the way"
+assert_contains "$config_paths" "$real_tmp/real-config/rules.yaml" "  -> and the file they resolve to"
+# The running proxy reports the files it reads, resolved as it started: should a link have been
+# repointed since, the file it still reads is protected too.
+printf '%s\n' "$real_tmp/linked-config/rules.yaml" > "$TMPDIR/configs"
+config_paths="$(CHOPI_DIR="$TMPDIR/fake-chopi" PROXY_CONFIGS_FILE="$TMPDIR/configs" proxy_config_paths)"
+assert_contains "$config_paths" "$real_tmp/linked-config/rules.yaml" \
+    "  -> as is a file the running proxy reports it reads"
+
 # Inside the workspace is allowed: the profile denies writing to the target to enforce review
 mkdir -p "$work/sub"
 accepts "a target inside the workspace is accepted" "$work/sub"
