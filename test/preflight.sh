@@ -148,6 +148,27 @@ out="$(preflight_under "$work" CHOPI_ALLOW_SELF=1 CHOPI_RUN_DIR="$work")"; st=$?
 assert_contains "$out" "error: workspace" "CHOPI_ALLOW_SELF does not downgrade the run-dir overlap"
 assert_nonzero "$st" "  -> and still returns non-zero"
 
+# ---------------------------------------------------------------------------
+echo "preflight_initial (proxy config/workspace overlap)"
+# ---------------------------------------------------------------------------
+# The proxy's config sets every session's outgoing limits. The profile denies changing it anyway,
+# so CHOPI_ALLOW_SELF, for working on chopi, whose dir holds the default config, may downgrade this.
+# The config dir links into a tree of its own, for a workspace to hold it, but not the run dir.
+cw="$(mktemp -d)"; cw="$(realpath "$cw")"; mkdir -p "$cw/linked/config/team" "$cw/beside"
+ln -s "$cw/linked/config" "$cw/config"
+out="$(preflight_under "$cw/linked" CHOPI_RUN_DIR="$cw")"; st=$?
+assert_contains "$out" "overlaps the proxy's config ('$cw/linked/config')" \
+    "refuses when workspace CONTAINS the proxy config dir"
+assert_nonzero "$st" "  -> and returns non-zero"
+out="$(preflight_under "$cw/linked/config/team" CHOPI_RUN_DIR="$cw")"
+assert_contains "$out" "overlaps the proxy's config" "refuses when workspace is INSIDE the proxy config dir"
+out="$(preflight_under "$cw/beside" CHOPI_RUN_DIR="$cw")"
+assert_not_contains "$out" "overlaps the proxy's config" \
+    "a workspace beside the proxy config dir, inside CHOPI_RUN_DIR, clears the check"
+out="$(preflight_under "$cw/linked/config" CHOPI_ALLOW_SELF=1 CHOPI_RUN_DIR="$cw")"
+assert_contains "$out" "warning: workspace '$cw/linked/config' overlaps the proxy's config" \
+    "CHOPI_ALLOW_SELF downgrades the proxy config overlap to a warning"
+
 
 # ---------------------------------------------------------------------------
 echo "preflight_config_placement (custom --config must live outside the workspace)"
