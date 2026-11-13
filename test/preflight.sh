@@ -320,13 +320,22 @@ ln "$hl/config/team/rules.yaml" "$hl/elsewhere/other-link.yaml"
 out="$(links_check 2>&1)"; st=$?
 assert_nonzero "$st" "a custom config file in the config dir with other hard links is refused"
 assert_contains "$out" "the proxy's config file '$hl/config/team/rules.yaml' has other hard links" "  -> naming it"
+assert_contains "$out" "Review what is in it, as it may have been written through another hard link" \
+    "  -> asking for it to be reviewed"
 assert_contains "$out" "cp '$hl/config/team/rules.yaml' '$hl/config/team/rules.yaml.tmp' && mv '$hl/config/team/rules.yaml.tmp' '$hl/config/team/rules.yaml'" \
-    "  -> saying how to replace it with a fresh copy"
+    "  -> and saying how to replace it with a fresh copy"
 
 out="$(links_check CHOPI_ALLOW_SELF=1 2>&1)"; st=$?
 assert_zero "$st" "CHOPI_ALLOW_SELF downgrades the refusal"
 assert_contains "$out" "warning: the proxy's config file '$hl/config/team/rules.yaml' has other hard links" "  -> to a warning"
 rm "$hl/elsewhere/other-link.yaml"
+
+# A file the proxy refused for its other hard links is moved aside, where it never reads it.
+echo 'allow: []' >"$hl/config/team/rules.yaml.refused-20261113-120000"
+ln "$hl/config/team/rules.yaml.refused-20261113-120000" "$hl/elsewhere/refused.yaml"
+out="$(links_check 2>&1)"; st=$?
+assert_zero "$st" "a refused file the proxy moved aside, with other hard links, passes"
+rm "$hl/elsewhere/refused.yaml" "$hl/config/team/rules.yaml.refused-20261113-120000"
 
 ln "$hl/chopi/config/$DEFAULT_GITHUB_ALLOWLIST" "$hl/elsewhere/allowlist"
 out="$(links_check 2>&1)"; st=$?

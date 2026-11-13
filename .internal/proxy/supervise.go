@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -164,6 +165,7 @@ type relaySupervisor struct {
 	relays  *relays
 	logPath string // Caddy's output, every Caddy's in turn
 	config  relayConfig
+	file    *configFile   // the allowlist, as last taken up
 	log     *logrus.Entry // where reloads are logged
 
 	mu      sync.Mutex
@@ -175,8 +177,8 @@ type relaySupervisor struct {
 	failedOnce sync.Once
 }
 
-func newRelaySupervisor(r *relays, logPath string, config relayConfig, log *logrus.Entry) *relaySupervisor {
-	return &relaySupervisor{relays: r, logPath: logPath, config: config, log: log,
+func newRelaySupervisor(r *relays, logPath string, config relayConfig, file *configFile, log *logrus.Entry) *relaySupervisor {
+	return &relaySupervisor{relays: r, logPath: logPath, config: config, file: file, log: log,
 		live: map[*caddyProc]bool{}, failed: make(chan struct{})}
 }
 
@@ -328,7 +330,7 @@ func outputSince(path string, offset int64) string {
 
 // reloadIfChanged reloads the relays if the allowlist changed since lastMod, as the rules are.
 func (s *relaySupervisor) reloadIfChanged(lastMod time.Time, warned bool) (time.Time, bool) {
-	return applyIfChanged(s.log, s.config.allowlist, allowlistReloaded, allowlistReloadFailed, lastMod, warned, s.reload)
+	return applyIfChanged(s.log, s.file, allowlistReloaded, allowlistReloadFailed, lastMod, warned, s.reload)
 }
 
 // stopAll stops every Caddy running, at once, returning once they have all exited.
@@ -353,13 +355,18 @@ func (s *relaySupervisor) stopAll() {
 }
 
 // writeAtomically writes content to path, whole or not at all: it is written beside path and
-// renamed over it, so a reader polling for path never sees it partly written.
-func writeAtomically(path, content string) error {
+// renamed over it, so a reader polling for path never sees it partly written, and no other
+// hard link reaches it.
+func writeAtomically(path, content string, perm fs.FileMode) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		return err
+	}
 	if _, err := tmp.WriteString(content); err != nil {
 		tmp.Close()
 		return err
@@ -378,7 +385,7 @@ type ports struct {
 // reportPorts writes the ports to path, one "NAME PORT" line each, for chopi to learn them from,
 // and to know the proxy is up.
 func reportPorts(path string, p ports) error {
-	return writeAtomically(path, fmt.Sprintf("proxy %d\nrelay %d\n", p.proxy, p.relay))
+	return writeAtomically(path, fmt.Sprintf("proxy %d\nrelay %d\n", p.proxy, p.relay), 0o600)
 }
 
 // lastPortsFile is where the ports reported in portsFile are recorded for the proxy's next run: kept
