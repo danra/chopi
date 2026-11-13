@@ -6,8 +6,9 @@
 # only learns the dir the command will actually run in partway through setup:
 #   * preflight_initial          -- runnable up front: the workspace doesn't overlap chopi's
 #                                   own dir (a confined command must not reach the policy
-#                                   that confines it) or chopi-proxy's run dir (whose ports
-#                                   aim the holes), the proxy-side services (both loopback
+#                                   that confines it), chopi-proxy's run dir (whose ports
+#                                   aim the holes), or the proxy's config (which sets the
+#                                   outgoing limits), the proxy-side services (both loopback
 #                                   ports, as chopi-proxy reports them, and the GitHub API relay
 #                                   socket) are up, and the safehouse CLI is on PATH.
 #   * preflight_config_placement -- deferred until chopi has resolved the workspace (the
@@ -74,6 +75,18 @@ preflight_initial() {
         echo "Run chopi from a workspace that neither holds nor sits inside $PROXY_RUN_DIR, or point" >&2
         echo "CHOPI_RUN_DIR (for both chopi-proxy and chopi) elsewhere." >&2
         return 1
+    fi
+
+    # The proxy's config sets every session's outgoing limits, which it hot-reloads. The profile
+    # denies the command any change to it whatever the workspace (write_proxy_config_profile), so
+    # CHOPI_ALLOW_SELF may downgrade this, for working on chopi, whose dir holds the default ones.
+    local config
+    if config="$(overlaps_proxy_config "$workspace_dir")"; then
+        refuse_or_warn \
+            "workspace '$workspace_dir' overlaps the proxy's config ('$config')" \
+            "the sandboxed command would be granted its outgoing limits, and every other session's, to rewrite" \
+            "Run chopi from a workspace that neither holds nor sits inside the proxy's config." \
+            || return 1
     fi
 
     # The outgoing proxy must already be running in its own terminal. We deliberately
