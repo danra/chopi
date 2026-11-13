@@ -46,20 +46,10 @@ main() {
     [ -n "$verbose" ] && print_git_layout
 
     local isolate_profile
-    isolate_profile="$(mktemp "$TMPDIR/chopi-git-isolate.XXXXXX")" || return 1
-    isolate_profile="$(realpath "$isolate_profile")" || return 1
-    if ! write_isolation_profile "$isolate_profile"; then
-        echo "error: could not write the git isolation profile" >&2
-        return 1
-    fi
+    isolate_profile="$(new_profile git-isolate write_isolation_profile)" || return 1
 
     local harden_profile
-    harden_profile="$(mktemp "$TMPDIR/chopi-git-harden.XXXXXX")" || return 1
-    harden_profile="$(realpath "$harden_profile")" || return 1
-    if ! write_hardening_profile "$harden_profile"; then
-        echo "error: could not write the git hardening profile" >&2
-        return 1
-    fi
+    harden_profile="$(new_profile git-harden write_hardening_profile)" || return 1
 
     # The machine contract for chopi: the profiles to append, in order. NUL-terminated
     # so a path containing a newline survives intact.

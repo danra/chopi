@@ -41,11 +41,12 @@ GH_RELAY_SOCK="$PROXY_RUN_DIR/chopi-gh-relay.sock"
 # Where chopi-proxy reports its ports once it serves, and removes them as it stops.
 PROXY_PORTS_FILE="$PROXY_RUN_DIR/chopi-proxy.ports"
 
-# mktemp name prefixes of chopi's per-invocation temporaries (created under the private
-# TMPDIR); shared so the tests assert on the same names chopi creates.
-CHOPI_CLAUDE_CONTEXT_READS_PREFIX="chopi-claude-context-reads."
+# Names of chopi's per-invocation temporaries (created under the private TMPDIR); shared so the
+# tests assert on the same names chopi creates. The *_PROFILE ones are new_profile NAMEs, which it
+# creates under profile_prefix; the *_PREFIX ones are mktemp prefixes.
+CHOPI_CLAUDE_CONTEXT_READS_PROFILE=claude-context-reads
+CHOPI_IN_SANDBOX_WRAPPER_PROFILE=in-sandbox-wrapper
 CHOPI_CLAUDE_SYSTEM_PROMPT_PREFIX="chopi-claude-system-prompt."
-CHOPI_IN_SANDBOX_WRAPPER_PREFIX="chopi-in-sandbox-wrapper."
 CHOPI_CMD_ALIAS_PREFIX="chopi-cmd-alias."
 
 # The libs (basenames under .internal/) that the in-sandbox wrapper and cleanup source
@@ -70,6 +71,30 @@ alias arity='_arity "$#"'
 # trace executed commands on/off
 alias trace_on='set -x'
 alias trace_off='{ set +x; } 2>/dev/null'
+
+# Print the mktemp prefix of the temp file new_profile makes for the Seatbelt profile NAME.
+#
+# usage: profile_prefix NAME
+profile_prefix() {
+    arity 1
+    printf 'chopi-%s.' "$1"
+}
+
+# Print a new temp file, named by profile_prefix NAME and resolved by realpath (a writer may name
+# the file in its own profile), holding the Seatbelt profile WRITER writes to it, called as
+# WRITER FILE ARGS...
+#
+# usage: new_profile NAME WRITER [ARGS...]
+new_profile() {
+    local name="$1" writer="$2" file
+    shift 2
+    file="$(mktemp "$TMPDIR/$(profile_prefix "$name")XXXXXX")" \
+        || { echo "chopi: could not create a temp file for the $name profile" >&2; return 1; }
+    file="$(realpath "$file")" || return 1
+    "$writer" "$file" "$@" \
+        || { echo "chopi: could not write the $name profile" >&2; return 1; }
+    printf '%s' "$file"
+}
 
 # readarray -t NAME -- the bash-4 builtin, polyfilled: split stdin into array NAME, one element
 # per line. macOS's bash 3.2 lacks it; defined unconditionally so newer bashes run the same code.
@@ -393,6 +418,29 @@ github_relay_gh_env() {
         "GH_HOST=github.localhost" \
         "GH_CONFIG_DIR=$config_dir" \
         "GH_TOKEN=x-chopi-relay"
+}
+
+# Write the Seatbelt profile letting the sandboxed side run chopi's in-sandbox WRAPPER and teardown
+# CLEANUP to FILE: reading and running them, reading the libs they source, and stat on chopi's dir
+# chain, for the in-sandbox CHOPI_DIR resolution.
+#
+# usage: write_in_sandbox_wrapper_profile FILE WRAPPER CLEANUP
+write_in_sandbox_wrapper_profile() {
+    arity 3
+    local file="$1" wrapper="$2" cleanup="$3" lib
+    {
+        echo ";; chopi: the in-sandbox wrapper itself."
+        rule 'allow file-read* process-exec' literal "$wrapper"
+        echo ";; chopi: the in-sandbox teardown cleanup and the libs it and the wrapper source."
+        rule 'allow file-read* process-exec' literal "$cleanup"
+        for lib in "${CHOPI_IN_SANDBOX_LIBS[@]}"; do
+            rule 'allow file-read*' literal "$CHOPI_DIR/.internal/$lib"
+        done
+        echo ";; chopi: stat-only on chopi's dir chain for in-sandbox CHOPI_DIR resolution."
+        ancestry_rules 'allow file-read-metadata' / "$CHOPI_DIR/.internal"
+        # The walk excludes the root, which the resolution stats too.
+        rule 'allow file-read-metadata' literal /
+    } >"$file"
 }
 
 # Write the Seatbelt profile denying the sandboxed command any access to chopi-proxy's run dir

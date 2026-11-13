@@ -562,10 +562,10 @@ assert_not_contains "$out" "PARENT_CLAUDE_MARKER" "  -> and no content leaks"
 
 # shellcheck disable=SC2016  # $TMPDIR expands in the sandboxed shell, not here
 out="$(chopi_t /bin/sh -c 'ls "$TMPDIR"' 2>/dev/null)"
-assert_not_contains "$out" "$CHOPI_CLAUDE_CONTEXT_READS_PREFIX" "no context-reads profile is even built for a non-claude run"
+assert_not_contains "$out" "$(profile_prefix "$CHOPI_CLAUDE_CONTEXT_READS_PROFILE")" "no context-reads profile is even built for a non-claude run"
 # shellcheck disable=SC2016  # $TMPDIR expands in the sandboxed shell, not here
 out="$(chopi_claude -c 'ls "$TMPDIR"' 2>/dev/null)"
-assert_contains     "$out" "$CHOPI_CLAUDE_CONTEXT_READS_PREFIX" "  -> while a claude run gets one"
+assert_contains     "$out" "$(profile_prefix "$CHOPI_CLAUDE_CONTEXT_READS_PROFILE")" "  -> while a claude run gets one"
 
 printf 'PARENT_CLAUDE_MARKER\n@imports/linked-import.md\n' > "$base/CLAUDE.md"
 out="$(chopi_t /bin/sh -c 'echo RAN' 2>/dev/null)"; rc=$?
@@ -593,7 +593,7 @@ assert_contains "$out" "WRITE_OK"                  "  -> and the sandboxed comma
 # This run's artifacts show up in the in-sandbox listing of $TMPDIR -- the dir is fresh
 # and private to the invocation, so their presence pins them as subpaths of it. Guards the
 # containment assumption the one-shot cleanup below relies on.
-assert_contains "$out" "$CHOPI_IN_SANDBOX_WRAPPER_PREFIX" "the in-sandbox wrapper profile lives inside the invocation temp dir"
+assert_contains "$out" "$(profile_prefix "$CHOPI_IN_SANDBOX_WRAPPER_PROFILE")" "the in-sandbox wrapper profile lives inside the invocation temp dir"
 
 if [ -n "$sbx_tmpdir" ] && [ ! -e "$sbx_tmpdir" ]; then
     ok  "chopi removes the entire invocation temp dir (all temporaries with it) after the run"
@@ -650,7 +650,7 @@ chopi_wrap() { ( cd "$wrap_repo" && "$repo/bin/chopi" --config "$cfg_agent" -- "
 out="$(chopi_wrap /bin/sh -c 'echo "$GIT_CONFIG_KEY_0=$GIT_CONFIG_VALUE_0"; git ls-remote --get-url https://github.com/o/r; ls "$TMPDIR"' 2>/dev/null)"
 assert_contains "$out" "chopi.wrapped=wrappedmarker"   "a CHOPI_GIT_CONFIG pair reaches the sandboxed command at a worktree root"
 assert_contains "$out" "http://127.0.0.1:$GITHUB_RELAY_PORT/o/r"   "  -> and github.com git reroutes to the relay in the sandbox"
-assert_contains "$out" "$CHOPI_IN_SANDBOX_WRAPPER_PREFIX"  "  -> the in-sandbox wrapper profile is created for the run"
+assert_contains "$out" "$(profile_prefix "$CHOPI_IN_SANDBOX_WRAPPER_PROFILE")"  "  -> the in-sandbox wrapper profile is created for the run"
 assert_contains "$out" "$CHOPI_CMD_ALIAS_PREFIX"            "  -> as is the command-alias dir"
 
 # The wrapper profile opens the wrapper, the cleanup script, and the libs they source

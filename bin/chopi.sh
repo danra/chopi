@@ -147,10 +147,7 @@ main() {
         queue_dir="$(create_patch_queue "$run_dir")" \
             || { echo "chopi: refusing to run" >&2; return 1; }
         local queue_profile
-        queue_profile="$(mktemp "$TMPDIR/chopi-patch-queue.XXXXXX")" \
-            || { echo "chopi: could not create a temp file for the patch-queue profile" >&2; return 1; }
-        write_patch_queue_profile "$queue_profile" "$queue_dir" \
-            || { echo "chopi: could not write the patch-queue profile" >&2; return 1; }
+        queue_profile="$(new_profile patch-queue write_patch_queue_profile "$queue_dir")" || return 1
         queue_flags=(--append-profile "$queue_profile")
         targets="$(printf '%s\n' "${CHOPI_WRITE_TARGET_PATHS[@]}")"
         queue_env=(CHOPI_PATCH_QUEUE="$queue_dir" CHOPI_SAFE_WRITE_TARGETS="$targets")
@@ -160,10 +157,8 @@ main() {
     local cmd_argv=("$@")
     if is_claude_command "$1"; then
         local claude_context_profile
-        claude_context_profile="$(mktemp "$TMPDIR/${CHOPI_CLAUDE_CONTEXT_READS_PREFIX}XXXXXX")" \
-            || { echo "chopi: could not create a temp file for the claude-context-reads profile" >&2; return 1; }
-        write_claude_context_reads_profile "$claude_context_profile" "$run_dir" \
-            || { echo "chopi: could not write the claude-context-reads profile" >&2; return 1; }
+        claude_context_profile="$(new_profile "$CHOPI_CLAUDE_CONTEXT_READS_PROFILE" \
+            write_claude_context_reads_profile "$run_dir")" || return 1
         context_flags=(--append-profile "$claude_context_profile")
 
         claude_argv_with_chopi_prompt "$run_dir" "$targets" "$@" || return 1
@@ -219,21 +214,8 @@ main() {
     local wrapper_cmd=("$cmd_alias" "$cleanup_script_path")
     wrapper_cmd+=("${CHOPI_GIT_CONFIG[@]+"${CHOPI_GIT_CONFIG[@]}"}" --)
     local wrapper_profile
-    wrapper_profile="$(mktemp "$TMPDIR/${CHOPI_IN_SANDBOX_WRAPPER_PREFIX}XXXXXX")" \
-        || { echo "chopi: could not create a temp file for the in-sandbox wrapper profile" >&2; return 1; }
-    {
-        echo ";; chopi: the in-sandbox wrapper itself."
-        rule 'allow file-read* process-exec' literal "$wrapper_path"
-        echo ";; chopi: the in-sandbox teardown cleanup and the libs it and the wrapper source."
-        rule 'allow file-read* process-exec' literal "$cleanup_script_path"
-        local lib
-        for lib in "${CHOPI_IN_SANDBOX_LIBS[@]}"; do
-            rule 'allow file-read*' literal "$CHOPI_DIR/.internal/$lib"
-        done
-        echo ";; chopi: stat-only on chopi's dir chain for in-sandbox CHOPI_DIR resolution."
-        ancestry_rules 'allow file-read-metadata' / "$CHOPI_DIR/.internal"
-        rule 'allow file-read-metadata' literal /
-    } > "$wrapper_profile"
+    wrapper_profile="$(new_profile "$CHOPI_IN_SANDBOX_WRAPPER_PROFILE" \
+        write_in_sandbox_wrapper_profile "$wrapper_path" "$cleanup_script_path")" || return 1
     local wrapper_flags=(--append-profile "$wrapper_profile")
 
     # Point gh at the API relay socket, via a throwaway config dir of our own that leaves the
@@ -248,15 +230,11 @@ main() {
 
     # Open Seatbelt network holes to the proxy's endpoints.
     local proxy_net_profile
-    proxy_net_profile="$(mktemp "$TMPDIR/chopi-proxy-net.XXXXXX")" \
-        || { echo "chopi: could not create a temp file for the proxy network profile" >&2; return 1; }
-    write_proxy_network_profile "$proxy_net_profile" "$PROXY_PORT" "$GITHUB_RELAY_PORT" "$GH_RELAY_SOCK" \
-        || return 1
+    proxy_net_profile="$(new_profile proxy-net write_proxy_network_profile \
+        "$PROXY_PORT" "$GITHUB_RELAY_PORT" "$GH_RELAY_SOCK")" || return 1
 
     local run_dir_profile
-    run_dir_profile="$(mktemp "$TMPDIR/chopi-proxy-run-dir.XXXXXX")" \
-        || { echo "chopi: could not create a temp file for the proxy run-dir profile" >&2; return 1; }
-    write_proxy_run_dir_profile "$run_dir_profile" "$PROXY_RUN_DIR" || return 1
+    run_dir_profile="$(new_profile proxy-run-dir write_proxy_run_dir_profile "$PROXY_RUN_DIR")" || return 1
 
     local proxy="http://127.0.0.1:$PROXY_PORT"
 
