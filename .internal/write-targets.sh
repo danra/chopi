@@ -387,12 +387,7 @@ write_patch_queue_profile() {
         pin_ancestries "$queue_dir" "${slots[@]+"${slots[@]}"}"
 
         echo ";; chopi: stat-only on the queue's dir chain below HOME"
-        local node="$queue_dir"
-        while :; do
-            node="$(dirname "$node")"
-            case "$node" in "$CHOPI_REAL_HOME" | / | .) break ;; esac
-            rule 'allow file-read-metadata' literal "$node"
-        done
+        ancestry_rules 'allow file-read-metadata' "$CHOPI_REAL_HOME" "${queue_dir%/*}"
         echo ";; chopi: the safe write targets: read-only so the review is the only way to write"
         local scope parents=()
         for path in "${CHOPI_WRITE_TARGET_PATHS[@]+"${CHOPI_WRITE_TARGET_PATHS[@]}"}"; do

@@ -35,12 +35,7 @@ grant_context_file_path() {
     local parent="$1" rpath="$2"
     local path="$parent/$rpath"
     [ -e "$path" ] || return 0
-    local rest="$rpath" node="$parent"
-    while [ "${rest#*/}" != "$rest" ]; do
-        node="$node/${rest%%/*}"
-        rest="${rest#*/}"
-        rule 'allow file-read-metadata' literal "$node"
-    done
+    ancestry_rules 'allow file-read-metadata' "$parent" "${path%/*}"
     rule 'allow file-read*' literal "$path"
 }
 

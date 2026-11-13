@@ -65,13 +65,10 @@ write_isolation_profile() {
             # traverse these dirs to resolve absolute paths into the worktree. With no
             # resolved main worktree nothing above the target was denied, so there is
             # nothing to re-allow.
-            if [ -n "${CHOPI_GIT_MAIN_WORKTREE:-}" ]; then
-                local ancestor="$CHOPI_GIT_TARGET_WORKTREE"
-                while [ "$ancestor" != "$CHOPI_GIT_MAIN_WORKTREE" ]; do
-                    ancestor="$(dirname "$ancestor")"
-                    is_path_within "$ancestor" "$CHOPI_GIT_MAIN_WORKTREE" || break
-                    rule 'allow file-read-metadata'  literal "$ancestor"
-                done
+            if [ -n "${CHOPI_GIT_MAIN_WORKTREE:-}" ] \
+                && is_path_within "$CHOPI_GIT_TARGET_WORKTREE" "$CHOPI_GIT_MAIN_WORKTREE"; then
+                ancestry_rules 'allow file-read-metadata' "${CHOPI_GIT_MAIN_WORKTREE%/*}" \
+                    "${CHOPI_GIT_TARGET_WORKTREE%/*}"
             fi
         fi
 

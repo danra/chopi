@@ -11,6 +11,7 @@
 #   * preflight_config_placement -- refusing a custom --config that lives inside the workspace.
 #   * rule / the Seatbelt-rule emitter -- its empty-PATH refusal keeps an
 #     accidentally-empty variable from becoming a silently misapplied rule.
+#   * ancestry_rules -- where its walk up a path's ancestry starts and stops.
 
 set -euo pipefail
 
@@ -300,6 +301,29 @@ assert_eq "$out" '(allow file-read* (subpath "/a b/c"))' "emits the (ACTION (MAT
 # hard-exits, so probe it in a subshell.
 ( rule 'deny file-write*' subpath '' ) >/dev/null 2>&1; st=$?
 assert_eq "$st" 2 "an empty PATH is a hard error (exit 2)"
+
+
+# ---------------------------------------------------------------------------
+echo "ancestry_rules (a rule on each node of a path's ancestry)"
+# ---------------------------------------------------------------------------
+nl=$'\n'
+out="$(ancestry_rules 'allow file-read-metadata' /a /a/b/c /a/b/d)"
+assert_eq "$out" "(allow file-read-metadata (literal \"/a/b/c\"))$nl(allow file-read-metadata (literal \"/a/b\"))$nl(allow file-read-metadata (literal \"/a/b/d\"))" \
+    "each START up to STOP, exclusive, each node once"
+out="$(ancestry_rules 'deny file-write*' /elsewhere /a/b)"
+assert_eq "$out" "(deny file-write* (literal \"/a/b\"))$nl(deny file-write* (literal \"/a\"))" \
+    "a STOP off the ancestry ends the walk at the root, excluded"
+out="$(ancestry_rules 'allow file-read-metadata' /a /a)"
+assert_eq "$out" "" "a START at STOP emits nothing"
+# claude-context-reads passes the root as "" (its PARENT, and the dir of a file directly under it)
+out="$(ancestry_rules 'allow file-read-metadata' "" "")"
+assert_eq "$out" "" "an empty START is the root, which is excluded"
+out="$(ancestry_rules 'allow file-read-metadata' /elsewhere "")"
+assert_eq "$out" "" "  -> also under an off-path STOP"
+# A relative START never reaches the root, so it would loop forever. The guard hard-exits, so
+# probe it in a subshell.
+( ancestry_rules 'allow file-read-metadata' /a rel/b ) >/dev/null 2>&1; st=$?
+assert_eq "$st" 2 "a relative START is a hard error (exit 2)"
 
 
 # ---------------------------------------------------------------------------

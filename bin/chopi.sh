@@ -231,12 +231,8 @@ main() {
             rule 'allow file-read*' literal "$CHOPI_DIR/.internal/$lib"
         done
         echo ";; chopi: stat-only on chopi's dir chain for in-sandbox CHOPI_DIR resolution."
-        local ancestor="$CHOPI_DIR/.internal"
-        while :; do
-            rule 'allow file-read-metadata' literal "$ancestor"
-            [ "$ancestor" = "/" ] && break
-            ancestor="$(dirname "$ancestor")"
-        done
+        ancestry_rules 'allow file-read-metadata' / "$CHOPI_DIR/.internal"
+        rule 'allow file-read-metadata' literal /
     } > "$wrapper_profile"
     local wrapper_flags=(--append-profile "$wrapper_profile")
 

@@ -196,26 +196,38 @@ rule() {
     printf '(%s (%s "%s"))\n' "$action" "$matcher" "$(_sb_string_escape "$path")"
 }
 
-# Emit a write-deny literal for each directory node from every START (inclusive) up to
-# STOP (exclusive; the walk also stops at the filesystem root). Plugs the Seatbelt hole of
-# being able to write into a denied literal path by first moving a parent dir elsewhere,
-# writing, and moving the parent dir back.
+# Emit the Seatbelt rule ACTION as a literal on each directory node from every START (inclusive)
+# up to STOP (exclusive), each node once. The walk also stops at the filesystem root, excluded.
+# An empty START spells the root, as "${path%/*}" does for a path directly under it. A relative
+# START is a caller bug: its walk would never reach the root.
 #
-# usage: pin_ancestries STOP [START...]
-pin_ancestries() {
-    local stop="$1"; shift
-    local pinned=() start node
+# usage: ancestry_rules ACTION STOP [START...]
+ancestry_rules() {
+    local action="$1" stop="$2"; shift 2
+    local seen=() start node
     for start in "$@"; do
-        node="$start"
+        node="${start:-/}"
+        if [ "${node#/}" = "$node" ]; then
+            printf 'BUG: ancestry_rules called with a relative START: %s\n' "$start" >&2
+            exit 2
+        fi
         while [ "$node" != "$stop" ] && [ "$node" != / ]; do
-            if ! is_item_in_list "$node" "${pinned[@]+"${pinned[@]}"}"; then
-                pinned+=("$node")
-                rule 'deny file-write*' literal "$node"
+            if ! is_item_in_list "$node" "${seen[@]+"${seen[@]}"}"; then
+                seen+=("$node")
+                rule "$action" literal "$node"
             fi
             node="${node%/*}"
             node="${node:-/}"
         done
     done
+}
+
+# ancestry_rules with a write-deny. Plugs the Seatbelt hole of being able to write into a denied
+# literal path by first moving a parent dir elsewhere, writing, and moving the parent dir back.
+#
+# usage: pin_ancestries STOP [START...]
+pin_ancestries() {
+    ancestry_rules 'deny file-write*' "$@"
 }
 
 # Print dir $1's path relative to dir $2 -- nothing when they are the same directory -- failing
