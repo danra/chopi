@@ -3,6 +3,28 @@
 #
 # util.sh -- shared helpers
 
+# The aliases come first: bash expands an alias only in code parsed after its definition, so a
+# function above them would keep a bare `arity` command, failing only when called.
+if command -v shopt >/dev/null 2>&1; then shopt -s expand_aliases; fi
+
+# Keep ${var//pattern/replacement} replacements literal, as in macOS's bash 3.2: bash 5.2 expands
+# an unquoted & in the replacement to the matched text, so a value holding one (a path, a token)
+# would come out mangled. Older bashes lack the option.
+shopt -u patsub_replacement 2>/dev/null || true
+
+# arity -- verify expected number of positional args.
+_arity() {
+    local got="$1" want="$2"   # got is the CALLER's $#, supplied by the alias
+    [ "$got" -eq "$want" ] && return 0
+    printf 'BUG: %s expects %d arg(s), got %d\n' "${FUNCNAME[1]:-${funcstack[2]:-?}}" "$want" "$got" >&2
+    exit 2
+}
+alias arity='_arity "$#"'
+
+# trace executed commands on/off
+alias trace_on='set -x'
+alias trace_off='{ set +x; } 2>/dev/null'
+
 # chopi's repo root (physical path). Every chopi script gets CHOPI_DIR by sourcing this
 # file, which resolves it from its own location in .internal/.
 _util_dir="$(dirname "${BASH_SOURCE[0]}")"
@@ -51,26 +73,6 @@ CHOPI_CMD_ALIAS_PREFIX="chopi-cmd-alias."
 
 # The libs (basenames under .internal/) that the in-sandbox wrapper and cleanup source
 CHOPI_IN_SANDBOX_LIBS=(git-layout.sh util.sh claude-common.sh claude-context-check.sh)
-
-if command -v shopt >/dev/null 2>&1; then shopt -s expand_aliases; fi
-
-# Keep ${var//pattern/replacement} replacements literal, as in macOS's bash 3.2: bash 5.2 expands
-# an unquoted & in the replacement to the matched text, so a value holding one (a path, a token)
-# would come out mangled. Older bashes lack the option.
-shopt -u patsub_replacement 2>/dev/null || true
-
-# arity -- verify expected number of positional args.
-_arity() {
-    local got="$1" want="$2"   # got is the CALLER's $#, supplied by the alias
-    [ "$got" -eq "$want" ] && return 0
-    printf 'BUG: %s expects %d arg(s), got %d\n' "${FUNCNAME[1]:-${funcstack[2]:-?}}" "$want" "$got" >&2
-    exit 2
-}
-alias arity='_arity "$#"'
-
-# trace executed commands on/off
-alias trace_on='set -x'
-alias trace_off='{ set +x; } 2>/dev/null'
 
 # Print the mktemp prefix of the temp file new_profile makes for the Seatbelt profile NAME.
 #
