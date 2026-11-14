@@ -59,9 +59,17 @@ case "$CHOPI_RUN_DIR" in
     *) CHOPI_RUN_DIR="$PWD/$CHOPI_RUN_DIR" ;;
 esac
 PROXY_RUN_DIR="${CHOPI_RUN_DIR%/}/run"
+# Where a custom proxy config -- chopi-proxy's --rules, --github-allowlist -- must be (see
+# proxy_config_paths).
+PROXY_CONFIG_DIR="${CHOPI_RUN_DIR%/}/config"
+# The default proxy config files' names, under $CHOPI_DIR/config (see proxy_config_paths).
+DEFAULT_PROXY_RULES="proxy-rules.yaml"
+DEFAULT_GITHUB_ALLOWLIST="github-allowlist"
 GH_RELAY_SOCK="$PROXY_RUN_DIR/chopi-gh-relay.sock"
 # Where chopi-proxy reports its ports once it serves, and removes them as it stops.
 PROXY_PORTS_FILE="$PROXY_RUN_DIR/chopi-proxy.ports"
+# Where chopi-proxy reports the real paths of the config files it reads, for as long as it runs.
+PROXY_CONFIGS_FILE="$PROXY_RUN_DIR/chopi-proxy.configs"
 
 # Names of chopi's per-invocation temporaries (created under the private TMPDIR); shared so the
 # tests assert on the same names chopi creates. The *_PROFILE ones are new_profile NAMEs, which it
@@ -311,6 +319,21 @@ overlaps_proxy_run_dir() {
     overlapping_dirs "$(realpath_or_self "$1")" "$(realpath_or_self "$PROXY_RUN_DIR")"
 }
 
+# Does path $1 reach any proxy config (proxy_config_paths), in either direction? Printing the
+# config it reaches. The proxy hot-reloads it, so nothing that changes it unreviewed may reach it.
+overlaps_proxy_config() {
+    arity 1
+    local real config
+    real="$(realpath_or_self "$1")"
+    while IFS= read -r config; do
+        if overlapping_dirs "$real" "$config"; then
+            printf '%s' "$config"
+            return 0
+        fi
+    done < <(proxy_config_paths)
+    return 1
+}
+
 # Resolve the GitHub token the relay authenticates with, following gh's own source precedence:
 # GH_TOKEN, then GITHUB_TOKEN, then gh's stored login. A SET variable wins even when empty -- an
 # explicit GH_TOKEN='' means "no token, don't fall back to gh auth" -- hence the "+x" tests. Trimmed,
@@ -464,6 +487,89 @@ write_proxy_run_dir_profile() {
         echo ";; chopi: chopi-proxy's run dir, whose ports aim the network holes, stays out of reach."
         rule 'deny file-read* file-write*' subpath "$run_dir"
         pin_ancestries / "$(dirname "$run_dir")"
+    } >"$file"
+}
+
+# Print what decides which file path $1 names, one per line: every symlink met resolving it, each
+# where it really is -- in a dir with no symlink on its way -- then the real path it resolves to.
+# Repointing any of those links would have $1 name another file. Past a missing node, the rest is
+# appended unresolved. A symlink loop ends the walk, its links printed: $1 names no file then.
+resolution_paths() {
+    arity 1
+    local todo="$1" cur="" node target hops=0
+    case "$todo" in
+        /*) ;;
+        *)  todo="$PWD/$todo" ;;
+    esac
+    while [ -n "$todo" ]; do
+        todo="${todo#/}"
+        node="${todo%%/*}"
+        case "$todo" in
+            */*) todo="${todo#*/}" ;;
+            *)   todo="" ;;
+        esac
+        case "$node" in
+            "" | .) continue ;;
+            ..)     cur="${cur%/*}"; continue ;;
+        esac
+        if [ -L "$cur/$node" ] && target="$(readlink "$cur/$node")"; then
+            printf '%s\n' "$cur/$node"
+            hops=$((hops + 1))
+            [ "$hops" -le 40 ] || return 0
+            case "$target" in
+                /*) cur="" ;;
+            esac
+            todo="$target${todo:+/$todo}"
+        else
+            cur="$cur/$node"
+        fi
+    done
+    printf '%s\n' "${cur:-/}"
+}
+
+# Print every path deciding which proxy config the proxy reads, now or on its next start, one per
+# line (resolution_paths): PROXY_CONFIG_DIR's, where a custom one must be (see chopi-proxy's
+# config_file); the default files', which may link elsewhere, through any number of links; and those
+# of the files the running proxy reports it reads (PROXY_CONFIGS_FILE), which it resolved as it
+# started, should a link have been repointed since. Every session keeps its command from changing
+# them all, as a safe write target must not overlap them.
+proxy_config_paths() {
+    arity 0
+    local path
+    {
+        for path in "$PROXY_CONFIG_DIR" "$CHOPI_DIR/config/$DEFAULT_PROXY_RULES" \
+            "$CHOPI_DIR/config/$DEFAULT_GITHUB_ALLOWLIST"; do
+            resolution_paths "$path"
+        done
+        if [ -f "$PROXY_CONFIGS_FILE" ]; then
+            while IFS= read -r path; do
+                [ -z "$path" ] || resolution_paths "$path"
+            done <"$PROXY_CONFIGS_FILE"
+        fi
+    } | awk '!seen[$0]++'
+}
+
+# Write the Seatbelt profile denying the sandboxed command any change to the proxy's config to FILE
+# (proxy_config_paths): a command that could rewrite its rules or GitHub allowlist could lift the
+# outgoing limits of every session, mid-session even, as the proxy hot-reloads them. Whatever grant
+# covers one -- the workspace, the sandbox config's, safehouse's own, a trusted .safehouse's -- this
+# deny, appended after every file grant, comes last among the matching rules and wins: nothing in
+# them can be written, removed, or have another put in its place. Their ancestors are pinned, so
+# none can be renamed away and replaced, nor made where missing. Reading is left as granted. Another
+# name for a config file, a hard link, which these rules can't see, chopi refuses before launch (see
+# preflight_proxy_config_links), and the proxy refuses a change to a file with one.
+#
+# usage: write_proxy_config_profile FILE
+write_proxy_config_profile() {
+    arity 1
+    local file="$1" paths path
+    readarray -t paths < <(proxy_config_paths)
+    {
+        echo ";; chopi: the proxy's config, which sets the sessions' outgoing limits, stays unchangeable."
+        for path in "${paths[@]}"; do
+            rule 'deny file-write*' subpath "$path"
+        done
+        pin_ancestries / "${paths[@]}"
     } >"$file"
 }
 

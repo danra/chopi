@@ -9,6 +9,8 @@
 #   * preflight_initial -- the chopi-dir overlap refusal (and its CHOPI_ALLOW_SELF
 #     downgrade), and refusing a run when the GitHub relay's port is dead.
 #   * preflight_config_placement -- refusing a custom --config that lives inside the workspace.
+#   * preflight_proxy_config_links -- refusing a proxy config file with other hard links, which the
+#     sandboxed command may write through.
 #   * rule / the Seatbelt-rule emitter -- its empty-PATH refusal keeps an
 #     accidentally-empty variable from becoming a silently misapplied rule.
 #   * ancestry_rules -- where its walk up a path's ancestry starts and stops.
@@ -145,6 +147,27 @@ assert_not_contains "$out" "overlaps chopi-proxy's run directory" \
 out="$(preflight_under "$work" CHOPI_ALLOW_SELF=1 CHOPI_RUN_DIR="$work")"; st=$?
 assert_contains "$out" "error: workspace" "CHOPI_ALLOW_SELF does not downgrade the run-dir overlap"
 assert_nonzero "$st" "  -> and still returns non-zero"
+
+# ---------------------------------------------------------------------------
+echo "preflight_initial (proxy config/workspace overlap)"
+# ---------------------------------------------------------------------------
+# The proxy's config sets every session's outgoing limits. The profile denies changing it anyway,
+# so CHOPI_ALLOW_SELF, for working on chopi, whose dir holds the default config, may downgrade this.
+# The config dir links into a tree of its own, for a workspace to hold it, but not the run dir.
+cw="$(mktemp -d)"; cw="$(realpath "$cw")"; mkdir -p "$cw/linked/config/team" "$cw/beside"
+ln -s "$cw/linked/config" "$cw/config"
+out="$(preflight_under "$cw/linked" CHOPI_RUN_DIR="$cw")"; st=$?
+assert_contains "$out" "overlaps the proxy's config ('$cw/linked/config')" \
+    "refuses when workspace CONTAINS the proxy config dir"
+assert_nonzero "$st" "  -> and returns non-zero"
+out="$(preflight_under "$cw/linked/config/team" CHOPI_RUN_DIR="$cw")"
+assert_contains "$out" "overlaps the proxy's config" "refuses when workspace is INSIDE the proxy config dir"
+out="$(preflight_under "$cw/beside" CHOPI_RUN_DIR="$cw")"
+assert_not_contains "$out" "overlaps the proxy's config" \
+    "a workspace beside the proxy config dir, inside CHOPI_RUN_DIR, clears the check"
+out="$(preflight_under "$cw/linked/config" CHOPI_ALLOW_SELF=1 CHOPI_RUN_DIR="$cw")"
+assert_contains "$out" "warning: workspace '$cw/linked/config' overlaps the proxy's config" \
+    "CHOPI_ALLOW_SELF downgrades the proxy config overlap to a warning"
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +312,63 @@ assert_nonzero "$st" "  -> and returns non-zero"
 # host state (the GitHub API relay socket, the safehouse CLI) that a unit test doesn't control.
 out="$(relay_probe 0)"
 assert_not_contains "$out" "no GitHub relay" "a live relay clears the check"
+
+
+# ---------------------------------------------------------------------------
+echo "preflight_proxy_config_links (refusing a proxy config with other hard links)"
+# ---------------------------------------------------------------------------
+# Checked outside the sandbox, where the file's link count can always be read: in a session, the
+# sandbox may not let the command so much as stat it. Every config the proxy may read is checked,
+# chopi not knowing which one it was started with.
+hl="$(mktemp -d)"; hl="$(realpath "$hl")"
+mkdir -p "$hl/chopi/config" "$hl/config/team" "$hl/elsewhere"
+echo 'allow: []' >"$hl/chopi/config/$DEFAULT_PROXY_RULES"
+: >"$hl/chopi/config/$DEFAULT_GITHUB_ALLOWLIST"
+echo 'allow: []' >"$hl/config/team/rules.yaml"
+# links_check ENV... -- preflight_proxy_config_links on the configs in $hl, under ENV
+links_check() {
+    ( CHOPI_DIR="$hl/chopi"; PROXY_CONFIG_DIR="$hl/config"; unset CHOPI_ALLOW_SELF
+      for assignment in "$@"; do export "${assignment?}"; done
+      preflight_proxy_config_links )
+}
+
+out="$(links_check 2>&1)"; st=$?
+assert_zero "$st" "config files with no other hard links pass"
+out="$(links_check PROXY_CONFIG_DIR="$hl/missing" 2>&1)"; st=$?
+assert_zero "$st" "  -> as does a config dir not made yet"
+
+ln "$hl/config/team/rules.yaml" "$hl/elsewhere/other-link.yaml"
+out="$(links_check 2>&1)"; st=$?
+assert_nonzero "$st" "a custom config file in the config dir with other hard links is refused"
+assert_contains "$out" "the proxy's config file '$hl/config/team/rules.yaml' has other hard links" "  -> naming it"
+assert_contains "$out" "Review what is in it, as it may have been written through another hard link" \
+    "  -> asking for it to be reviewed"
+assert_contains "$out" "cp '$hl/config/team/rules.yaml' '$hl/config/team/rules.yaml.tmp' && mv '$hl/config/team/rules.yaml.tmp' '$hl/config/team/rules.yaml'" \
+    "  -> and saying how to replace it with a fresh copy"
+
+out="$(links_check CHOPI_ALLOW_SELF=1 2>&1)"; st=$?
+assert_zero "$st" "CHOPI_ALLOW_SELF downgrades the refusal"
+assert_contains "$out" "warning: the proxy's config file '$hl/config/team/rules.yaml' has other hard links" "  -> to a warning"
+rm "$hl/elsewhere/other-link.yaml"
+
+# A file the proxy refused for its other hard links is moved aside, where it never reads it.
+echo 'allow: []' >"$hl/config/team/rules.yaml.refused-20261113-120000"
+ln "$hl/config/team/rules.yaml.refused-20261113-120000" "$hl/elsewhere/refused.yaml"
+out="$(links_check 2>&1)"; st=$?
+assert_zero "$st" "a refused file the proxy moved aside, with other hard links, passes"
+rm "$hl/elsewhere/refused.yaml" "$hl/config/team/rules.yaml.refused-20261113-120000"
+
+ln "$hl/chopi/config/$DEFAULT_GITHUB_ALLOWLIST" "$hl/elsewhere/allowlist"
+out="$(links_check 2>&1)"; st=$?
+assert_nonzero "$st" "a default config file with other hard links is refused"
+assert_contains "$out" "'$hl/chopi/config/$DEFAULT_GITHUB_ALLOWLIST' has other hard links" "  -> naming it"
+rm "$hl/elsewhere/allowlist"
+
+mkdir "$hl/config/locked"; chmod 000 "$hl/config/locked"
+out="$(links_check CHOPI_ALLOW_SELF=1 2>&1)"; st=$?
+chmod 700 "$hl/config/locked"
+assert_nonzero "$st" "a config dir find can't fully check is refused, even with CHOPI_ALLOW_SELF"
+assert_contains "$out" "could not check every proxy config file for other hard links" "  -> saying so"
 
 
 # ---------------------------------------------------------------------------

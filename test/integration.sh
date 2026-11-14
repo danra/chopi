@@ -22,9 +22,11 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 # CHOPI_RUN_DIR too, set before sourcing util.sh, which derives GH_RELAY_SOCK and PROXY_PORTS_FILE
 # from it, so the proxy this test starts, and the chopi runs it starts, are its own, whatever
 # chopi-proxy may be running beside it; trap it now so an early skip still cleans up (the rest of
-# the fixtures, and the fuller trap, come after the skip guards below).
+# the fixtures, and the fuller trap, come after the skip guards below). The run dir is canonical, as
+# the custom proxy config in it is: chopi-proxy uses its real path, which names the config's reload
+# banners, for the assertions below to name alike.
 TMPDIR="$(mktemp -d)"; export TMPDIR
-CHOPI_RUN_DIR="$TMPDIR"; export CHOPI_RUN_DIR
+CHOPI_RUN_DIR="$(cd "$TMPDIR" && pwd -P)"; export CHOPI_RUN_DIR
 trap 'rm -rf "$TMPDIR"' EXIT
 
 . "$repo/.internal/util.sh"
@@ -69,10 +71,12 @@ alerter_stub="$base/bin"        # a recording `alerter` shim on the proxy's PATH
 claudebin="$base/claudebin"     # a stand-in `claude` for the Claude-context cases
 codexbin="$base/codexbin"       # a stand-in `codex` for checking Chopi's argv
 cfg="$base/config/sandbox.sh"   # minimal sandbox config, OUTSIDE the workspace
-rules="$base/config/itest-rules.yaml"
+# Custom proxy config must be in PROXY_CONFIG_DIR, here under the test's CHOPI_RUN_DIR.
+rules="$PROXY_CONFIG_DIR/itest-rules.yaml"
 proxy_log="$base/proxy.log"
 alerter_log="$base/alerter-calls.log"
-mkdir -p "$ws" "$outside" "$alerter_stub" "$claudebin" "$codexbin" "$base/config" "$base/home"
+mkdir -p "$ws" "$outside" "$alerter_stub" "$claudebin" "$codexbin" "$base/config" "$base/home" \
+    "$PROXY_CONFIG_DIR"
 
 # Fixture HOME under $base, automatically cleaned-up and avoids dirtying actual ~
 # Belongs in /var/tmp for the same reason $base does; under $TMPDIR, safehouse's blanket
@@ -249,7 +253,7 @@ assert_no_traces() {
 # ---------------------------------------------------------------------------
 echo "the proxy refuses a populated allowlist with no GitHub token"
 # ---------------------------------------------------------------------------
-nonempty_github_allow="$base/config/itest-github-allowlist-nonempty"
+nonempty_github_allow="$PROXY_CONFIG_DIR/itest-github-allowlist-nonempty"
 printf 'soundradix/*\n' > "$nonempty_github_allow"
 refuse_log="$base/refuse.log"
 
@@ -268,7 +272,7 @@ fi
 # ---------------------------------------------------------------------------
 echo "the proxy refuses rules that allow github.com/api.github.com (pre-relay leftovers)"
 # ---------------------------------------------------------------------------
-exfil_rules="$base/config/itest-rules-exfil.yaml"
+exfil_rules="$PROXY_CONFIG_DIR/itest-rules-exfil.yaml"
 cat > "$exfil_rules" <<EOF
 version: v1
 services: []
@@ -280,7 +284,7 @@ default:
     - github.com
     - api.github.com
 EOF
-exfil_github_allow="$base/config/itest-github-allowlist-exfil"
+exfil_github_allow="$PROXY_CONFIG_DIR/itest-github-allowlist-exfil"
 : > "$exfil_github_allow"
 exfil_log="$base/exfil-refuse.log"
 
@@ -350,7 +354,7 @@ fi
 # ---------------------------------------------------------------------------
 echo "proxy + sandbox setup"
 
-empty_github_allow="$base/config/itest-github-allowlist-empty"
+empty_github_allow="$PROXY_CONFIG_DIR/itest-github-allowlist-empty"
 : > "$empty_github_allow"
 
 # The stub alerter goes first on the proxy's PATH; jq/nc/etc. stay reachable via the rest.
@@ -437,6 +441,27 @@ assert_contains "$out" "WRITE_FAIL"  "  -> its ports file can't be rewritten"
 assert_contains "$out" "CREATE_FAIL" "  -> nothing can be created in it"
 assert_contains "$out" "MOVE_FAIL"   "  -> and it can't be renamed away"
 assert_eq "$(cat "$PROXY_PORTS_FILE")" "$ports_before" "  -> the ports file is as the proxy wrote it"
+
+# The proxy hot-reloads its config, so a sandboxed command that rewrote it would lift every
+# session's limits. The deny goes by path, which a hard link would get past: the proxy's own
+# link-count check is only a backstop for one made outside the sandbox, as it can race, so the
+# sandbox must keep the command from making one. Seatbelt checks link(2) against its source too;
+# the control link shows that what's refused is the config, not hard links as such. The grant
+# covering the config dir shows the deny wins over it.
+cfg_proxy_config="$base/config/sandbox-proxy-config.sh"
+write_cfg "$cfg_proxy_config" "CHOPI_SAFEHOUSE_FLAGS+=( --add-dirs '$PROXY_CONFIG_DIR' )"
+rules_before="$(cat "$rules")"
+out="$( ( cd "$ws" && "$repo/bin/chopi" --config "$cfg_proxy_config" -- /bin/sh -c "
+    (echo x >> '$rules') 2>/dev/null && echo WRITE_OK || echo WRITE_FAIL
+    ln '$rules' ./rules-link 2>/dev/null && echo LINK_OK || echo LINK_FAIL
+    ln ./readable.txt ./control-link 2>/dev/null && echo CONTROL_LINK_OK || echo CONTROL_LINK_FAIL
+" ) 2>/dev/null )"
+assert_contains "$out" "WRITE_FAIL"        "the proxy config can't be rewritten, even under a grant covering it"
+assert_contains "$out" "LINK_FAIL"         "  -> nor hard-linked into the workspace, to write it through another link"
+assert_absent   "$ws/rules-link"           "  -> and no link is left there"
+assert_contains "$out" "CONTROL_LINK_OK"   "  -> while a workspace file can still be hard-linked"
+assert_eq "$(cat "$rules")" "$rules_before" "  -> the rules are as written"
+rm -f "$ws/control-link"
 
 
 # ---------------------------------------------------------------------------

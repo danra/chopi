@@ -6,8 +6,9 @@
 # only learns the dir the command will actually run in partway through setup:
 #   * preflight_initial          -- runnable up front: the workspace doesn't overlap chopi's
 #                                   own dir (a confined command must not reach the policy
-#                                   that confines it) or chopi-proxy's run dir (whose ports
-#                                   aim the holes), the proxy-side services (both loopback
+#                                   that confines it), chopi-proxy's run dir (whose ports
+#                                   aim the holes), or the proxy's config (which sets the
+#                                   outgoing limits), the proxy-side services (both loopback
 #                                   ports, as chopi-proxy reports them, and the GitHub API relay
 #                                   socket) are up, and the safehouse CLI is on PATH.
 #   * preflight_config_placement -- deferred until chopi has resolved the workspace (the
@@ -76,6 +77,18 @@ preflight_initial() {
         return 1
     fi
 
+    # The proxy's config sets every session's outgoing limits, which it hot-reloads. The profile
+    # denies the command any change to it whatever the workspace (write_proxy_config_profile), so
+    # CHOPI_ALLOW_SELF may downgrade this, for working on chopi, whose dir holds the default ones.
+    local config
+    if config="$(overlaps_proxy_config "$workspace_dir")"; then
+        refuse_or_warn \
+            "workspace '$workspace_dir' overlaps the proxy's config ('$config')" \
+            "the sandboxed command would be granted its outgoing limits, and every other session's, to rewrite" \
+            "Run chopi from a workspace that neither holds nor sits inside the proxy's config." \
+            || return 1
+    fi
+
     # The outgoing proxy must already be running in its own terminal. We deliberately
     # don't start it here, so it stays in the foreground where you can watch refused
     # connections and stop it to edit the list of allowed domains. It reports the ports the
@@ -133,4 +146,38 @@ preflight_config_placement() {
             "Keep the sandbox config outside the workspace you're sandboxing." \
             || return 1
     fi
+}
+
+# Refuse a proxy config file (proxy_config_paths) with extra hard links: write_proxy_config_profile
+# denies changes by path, so the sandboxed command could write the live rules through another link.
+# The sandbox keeps the command from making one, but not one made outside it. One made once the
+# session is up is caught by the proxy, which moves the file aside as *.refused-* (see its putBack);
+# the proxy never reads those, so they're skipped here.
+#
+# usage: preflight_proxy_config_links
+preflight_proxy_config_links() {
+    arity 0
+    local path file existing=()
+    while IFS= read -r path; do
+        [ -e "$path" ] && existing+=("$path")
+    done < <(proxy_config_paths)
+    [ "${#existing[@]}" -gt 0 ] || return 0
+    # Run to the end before any refusal, for find's status: a file it couldn't check (an unreadable
+    # dir) may be one with other hard links.
+    local linked
+    if ! linked="$(find "${existing[@]}" -type f -links +1 ! -name '*.refused-*')"; then
+        echo "error: could not check every proxy config file for other hard links, which the sandboxed" >&2
+        echo "       command may write through (see find's error above)." >&2
+        echo "Make everything under ${existing[*]} readable to you." >&2
+        return 1
+    fi
+    [ -n "$linked" ] || return 0
+    while IFS= read -r file; do
+        refuse_or_warn \
+            "the proxy's config file '$file' has other hard links, which the sandboxed command may write through" \
+            "the sandboxed command could lift its own outgoing limits, and every other session's" \
+            "Review what is in it, as it may have been written through another hard link, then
+replace it with a fresh copy, e.g.: cp '$file' '$file.tmp' && mv '$file.tmp' '$file'" \
+            || return 1
+    done <<<"$linked"
 }

@@ -222,9 +222,11 @@ applied without you approving it, and `chopi-review` runs only out-of-sandbox.
 
 ### Advanced
 
-To run the proxy against a different rules file, pass `chopi-proxy --rules FILE`. Keep
-that file **outside** of any workspace you sandbox with chopi: a sandboxed command that 
-can write its own allowlist can modify its own limits.
+To run the proxy against a different rules file, pass `chopi-proxy --rules FILE` (or
+`--github-allowlist FILE` for the GitHub allowlist). The file must be in `~/.chopi/config`
+(`$CHOPI_RUN_DIR/config` when `CHOPI_RUN_DIR` is set), which chopi keeps every sandboxed
+command from changing: one that could write its own allowlist could lift its own limits, and
+every other session's.
 
 To use a different sandbox config for a single run, pass `chopi --config FILE`. The file 
 must define the same `CHOPI_SAFEHOUSE_FLAGS` / `CHOPI_EXTRA_ENV` arrays as `config/sandbox.sh`

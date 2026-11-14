@@ -179,8 +179,8 @@ ensure_copy() {
     echo "  created $live  (from $template)"
 }
 
-ensure_copy config/templates/proxy-rules.template.yaml config/proxy-rules.yaml
-ensure_copy config/templates/github-allowlist.template config/github-allowlist
+ensure_copy config/templates/proxy-rules.template.yaml "config/$DEFAULT_PROXY_RULES"
+ensure_copy config/templates/github-allowlist.template "config/$DEFAULT_GITHUB_ALLOWLIST"
 ensure_copy config/templates/sandbox.template.sh           config/sandbox.sh
 
 
@@ -233,8 +233,8 @@ echo ""
 echo "==> Done."
 echo ""
 echo "Before first use, review your local setup:"
-echo "  * the proxy rules            ($CHOPI_DIR/config/proxy-rules.yaml)"
-echo "  * the GitHub allowlist       ($CHOPI_DIR/config/github-allowlist)"
+echo "  * the proxy rules            ($CHOPI_DIR/config/$DEFAULT_PROXY_RULES)"
+echo "  * the GitHub allowlist       ($CHOPI_DIR/config/$DEFAULT_GITHUB_ALLOWLIST)"
 echo "  * the sandbox configuration  ($CHOPI_DIR/config/sandbox.sh)"
 echo ""
 echo "To use it:"

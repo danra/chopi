@@ -73,10 +73,10 @@ const (
 	allowlistReloadFailed = "GitHub allowlist reload failed; keeping the previous relays"
 )
 
-func reloadIfChanged(conf *smokescreen.Config, holder *swappableACL, path string, lastMod time.Time, warned bool) (newLastMod time.Time, newWarned bool) {
-	rulesLogEntry := conf.Log.WithField("rules", path)
-	return applyIfChanged(rulesLogEntry, path, rulesReloaded, rulesReloadFailed, lastMod, warned, func() error {
-		rules, err := loadRules(conf, path)
+func reloadIfChanged(conf *smokescreen.Config, holder *swappableACL, file *configFile, lastMod time.Time, warned bool) (newLastMod time.Time, newWarned bool) {
+	rulesLogEntry := conf.Log.WithField("rules", file.path)
+	return applyIfChanged(rulesLogEntry, file, rulesReloaded, rulesReloadFailed, lastMod, warned, func() error {
+		rules, err := loadRules(conf, file.path)
 		if err != nil {
 			return err
 		}
@@ -85,12 +85,43 @@ func reloadIfChanged(conf *smokescreen.Config, holder *swappableACL, path string
 	})
 }
 
-// applyIfChanged runs apply, which takes up the config file at path, if the file changed since
-// lastMod. Its success is logged to entry with okMsg; its failure, and a file that can't be read,
-// with failedMsg: either keeps the previous config. It returns the modification time taken up, and
-// whether an unreadable file was already logged, for the next call.
-func applyIfChanged(entry *logrus.Entry, path, okMsg, failedMsg string, lastMod time.Time, warned bool, apply func() error) (newLastMod time.Time, newWarned bool) {
-	st, err := os.Stat(path)
+// configFile is a config file the proxy reads, and what it last took up from it, to put back
+// should a change to it be refused (putBack).
+type configFile struct {
+	path     string
+	accepted []byte
+}
+
+// newConfigFile is the config file at path, as the proxy is about to take it up, refused if it has
+// other hard links (singleLink): it takes it up as it is then, so one written through another link
+// since chopi's preflight checked would be served. One that can't be read is left for its loading
+// to report.
+func newConfigFile(path string) (*configFile, error) {
+	if st, err := os.Stat(path); err == nil {
+		if err := singleLink(path, st); err != nil {
+			return nil, err
+		}
+	}
+	accepted, _ := os.ReadFile(path)
+	return &configFile{path: path, accepted: accepted}, nil
+}
+
+// mustConfigFile is newConfigFile, exiting the proxy on a refusal.
+func mustConfigFile(path string) *configFile {
+	file, err := newConfigFile(path)
+	if err != nil {
+		fail("%v: review it, as it may have been written through another hard link, before replacing it with a fresh copy", err)
+	}
+	return file
+}
+
+// applyIfChanged runs apply, which takes up the config file, if it changed since lastMod. Its
+// success is logged to entry with okMsg; its failure, a file with other hard links (singleLink),
+// and a file that can't be read, with failedMsg: each keeps the previous config. A file with other
+// links is moved aside, the config last taken up put back in its place (putBack). It returns the
+// modification time taken up, and whether an unreadable file was already logged, for the next call.
+func applyIfChanged(entry *logrus.Entry, file *configFile, okMsg, failedMsg string, lastMod time.Time, warned bool, apply func() error) (newLastMod time.Time, newWarned bool) {
+	st, err := os.Stat(file.path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			// Ignore a missing file: atomic-rename saves make it momentarily disappear, and the
@@ -107,12 +138,52 @@ func applyIfChanged(entry *logrus.Entry, path, okMsg, failedMsg string, lastMod 
 	if st.ModTime().Equal(lastMod) {
 		return lastMod, false
 	}
-	if err := apply(); err != nil {
+	if err := singleLink(file.path, st); err != nil {
+		mod, err := file.putBack(st, err)
+		entry.WithError(err).Error(failedMsg)
+		return mod, false
+	}
+	content, err := os.ReadFile(file.path)
+	if err == nil {
+		err = apply()
+	}
+	if err != nil {
 		entry.WithError(err).Error(failedMsg)
 	} else {
+		file.accepted = content
 		entry.Info(okMsg)
 	}
 	return st.ModTime(), false
+}
+
+// putBack moves the config file, refused for its other hard links (refusal), to
+// path.refused-TIMESTAMP for review, and rewrites path, under a new inode, with the content last
+// taken up: what was written through another link is then never served, now or as the proxy next
+// starts. It returns refusal, saying what became of the file, and the modification time to record
+// -- the rewritten file's, else the refused one's -- so it isn't retried until it changes.
+func (f *configFile) putBack(st fs.FileInfo, refusal error) (time.Time, error) {
+	if f.accepted == nil {
+		return st.ModTime(), fmt.Errorf("%w; nothing was taken up from it to put back: review it", refusal)
+	}
+	aside := f.path + ".refused-" + time.Now().Format("20060102-150405")
+	if err := os.Rename(f.path, aside); err != nil {
+		return st.ModTime(), fmt.Errorf("%w; could not move it aside for review: %v", refusal, err)
+	}
+	if err := writeAtomically(f.path, string(f.accepted), st.Mode().Perm()); err != nil {
+		return st.ModTime(), fmt.Errorf("%w; moved it to %s for review, but could not put back the config last taken up: %v", refusal, aside, err)
+	}
+	return modTime(f.path), fmt.Errorf("%w; moved it to %s for review, and put back the config last taken up", refusal, aside)
+}
+
+// singleLink refuses a config file with more than one hard link:
+// the sandbox denies changes to it by path, so a sandboxed command may have written it through
+// another link. chopi refuses one before launch (preflight_proxy_config_links), and the proxy as it
+// starts (newConfigFile); this is for one made since.
+func singleLink(path string, st fs.FileInfo) error {
+	if sys := st.Sys().(*syscall.Stat_t); sys.Nlink > 1 {
+		return fmt.Errorf("%s has %d hard links, which a sandboxed command may write through", path, sys.Nlink)
+	}
+	return nil
 }
 
 // watchFile polls for changes to a config file since lastMod, for poll -- reloadIfChanged, or
@@ -212,6 +283,8 @@ func main() {
 		env: takeEnv("GH_TOKEN", "GITHUB_TOKEN")}
 	args := append([]string{os.Args[0]}, opts.smokeArgs...)
 	path := egressACLPath(opts.smokeArgs)
+	rulesFile := mustConfigFile(path)
+	allowlistFile := mustConfigFile(opts.allowlist)
 	lastMod := modTime(path)
 
 	// Smokescreen logs to stdout, the log, from the start, its global logger included: stderr is
@@ -270,7 +343,7 @@ func main() {
 		fail("can't listen: %v", err)
 	}
 	relaySup := newRelaySupervisor(&relays{git: listeners[1], api: api}, opts.relayLog, relayConf,
-		conf.Log.WithField("allowlist", opts.allowlist))
+		allowlistFile, conf.Log.WithField("allowlist", opts.allowlist))
 	stop := stopSignals()
 
 	// Leave no socket or ports file behind: they were ours.
@@ -296,7 +369,7 @@ func main() {
 		relaysUp <- err
 	}()
 	go watchFile(lastMod, func(lastMod time.Time, warned bool) (time.Time, bool) {
-		return reloadIfChanged(conf, holder, path, lastMod, warned)
+		return reloadIfChanged(conf, holder, rulesFile, lastMod, warned)
 	})
 	smokescreenExited := make(chan struct{})
 	go func() {
