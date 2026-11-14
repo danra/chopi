@@ -9,8 +9,8 @@
 //     but for where it listens: --listen-ip and --listen-port are ignored.
 //   - The rules file is polled for changes, with a new valid rules set immediately
 //     and atomically swapped in.
-//   - Rules allowing github.com or api.github.com are refused, as the proxy starts and on a
-//     reload alike: they would let a sandboxed command around the GitHub relays.
+//   - Rules allowing a GitHub host that takes writes (see gitHubExfiltration) are refused, as the
+//     proxy starts and on a reload alike: they would let a sandboxed command around the GitHub relays.
 //   - Every listener is opened here -- smokescreen's own and the git relay's, each on a loopback
 //     port: the one it had in the last run where free, else one the kernel picks; and the API
 //     relay's on the unix socket PATH -- so no other process can take one first. Smokescreen
@@ -109,19 +109,34 @@ func reloadIfChanged(conf *smokescreen.Config, holder *swappableACL, file *confi
 // grows, so an override set for an already-closed gap doesn't silently carry over.
 const gitHubExfiltrationOverride = "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY"
 
-// gitHubExfiltration refuses rules that allow github.com or api.github.com, to any service:
-// they defeat the GitHub repos allowlist, as a sandboxed command could push data to ANY repo
-// directly, skipping the relays. The rules themselves decide, so whatever way they allow a
-// domain counts -- a glob, the global allow list, an open or report policy.
+// gitHubExfiltration refuses rules that allow, to any service, a GitHub host taking writes with
+// the writer's own token: github.com and api.github.com, which the relays cover, uploads.github.com
+// (release assets) and gist.github.com (gist pushes). They defeat the GitHub repos allowlist, as a
+// sandboxed command could push data to ANY repo directly, skipping the relays. A *.github.com glob
+// is refused too, as it would allow any such host GitHub adds; a read-only host named alone, like
+// codeload.github.com, is not. The rules themselves decide, so whatever way they allow a host
+// counts -- a glob, the global allow list, an open or report policy.
 func gitHubExfiltration(rules *acl.ACL) error {
 	services := append(slices.Collect(maps.Keys(rules.Rules)), "") // "": the default rule
-	var allowed []string
-	for _, domain := range []string{"github.com", "api.github.com"} {
-		if slices.ContainsFunc(services, func(service string) bool {
-			d, _ := rules.Decide(acl.DecideArgs{Service: service, Host: domain})
+	allows := func(host string) bool {
+		return slices.ContainsFunc(services, func(service string) bool {
+			d, _ := rules.Decide(acl.DecideArgs{Service: service, Host: host})
 			return d.Result == acl.Allow || d.Result == acl.AllowAndReport
-		}) {
-			allowed = append(allowed, domain)
+		})
+	}
+	var allowed []string
+	if allows("github.com") {
+		allowed = append(allowed, "github.com")
+	}
+	// A subdomain no one would name: allowed, it is by a glob covering every subdomain, the
+	// write-taking ones included, so the glob is named instead of them.
+	if allows("chopi-probe-for-a-glob.github.com") {
+		allowed = append(allowed, "*.github.com")
+	} else {
+		for _, host := range []string{"api.github.com", "uploads.github.com", "gist.github.com"} {
+			if allows(host) {
+				allowed = append(allowed, host)
+			}
 		}
 	}
 	if len(allowed) == 0 {
