@@ -373,35 +373,6 @@ gh_bearer_auth_header() {
     printf 'Bearer %s' "$token"
 }
 
-# Print the github domains in a rules file's allowed_domains sections that make exfiltration
-# trivial: supports migration from when they were allowed in the template
-exfiltration_prone_github_allowed_domains() {
-    arity 1
-    local rules_file="$1"
-
-    # The allowed_domains sections' lines
-    local section
-    section="$(awk '
-        /^[[:space:]]*allowed_domains:/ { in_section = 1; next }
-        !in_section                     { next }
-        /^[[:space:]]*(-|#|$)/          { print; next }
-                                        { in_section = 0 }
-    ' "$rules_file")"
-
-    local line item
-    while IFS= read -r line; do
-        strip_comment_and_trim_into item "$line"
-        trim_into item "${item#-}" # "- domain" -> "domain"
-        [ -z "$item" ] && continue
-        case "$item" in
-            \"*\" | \'*\') item="${item#?}"; item="${item%?}" ;; # drop surrounding quotes
-        esac
-        case "$item" in
-            github.com | api.github.com) printf '%s\n' "$item" ;;
-        esac
-    done <<< "$section"
-}
-
 # The git config pairs (key=value lines) routing github git to the git relay on PORT.
 github_relay_git_config() {
     arity 1

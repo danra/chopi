@@ -386,54 +386,6 @@ assert_eq "$(printf '%s\n' '{"allow":false,"decision_reason":"x","decision_reaso
 
 
 # ---------------------------------------------------------------------------
-echo "exfiltration-prone github allowed domains (migration-oriented refusal)"
-# ---------------------------------------------------------------------------
-old_rules="$TMPDIR/pre-relay-rules.yaml"
-cat > "$old_rules" <<'EOF'
-version: v1
-services: []
-default:
-  name: default
-  action: enforce
-  allowed_domains:
-    - api.anthropic.com
-
-    - github.com
-    - api.github.com
-    - raw.githubusercontent.com
-
-    - pypi.org
-global_deny_list:
-    - "*.datadoghq.com"
-EOF
-assert_eq "$(exfiltration_prone_github_allowed_domains "$old_rules")" "github.com
-api.github.com" "a pre-relay rules file -> both GitHub domains named (blank lines don't end the list)"
-
-assert_eq "$(exfiltration_prone_github_allowed_domains "$repo/config/templates/proxy-rules.template.yaml")" "" \
-    "the shipped template is clean (github.com in global_deny_list / comments doesn't match)"
-
-quoted_rules="$TMPDIR/quoted-rules.yaml"
-cat > "$quoted_rules" <<'EOF'
-default:
-  allowed_domains:
-    - "api.github.com"   # quoted, with a trailing comment
-EOF
-assert_eq "$(exfiltration_prone_github_allowed_domains "$quoted_rules")" "api.github.com" \
-    "a quoted entry with a trailing comment still matches"
-
-lookalike_rules="$TMPDIR/lookalike-rules.yaml"
-cat > "$lookalike_rules" <<'EOF'
-default:
-  allowed_domains:
-    - raw.githubusercontent.com
-    - mygithub.com
-    - github.com.evil.example
-EOF
-assert_eq "$(exfiltration_prone_github_allowed_domains "$lookalike_rules")" "" \
-    "lookalike domains don't match (exact github.com / api.github.com entries only)"
-
-
-# ---------------------------------------------------------------------------
 echo "the proxy's network holes (network.sb denies, the proxy profile re-opens)"
 # ---------------------------------------------------------------------------
 assert_eq "$(grep -c '^[[:space:]]*(allow' "$repo/.internal/network.sb")" "0" \

@@ -297,7 +297,8 @@ else
     assert_nonzero  "$WAIT_FOR_EXIT_RC" "chopi-proxy refuses rules that allow github.com and api.github.com"
     assert_contains "$(cat "$exfil_log")" "github.com, api.github.com"  "  -> the refusal names the domains"
     assert_contains "$(cat "$exfil_log")" "dedicated relays"            "  -> and says both git and the API are relayed"
-    assert_contains "$(cat "$exfil_log")" "proxy-rules.template.yaml"   "  -> and directs to the current template"
+    assert_contains "$(cat "$exfil_log")" "cp \"$repo/config/templates/proxy-rules.template.yaml\" \"$exfil_rules\"" \
+        "  -> and gives the command copying the current template over them, by absolute paths"
     assert_contains "$(cat "$exfil_log")" "global_deny_list"            "  -> or to moving the domains to the denylist"
     assert_contains "$(cat "$exfil_log")" "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY" "  -> and names the override"
     assert_no_traces "starting anything"

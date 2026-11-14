@@ -9,6 +9,8 @@
 //     but for where it listens: --listen-ip and --listen-port are ignored.
 //   - The rules file is polled for changes, with a new valid rules set immediately
 //     and atomically swapped in.
+//   - Rules allowing github.com or api.github.com are refused, as the proxy starts and on a
+//     reload alike: they would let a sandboxed command around the GitHub relays.
 //   - Every listener is opened here -- smokescreen's own and the git relay's, each on a loopback
 //     port: the one it had in the last run where free, else one the kernel picks; and the API
 //     relay's on the unix socket PATH -- so no other process can take one first. Smokescreen
@@ -35,10 +37,13 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -53,11 +58,26 @@ import (
 const reloadPollInterval = time.Second
 
 type swappableACL struct {
-	current atomic.Pointer[acl.ACL]
+	current     atomic.Pointer[acl.ACL]
+	allowGitHub bool // gitHubExfiltrationOverride is set: rules allowing GitHub's domains only warn
 }
 
 func (s *swappableACL) Decide(args acl.DecideArgs) (acl.Decision, error) {
 	return s.current.Load().Decide(args)
+}
+
+// take swaps in rules, the one way rules take effect, as the proxy starts and on a reload alike.
+// It refuses rules gitHubExfiltration refuses, unless allowGitHub: then it takes them up and
+// passes the refusal to warn instead.
+func (s *swappableACL) take(rules *acl.ACL, warn func(error)) error {
+	if err := gitHubExfiltration(rules); err != nil {
+		if !s.allowGitHub {
+			return err
+		}
+		warn(fmt.Errorf("%w; taking up the rules anyway, as %s is set", err, gitHubExfiltrationOverride))
+	}
+	s.current.Store(rules)
+	return nil
 }
 
 func loadRules(conf *smokescreen.Config, path string) (*acl.ACL, error) {
@@ -80,9 +100,59 @@ func reloadIfChanged(conf *smokescreen.Config, holder *swappableACL, file *confi
 		if err != nil {
 			return err
 		}
-		holder.current.Store(rules)
-		return nil
+		return holder.take(rules, func(warning error) { rulesLogEntry.Warn(warning.Error()) })
 	})
+}
+
+// gitHubExfiltrationOverride is the environment variable that lets the proxy take up rules
+// allowing GitHub's own domains. Its name marks the relays' coverage; it rotates when coverage
+// grows, so an override set for an already-closed gap doesn't silently carry over.
+const gitHubExfiltrationOverride = "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY"
+
+// gitHubExfiltration refuses rules that allow github.com or api.github.com, to any service:
+// they defeat the GitHub repos allowlist, as a sandboxed command could push data to ANY repo
+// directly, skipping the relays. The rules themselves decide, so whatever way they allow a
+// domain counts -- a glob, the global allow list, an open or report policy.
+func gitHubExfiltration(rules *acl.ACL) error {
+	services := append(slices.Collect(maps.Keys(rules.Rules)), "") // "": the default rule
+	var allowed []string
+	for _, domain := range []string{"github.com", "api.github.com"} {
+		if slices.ContainsFunc(services, func(service string) bool {
+			d, _ := rules.Decide(acl.DecideArgs{Service: service, Host: domain})
+			return d.Result == acl.Allow || d.Result == acl.AllowAndReport
+		}) {
+			allowed = append(allowed, domain)
+		}
+	}
+	if len(allowed) == 0 {
+		return nil
+	}
+	return fmt.Errorf("the rules allow %s: a sandboxed command could push data to any GitHub repo, around the relays",
+		strings.Join(allowed, ", "))
+}
+
+// rulesTemplate is chopi's current proxy rules template, relative to chopi's directory.
+const rulesTemplate = "config/templates/proxy-rules.template.yaml"
+
+// gitHubExfiltrationAdvice is what to do about rules at path that gitHubExfiltration refuses as
+// the proxy starts, the relays enforcing the GitHub allowlist at allowlist. The expected case is a
+// rules file copied from a template predating the relays. The template is found relative to the
+// working directory, chopi's own as chopi-proxy.sh runs the proxy, and given absolute, as the user
+// reads the advice from wherever they ran chopi-proxy.
+func gitHubExfiltrationAdvice(path, allowlist string) string {
+	template, err := filepath.Abs(rulesTemplate)
+	if err != nil {
+		template = rulesTemplate
+	}
+	return fmt.Sprintf(`github.com git and gh's api.github.com REST calls go through
+dedicated relays which limit push and private-repo access to the
+repos in %s.
+
+To fix this, overwrite your proxy rules with chopi's current template:
+    cp %q %q
+or move the domains from allowed_domains to global_deny_list in %s.
+
+To run anyway, set %s=1.`, allowlist, template, path, path, gitHubExfiltrationOverride)
 }
 
 // configFile is a config file the proxy reads, and what it last took up from it, to put back
@@ -311,8 +381,10 @@ func main() {
 	if !ok {
 		fail("expected NewConfiguration to have loaded the egress ACL")
 	}
-	holder := &swappableACL{}
-	holder.current.Store(rules)
+	holder := &swappableACL{allowGitHub: os.Getenv(gitHubExfiltrationOverride) != ""}
+	if err := holder.take(rules, func(warning error) { complain("warning: %v", warning) }); err != nil {
+		fail("refusing to run: %v\n\n%s", err, gitHubExfiltrationAdvice(path, opts.allowlist))
+	}
 	conf.EgressACL = holder
 
 	// On the ports of the last run, where they are free.
