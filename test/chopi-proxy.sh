@@ -84,8 +84,8 @@ out="$(printf '%s\n' \
       | classify false)"
 assert_eq "$out" "[chopi-proxy.sh] DENY  blocked.example  @ T" "mixed batch -> only the DENY is emitted"
 
-# The live proxy runs classify_log inside `> >(format_smokescreen_log)`, a consumer subshell
-# that inherits chopi-proxy.sh's `set -euo pipefail`. A single jq failure on one line -- a
+# The live proxy runs classify_log in format_smokescreen_log, a background subshell reading a
+# FIFO, that inherits chopi-proxy.sh's `set -euo pipefail`. A single jq failure on one line -- a
 # filter edited/removed mid-run, a SIGPIPE, an OOM-kill -- must NOT trip errexit and abort the
 # loop, which would silence every later DENY for the life of the proxy. Reproduce it under a
 # real `set -e` by pointing one filter at a jq program that errors on a poison line, then feed
@@ -383,54 +383,6 @@ assert_eq "$(printf '%s\n' '{"allow":false' | known_deny)"                      
 # (should never happen. Worst case: a quiet deny log instead of a loud one).
 assert_eq "$(printf '%s\n' '{"allow":false,"decision_reason":"x","decision_reason":"'"$reason"'"}' | known_deny)" \
                                                                                                  "1"  "duplicate decision_reason keys -> fromjson's last key wins (accepted)"
-
-
-# ---------------------------------------------------------------------------
-echo "exfiltration-prone github allowed domains (migration-oriented refusal)"
-# ---------------------------------------------------------------------------
-old_rules="$TMPDIR/pre-relay-rules.yaml"
-cat > "$old_rules" <<'EOF'
-version: v1
-services: []
-default:
-  name: default
-  action: enforce
-  allowed_domains:
-    - api.anthropic.com
-
-    - github.com
-    - api.github.com
-    - raw.githubusercontent.com
-
-    - pypi.org
-global_deny_list:
-    - "*.datadoghq.com"
-EOF
-assert_eq "$(exfiltration_prone_github_allowed_domains "$old_rules")" "github.com
-api.github.com" "a pre-relay rules file -> both GitHub domains named (blank lines don't end the list)"
-
-assert_eq "$(exfiltration_prone_github_allowed_domains "$repo/config/templates/proxy-rules.template.yaml")" "" \
-    "the shipped template is clean (github.com in global_deny_list / comments doesn't match)"
-
-quoted_rules="$TMPDIR/quoted-rules.yaml"
-cat > "$quoted_rules" <<'EOF'
-default:
-  allowed_domains:
-    - "api.github.com"   # quoted, with a trailing comment
-EOF
-assert_eq "$(exfiltration_prone_github_allowed_domains "$quoted_rules")" "api.github.com" \
-    "a quoted entry with a trailing comment still matches"
-
-lookalike_rules="$TMPDIR/lookalike-rules.yaml"
-cat > "$lookalike_rules" <<'EOF'
-default:
-  allowed_domains:
-    - raw.githubusercontent.com
-    - mygithub.com
-    - github.com.evil.example
-EOF
-assert_eq "$(exfiltration_prone_github_allowed_domains "$lookalike_rules")" "" \
-    "lookalike domains don't match (exact github.com / api.github.com entries only)"
 
 
 # ---------------------------------------------------------------------------

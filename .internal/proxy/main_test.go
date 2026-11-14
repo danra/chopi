@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sirupsen/logrus"
 	logrustest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stripe/smokescreen/pkg/smokescreen"
 	acl "github.com/stripe/smokescreen/pkg/smokescreen/acl/v1"
@@ -69,12 +71,36 @@ func testSetup(t *testing.T, path string) (*smokescreen.Config, *swappableACL, *
 		t.Fatalf("initial load: %v", err)
 	}
 	holder := &swappableACL{}
-	holder.current.Store(rules)
+	if err := holder.take(rules, func(error) {}); err != nil {
+		t.Fatalf("initial take: %v", err)
+	}
 	file, err := newConfigFile(path)
 	if err != nil {
 		t.Fatalf("initial check: %v", err)
 	}
 	return conf, holder, file, hook
+}
+
+// reloaded expects the last log entry to be a successful reload's.
+func reloaded(t *testing.T, hook *logrustest.Hook) {
+	t.Helper()
+	if last := hook.LastEntry(); last == nil || last.Message != rulesReloaded {
+		t.Fatalf("expected a reloaded log entry, got %+v", last)
+	}
+}
+
+// reloadFailure is the error of the last log entry, which it expects to be a refused reload's.
+func reloadFailure(t *testing.T, hook *logrustest.Hook) error {
+	t.Helper()
+	last := hook.LastEntry()
+	if last == nil || last.Message != rulesReloadFailed {
+		t.Fatalf("expected a reload-failed log entry, got %+v", last)
+	}
+	err, _ := last.Data["error"].(error)
+	if err == nil {
+		t.Fatalf("expected the reload-failed log entry to carry an error, got %+v", last.Data)
+	}
+	return err
 }
 
 func decide(t *testing.T, holder *swappableACL, host string) acl.DecisionResult {
@@ -111,9 +137,7 @@ func TestReloadSwapsRules(t *testing.T) {
 	if got := decide(t, holder, "old.example"); got != acl.Deny {
 		t.Fatalf("old.example after reload: got %v, want Deny", got)
 	}
-	if last := hook.LastEntry(); last == nil || last.Message != "egress ACL reloaded" {
-		t.Fatalf("expected an 'egress ACL reloaded' log entry, got %+v", last)
-	}
+	reloaded(t, hook)
 }
 
 func TestReloadFailureKeepsPreviousRules(t *testing.T) {
@@ -128,9 +152,7 @@ func TestReloadFailureKeepsPreviousRules(t *testing.T) {
 	if got := decide(t, holder, "old.example"); got != acl.Allow {
 		t.Fatalf("old.example after failed reload: got %v, want Allow (previous rules kept)", got)
 	}
-	if last := hook.LastEntry(); last == nil || last.Message != "egress ACL reload failed; keeping the previous rules" {
-		t.Fatalf("expected a reload-failed log entry, got %+v", last)
-	}
+	reloadFailure(t, hook)
 
 	// The failed mtime is recorded: the broken file is not re-tried (and re-logged)
 	// every tick, only when it changes again.
@@ -172,13 +194,9 @@ func TestReloadRefusesAFileWithOtherLinks(t *testing.T) {
 	if got := decide(t, holder, "old.example"); got != acl.Allow {
 		t.Fatalf("old.example after a refused reload: got %v, want Allow (previous rules kept)", got)
 	}
-	last := hook.LastEntry()
-	if last == nil || last.Message != rulesReloadFailed {
-		t.Fatalf("expected a reload-failed log entry, got %+v", last)
-	}
-	err, _ := last.Data["error"].(error)
-	if err == nil || !strings.Contains(err.Error(), "2 hard links") {
-		t.Fatalf("the error should name the hard links, got %+v", last.Data["error"])
+	err := reloadFailure(t, hook)
+	if !strings.Contains(err.Error(), "2 hard links") {
+		t.Fatalf("the error should name the hard links, got %v", err)
 	}
 
 	// Put back, with no other links, and moved aside, named in the error.
@@ -312,13 +330,7 @@ func TestUnreadableFileIsSurfacedOnce(t *testing.T) {
 	if !mod.Equal(time.Time{}) {
 		t.Fatalf("mtime should not advance on a stat error, got %v", mod)
 	}
-	last := hook.LastEntry()
-	if last == nil || last.Message != "egress ACL reload failed; keeping the previous rules" {
-		t.Fatalf("expected the reload-failed log entry, got %+v", last)
-	}
-	if last.Data["error"] == nil {
-		t.Fatal("the stat error should be attached so the rendered line can name it")
-	}
+	reloadFailure(t, hook) // the stat error attached, so the rendered line can name it
 
 	// A persistent error does not re-log while warned stays set.
 	hook.Reset()
@@ -342,5 +354,103 @@ func TestUnreadableFileIsSurfacedOnce(t *testing.T) {
 	}
 	if got := decide(t, holder, "ok.example"); got != acl.Allow {
 		t.Fatalf("rules should reload after the path is repaired: got %v, want Allow", got)
+	}
+}
+
+// reloadTo sets up rules allowing old.example, then reloads them as the given rules, allowing
+// GitHub's domains if allowGitHub.
+func reloadTo(t *testing.T, rules string, allowGitHub bool) (*swappableACL, *logrustest.Hook) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "rules.yaml")
+	writeFile(t, path, rulesAllowing("old.example"))
+	conf, holder, file, hook := testSetup(t, path)
+	holder.allowGitHub = allowGitHub
+	lastMod := mtimeOf(t, path)
+
+	writeFile(t, path, rules)
+	setMtime(t, path, lastMod.Add(time.Second))
+	reloadIfChanged(conf, holder, file, lastMod, false)
+	return holder, hook
+}
+
+// Rules allowing github.com or api.github.com let a sandboxed command reach GitHub directly,
+// bypassing the relays and the repos allowlist they enforce: an edit that allows them is refused
+// like a broken one, the previous rules kept -- whatever form the allowing takes.
+func TestReloadRefusesRulesAllowingGitHub(t *testing.T) {
+	for _, allowing := range []string{"github.com", "api.github.com", `"*.github.com"`} {
+		t.Run(allowing, func(t *testing.T) {
+			holder, hook := reloadTo(t, rulesAllowing(allowing), false)
+			if got := decide(t, holder, "old.example"); got != acl.Allow {
+				t.Fatalf("old.example after a refused reload: got %v, want Allow (previous rules kept)", got)
+			}
+			if err := reloadFailure(t, hook); !strings.Contains(err.Error(), "github.com") {
+				t.Fatalf("the error should name the GitHub domain allowed, got %v", err)
+			}
+		})
+	}
+}
+
+// The override that lets a session start with rules allowing GitHub's domains lets a reload take
+// them up too, with a warning in the log.
+func TestReloadTakesUpRulesAllowingGitHubWithTheOverride(t *testing.T) {
+	holder, hook := reloadTo(t, rulesAllowing("github.com"), true)
+	if got := decide(t, holder, "github.com"); got != acl.Allow {
+		t.Fatalf("github.com after a reload with the override: got %v, want Allow", got)
+	}
+	reloaded(t, hook)
+	if !slices.ContainsFunc(hook.Entries, func(e logrus.Entry) bool {
+		return e.Level == logrus.WarnLevel && strings.Contains(e.Message, "allow github.com") &&
+			strings.Contains(e.Message, gitHubExfiltrationOverride+" is set")
+	}) {
+		t.Fatalf("expected a warning that the rules allow github.com, naming the override, got %+v", hook.Entries)
+	}
+}
+
+func TestGitHubExfiltration(t *testing.T) {
+	template := readFile(t, filepath.Join("../..", rulesTemplate))
+	for _, tc := range []struct{ name, rules, want string }{
+		{"a pre-relay rules file names both domains", rulesAllowing("api.anthropic.com") +
+			"    - github.com\n    - api.github.com\n    - raw.githubusercontent.com\n", "github.com, api.github.com"},
+		{"the shipped template is clean", template, ""},
+		{"a service's rule counts too", `version: v1
+services:
+  - name: svc
+    project: p
+    action: enforce
+    allowed_domains:
+      - api.github.com
+`, "api.github.com"},
+		{"the global allow list counts too", rulesAllowing("api.anthropic.com") +
+			"global_allow_list:\n  - github.com\n", "github.com"},
+		{"an open policy allows them without naming them", `version: v1
+services: []
+default:
+  name: default
+  action: open
+`, "github.com, *.github.com"},
+		{"the upload host counts", rulesAllowing(`uploads.github.com`), "uploads.github.com"},
+		{"the gist host counts", rulesAllowing(`gist.github.com`), "gist.github.com"},
+		{"a subdomain glob counts, as one", rulesAllowing(`"*.github.com"`), "the rules allow *.github.com:"},
+		{"a read-only subdomain named alone doesn't", rulesAllowing("codeload.github.com"), ""},
+		{"the global deny list wins over the global allow list", rulesAllowing("api.anthropic.com") +
+			"global_allow_list:\n  - github.com\nglobal_deny_list:\n  - github.com\n", ""},
+		{"lookalike domains don't match", rulesAllowing("raw.githubusercontent.com") +
+			"    - mygithub.com\n    - github.com.evil.example\n", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "rules.yaml")
+			writeFile(t, path, tc.rules)
+			rules, err := loadRules(smokescreen.NewConfig(), path)
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			err = gitHubExfiltration(rules)
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("want no refusal, got %v", err)
+			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+				t.Fatalf("want a refusal naming %q, got %v", tc.want, err)
+			}
+		})
 	}
 }
