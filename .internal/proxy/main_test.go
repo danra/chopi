@@ -427,7 +427,11 @@ services: []
 default:
   name: default
   action: open
-`, "github.com, api.github.com"},
+`, "github.com, *.github.com"},
+		{"the upload host counts", rulesAllowing(`uploads.github.com`), "uploads.github.com"},
+		{"the gist host counts", rulesAllowing(`gist.github.com`), "gist.github.com"},
+		{"a subdomain glob counts, as one", rulesAllowing(`"*.github.com"`), "the rules allow *.github.com:"},
+		{"a read-only subdomain named alone doesn't", rulesAllowing("codeload.github.com"), ""},
 		{"the global deny list wins over the global allow list", rulesAllowing("api.anthropic.com") +
 			"global_allow_list:\n  - github.com\nglobal_deny_list:\n  - github.com\n", ""},
 		{"lookalike domains don't match", rulesAllowing("raw.githubusercontent.com") +
