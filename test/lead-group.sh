@@ -15,8 +15,8 @@ header "test/lead-group.sh -- unit tests for .internal/util.sh's lead_group"
 TMPDIR="$(mktemp -d)"; export TMPDIR
 trap 'rm -rf "$TMPDIR"' EXIT
 
-# Each lead_group runs in a shell with `set -euo pipefail`, as chopi-proxy runs it: a failing
-# command lead_group leaves unguarded would end it there, skipping the rest of its work.
+# Each lead_group runs bare in a shell with `set -euo pipefail`: a failing command lead_group leaves
+# unguarded would end it there, skipping the rest of its work.
 
 
 # ---------------------------------------------------------------------------
@@ -180,15 +180,22 @@ st=0
         _ "$repo/.internal/util.sh" "$TMPDIR/lead-child" &
     wait $!
 ) 2>/dev/null || st=$?
-assert_eq "$st" 137 "lead_group exits with its command's status, a SIGKILL's included"
+assert_eq "$st" 137 "lead_group returns its command's status, a SIGKILL's included"
 assert_pid_exits "$(cat "$TMPDIR/lead-child")" "  -> stopping the rest of its group"
 
-# A COMMAND that leaves no helper behind leaves no group to stop: lead_group must still exit with
+# A COMMAND that leaves no helper behind leaves no group to stop: lead_group must still return
 # its status.
 st=0
 bash -c 'set -euo pipefail; . "$1"; lead_group sh -c "exit 3"' _ "$repo/.internal/util.sh" \
     2>/dev/null || st=$?
-assert_eq "$st" 3 "lead_group exits with its command's status, its group gone with it"
+assert_eq "$st" 3 "lead_group returns its command's status, its group gone with it"
+
+# Once returned, lead_group leaves its caller's handling of stop signals as it found it: a trap
+# put back, and a signal it had left alone fatal again rather than still ignored.
+# shellcheck disable=SC2016 # expanded by the inner shell
+out="$(bash -c 'set -euo pipefail; . "$1"; trap "echo caught" TERM; lead_group true; trap -p TERM HUP INT' \
+    _ "$repo/.internal/util.sh" 2>&1)"
+assert_eq "$out" "trap -- 'echo caught' SIGTERM" "lead_group puts back its caller's stop signal handling"
 
 # ---------------------------------------------------------------------------
 summary

@@ -87,11 +87,12 @@ known_deny_seen() {
 # The `|| [ -n "$line" ]` tail flushes a final line that arrives without a trailing newline.
 #
 # Every per-line jq pipeline is guarded so a single line's failure surfaces the raw line and the
-# loop continues, rather than aborting. The live proxy runs this inside `> >(...)` under its own
-# `set -euo pipefail`, so an unguarded jq that exits non-zero (a .internal/*.jq filter edited or
-# removed while the long-lived proxy runs, a SIGPIPE, an OOM-kill) would trip errexit and kill the
-# consumer for good -- silencing every later DENY. Degraded formatting on a broken line is fine; a
-# silently dropped DENY is not, so a failed classifier always errs toward surfacing the raw line.
+# loop continues, rather than aborting. The live proxy runs this in a background job reading a
+# FIFO, under its own `set -euo pipefail`, so an unguarded jq that exits non-zero (a .internal/*.jq
+# filter edited or removed while the long-lived proxy runs, a SIGPIPE, an OOM-kill) would trip
+# errexit and kill the consumer for good -- silencing every later DENY. Degraded formatting on a
+# broken line is fine; a silently dropped DENY is not, so a failed classifier always errs toward
+# surfacing the raw line.
 classify_log() {
     arity 5
     local is_interactive="$1" script="$2" on_deny="$3" on_reload="$4" verbose="$5" line host known reload_line

@@ -260,6 +260,27 @@ echo "[$SCRIPT_NAME] starting the outgoing proxy and the GitHub relays (Ctrl-C t
 # which it renders from the allowlist, and again on each edit to it. It reports its ports once up,
 # and says where it serves. We stay, for Caddy to go with chopi-smokescreen however it goes; a
 # Ctrl-C reaches it as a TERM from us.
+#
+# chopi-smokescreen's output goes through this to the formatter: a background job of ours, unlike a
+# process substitution, which bash 3.2 gives no pid to wait for. Waiting for it, rather than
+# exiting while it still writes chopi-smokescreen's last words, lets whoever reads our output once
+# we exit see them.
+LOG_FIFO="$TMPDIR/log"
+mkfifo "$LOG_FIFO"
+# Opened to read and write, which never blocks, unlike opening one end and waiting for the other:
+# no signal sent to us here is in danger of leaving the formatter blocked on its end, so none need
+# be held off until lead_group traps it. Should one end us, our end closes with us, and the
+# formatter ends with it.
+exec 3<>"$LOG_FIFO"
+(unset GH_TOKEN GITHUB_TOKEN; format_smokescreen_log) <"$LOG_FIFO" 3>&- &
+formatter=$!
+status=0
 lead_group run_smokescreen "$RULES" "$GITHUB_ALLOWLIST" \
-    "$CHOPI_DIR/.internal/github-relays-config.sh" "$CADDY_LOG" \
-    > >(unset GH_TOKEN GITHUB_TOKEN; format_smokescreen_log) 2>&1
+    "$CHOPI_DIR/.internal/github-relays-config.sh" "$CADDY_LOG" >&3 2>&1 3>&- || status=$?
+exec 3>&-
+# Our end of the FIFO closed, the formatter ends once it reads the rest. A second Ctrl-C while it
+# does stops us waiting.
+wait "$formatter" || :
+# Not a plain `exit "$status"`: shellcheck would take every function only traps and lead_group
+# call for unreachable (SC2329).
+[ "$status" -eq 0 ] || exit "$status"

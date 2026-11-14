@@ -642,12 +642,14 @@ make_private_dir() {
 }
 
 # Run COMMAND in the background, in a process group of its own, and once it exits -- however it
-# exits, a SIGKILL or a crash included -- TERM the rest of that group and exit with its status.
+# exits, a SIGKILL or a crash included -- TERM the rest of that group and return its status.
 # This keeps COMMAND's helpers (Caddy) from outliving it, while leaving our caller's group alone.
 # A stop signal sent to us is passed on to COMMAND as a TERM, so it stops as it would have stopped
 # itself; out of the terminal's foreground group, COMMAND gets no Ctrl-C of its own beside that.
-# chopi-proxy calls it under `set -e`, so a command here that may fail harmlessly (a kill finding
-# nothing left to stop) must be guarded: unguarded, it would end lead_group short of its cleanup.
+# Once COMMAND is gone, our caller's handling of stop signals is put back as it was.
+# It may be called under `set -e`, as its tests call it, so a command here that may fail harmlessly
+# (a kill finding nothing left to stop) must be guarded: unguarded, it would end lead_group short of
+# its cleanup.
 #
 # COMMAND should be a shell function, which may exec a program, as chopi-proxy's does. Under
 # macOS's bash 3.2, a program run as COMMAND itself can drop a stop signal passed on to it just as
@@ -655,7 +657,8 @@ make_private_dir() {
 #
 # usage: lead_group COMMAND [ARGS...]
 lead_group() {
-    local pid="" signaled="" early="" status
+    local pid="" signaled="" early="" status callers_traps
+    callers_traps="$(trap -p TERM HUP INT)"
     # Trapped before COMMAND starts, lest a signal in between kill us and orphan it: one that comes
     # as it starts, too early for the trap to pass on, is passed on once its pid is known.
     trap 'signaled=1; if [ -n "$pid" ]; then kill -TERM "$pid" 2>/dev/null || :; else early=1; fi' \
@@ -678,5 +681,9 @@ lead_group() {
     trap '' TERM HUP INT
     # The group outlives COMMAND, its ID with it, for as long as a helper of COMMAND's is in it.
     kill -TERM -- "-$pid" 2>/dev/null || :
-    exit "$status"
+    trap - TERM HUP INT
+    eval "$callers_traps"
+    # Returned, not exited with: our caller's redirections of us are undone first, so an EXIT trap
+    # of its sees its own output, not, say, a pipe to a reader that waits for us to close it.
+    return "$status"
 }

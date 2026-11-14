@@ -84,8 +84,8 @@ out="$(printf '%s\n' \
       | classify false)"
 assert_eq "$out" "[chopi-proxy.sh] DENY  blocked.example  @ T" "mixed batch -> only the DENY is emitted"
 
-# The live proxy runs classify_log inside `> >(format_smokescreen_log)`, a consumer subshell
-# that inherits chopi-proxy.sh's `set -euo pipefail`. A single jq failure on one line -- a
+# The live proxy runs classify_log in format_smokescreen_log, a background subshell reading a
+# FIFO, that inherits chopi-proxy.sh's `set -euo pipefail`. A single jq failure on one line -- a
 # filter edited/removed mid-run, a SIGPIPE, an OOM-kill -- must NOT trip errexit and abort the
 # loop, which would silence every later DENY for the life of the proxy. Reproduce it under a
 # real `set -e` by pointing one filter at a jq program that errors on a poison line, then feed
