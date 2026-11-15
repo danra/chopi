@@ -12,6 +12,9 @@
 #                       [--verbose]
 
 set -euo pipefail
+# The GitHub token is chopi-smokescreen's alone, which exports it again (see run_smokescreen): kept
+# set, for gh_token_source to tell where it comes from, but from no other command we run.
+export -n GH_TOKEN GITHUB_TOKEN
 
 SCRIPT_NAME="${BASH_SOURCE[0]##*/}"
 SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
@@ -108,11 +111,10 @@ format_smokescreen_log() {
     # A formatter that fails takes the rest of the log with it, while the proxy keeps serving: the
     # log says so where it ends, rather than just going quiet.
     trap 'report_formatter_failure $?' EXIT
-    # The reload banners' groups (see notify_reload), worked out here, off the proxy's startup path,
-    # while the token is still ours: the allowlist's group is keyed by where it comes from.
+    # The reload banners' groups (see notify_reload), worked out here, off the proxy's startup path:
+    # the allowlist's group is keyed by where the token comes from.
     RULES_RELOAD_GROUP="$(reload_banner_group "$RULES" "")"
     ALLOWLIST_RELOAD_GROUP="$(reload_banner_group "$GITHUB_ALLOWLIST" "$(gh_token_source)")"
-    unset GH_TOKEN GITHUB_TOKEN
     classify_log "$SCRIPT_NAME" notify_deny notify_reload "$VERBOSE"
 }
 
@@ -154,8 +156,11 @@ notify_reload() {
 
 echo "[$SCRIPT_NAME] relay log: $CADDY_LOG"
 echo "[$SCRIPT_NAME] starting the outgoing proxy and the GitHub relays"
-# Run chopi-smokescreen with fd 4 for its stderr, which the call below sets aside for it.
+# Run chopi-smokescreen with fd 4 for its stderr, which the call below sets aside for it, and the
+# GitHub token, if set, in its environment, which it takes out of what Caddy gets. A background job,
+# so the export goes no further.
 run_smokescreen() {
+    export GH_TOKEN GITHUB_TOKEN
     run_chopi_smokescreen "$@" 2>&4 4>&-
 }
 
