@@ -437,15 +437,16 @@ echo "session proxy lifecycle (launch, await the ports it reports, stop)"
 # "warn" does the same after a warning on stderr; "garbled" reports a port that isn't one; "fail"
 # exits 1 with a reason on stderr; "crash" exits 1 with its reason only in the log, as smokescreen
 # would; "warn-crash" warns on stderr first; "starting" stays at its startup, as
-# chopi-proxy.sh is at its checks; and "slow" takes a while before going on as "up". It records the
-# TMPDIR it was started with.
+# chopi-proxy.sh is at its checks; "slow" takes a while before going on as "up"; and "slow-stop" goes
+# as "up", but takes a while to finish once stopped, as Caddy may. It records the TMPDIR it was
+# started with.
 stub="$TMPDIR/stub-proxy.sh"
 cat > "$stub" <<EOF
 #!/usr/bin/env bash
 printf 'TMPDIR=%s\\n' "\${TMPDIR-<unset>}" >> "$TMPDIR/stub-args"
 # Owning its dir as chopi-proxy.sh does.
 dir=""
-trap '[ -z "\$dir" ] || rm -rf "\$dir"' EXIT
+trap '[ "\$STUB_PLAN" != slow-stop ] || sleep 0.5; [ -z "\$dir" ] || rm -rf "\$dir"' EXIT
 trap 'exit 143' TERM HUP
 while [ "\$#" -gt 0 ]; do
     case "\$1" in
@@ -508,6 +509,17 @@ assert_pid_exits "$pid" "stop_session_proxy stops it"
 # chopi-proxy.sh stops what it leads with it, Caddy included.
 assert_pid_exits "$child" "  -> and its children too"
 assert_absent "$dir" "  -> which removes its dir"
+
+# Gone once stop_session_proxy returns, not just signalled: chopi goes on to offer the review, or
+# exits, as the session's end, which a proxy still serving the relays would outlast.
+start_proxy_with slow-stop 2>/dev/null
+pid="$SESSION_PROXY_PID" dir="$SESSION_PROXY_DIR"
+stop_session_proxy
+kill -0 "$pid" 2>/dev/null
+assert_nonzero $? "stop_session_proxy returns once the proxy is gone"
+assert_absent "$dir" "  -> its dir removed"
+# Should it fail, the proxy goes before the next test starts one.
+wait "$pid" 2>/dev/null
 
 # A proxy gone on its own, and reaped, leaves its pid free for reuse: signalling its group then
 # could reach an unrelated process. Its stand-in Caddy, left behind in the group, stands in for
