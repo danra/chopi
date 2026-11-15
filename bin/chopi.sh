@@ -102,14 +102,7 @@ main() {
     local CHOPI_SAFE_WRITE_TARGETS=()
     local CHOPI_PROXY_RULES=""
     local CHOPI_GITHUB_ALLOWLIST=""
-    if [ ! -r "$config" ]; then
-        if [ -n "$config_given" ]; then
-            echo "chopi: cannot read sandbox config '$config'" >&2
-        else
-            echo "chopi: cannot read $config; re-run install.sh" >&2
-        fi
-        return 1
-    fi
+    check_sandbox_config_readable chopi "$config" "$config_given" || return 1
     # shellcheck source=/dev/null  # can't follow user-supplied config path at lint time
     . "$config"
 

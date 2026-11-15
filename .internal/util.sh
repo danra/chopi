@@ -183,6 +183,25 @@ file_line_number() {
     return 1
 }
 
+# Check that the sandbox config at CONFIG is readable, and if not, say so under PROG's name and
+# fail. CONFIG_GIVEN is non-empty when the user named CONFIG, rather than it being the default,
+# which picks the advice of the error.
+#
+# The caller sources CONFIG itself: sourcing from inside a function would make the config's
+# declares local to it, and run it without errexit when the call is the left of `||`.
+#
+# usage: check_sandbox_config_readable PROG CONFIG CONFIG_GIVEN
+check_sandbox_config_readable() {
+    arity 3
+    [ -r "$2" ] && return 0
+    if [ -n "$3" ]; then
+        echo "$1: cannot read sandbox config '$2'" >&2
+    else
+        echo "$1: cannot read $2; re-run install.sh" >&2
+    fi
+    return 1
+}
+
 # Does FILE have the exact LINE, modulo trimming whitespace around it
 file_has_line() {
     arity 2

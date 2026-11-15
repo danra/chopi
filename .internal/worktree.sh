@@ -217,10 +217,7 @@ if [ "${1:-}" = "--config" ]; then
 fi
 if [ "$#" -ne 1 ]; then echo "error: unexpected args" >&2; exit 1; fi
 if [ -n "$config" ]; then
-    if [ ! -r "$config" ]; then
-        echo "error: cannot read sandbox config '$config'" >&2
-        exit 1
-    fi
+    check_sandbox_config_readable error "$config" 1 || exit 1
     # Sourced only for CHOPI_WORKTREE_SETUP
     # shellcheck source=/dev/null  # can't follow user-supplied config path at lint time
     . "$config"
