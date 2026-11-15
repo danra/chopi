@@ -419,10 +419,10 @@ func readPorts(path string) ports {
 	return p
 }
 
-// stopSignals are the signals that stop the proxy: a Ctrl-C's INT, a TERM, and a closing
-// terminal's HUP.
+// stopSignals are the signals that stop the proxy: chopi's TERM as the session ends, and a
+// closing terminal's HUP.
 func stopSignals() <-chan os.Signal {
 	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
+	signal.Notify(ch, syscall.SIGTERM, syscall.SIGHUP)
 	return ch
 }
