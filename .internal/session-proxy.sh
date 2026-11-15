@@ -5,12 +5,14 @@
 # Sourced (never run directly). Each session runs its own chopi-proxy.sh, on loopback ports the
 # kernel picks, for the sandbox to reach through the holes write_proxy_network_profile
 # opens, and stops it when the session ends. The proxy logs to a file of its own under
-# CHOPI_PROXY_LOG_DIR, kept after the session for inspection.
+# CHOPI_PROXY_LOG_DIR, kept after the session for a while for inspection.
 
 . "${BASH_SOURCE[0]%/*}/util.sh"
 
 CHOPI_PROXY_SCRIPT="$CHOPI_DIR/.internal/chopi-proxy.sh"
 CHOPI_PROXY_LOG_DIR="$HOME/Library/Logs/chopi"
+# Days a log is kept past its last change, once its session is over.
+CHOPI_PROXY_LOG_KEEP_DAYS=14
 # Seconds a proxy may take to start before chopi says what it waits on.
 CHOPI_PROXY_START_NOTICE_SECS=5
 
@@ -42,11 +44,21 @@ launch_session_proxy() {
         echo "chopi: cannot create the proxy log dir $CHOPI_PROXY_LOG_DIR" >&2
         return 1
     fi
+    # Delete logs past their retention, in the background so the session's startup doesn't wait.
+    # The subshell detaches it from chopi's jobs, so nothing waits for it later either, and its
+    # output goes nowhere, so neither does a caller capturing chopi's, reading until it ends. A log
+    # whose session still runs -- the chopi whose pid its name ends with -- is kept, however quiet.
+    ( find "$CHOPI_PROXY_LOG_DIR" -name 'proxy-*.log' -mtime "+$CHOPI_PROXY_LOG_KEEP_DAYS" 2>/dev/null \
+        | while IFS= read -r log; do
+            pid="${log##*-}"
+            kill -0 "${pid%%.*}" 2>/dev/null || rm -f "$log"
+        done & ) </dev/null >/dev/null 2>&1
     local now
     now="$(date +%Y%m%d-%H%M%S)"
     SESSION_PROXY_LOG="$CHOPI_PROXY_LOG_DIR/proxy-$now-$$.log"
 
-    # The proxy puts the relays' log beside its own, as a .caddy.log.
+    # The proxy puts the relays' log beside its own, as a .caddy.log, which the sweep above covers
+    # too.
     local flags=(--log "$SESSION_PROXY_LOG" --parent "$$" --rules "$rules"
                  --github-allowlist "$allowlist")
     [ -n "$verbose" ] && flags+=(--verbose)

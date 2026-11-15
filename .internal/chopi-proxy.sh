@@ -49,7 +49,9 @@ if [ -z "$PROXY_DIR" ] || [ -z "$LOG" ] || [ -z "$PARENT_PID" ] \
     echo "error: --dir, --log, --parent, --rules and --github-allowlist are required" >&2
     exit 1
 fi
-# The relays' log sits beside ours, outliving the session as it does.
+# The relays' log sits beside ours, outliving the session as it does: named for chopi's sweep of
+# old logs to cover it too, the session's pid still what follows its last dash (see
+# launch_session_proxy).
 CADDY_LOG="${LOG%.log}.caddy.log"
 
 exec >>"$LOG" || { echo "error: cannot write the proxy log $LOG" >&2; exit 1; }
