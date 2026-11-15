@@ -40,7 +40,7 @@ http://127.0.0.1:{$CHOPI_GIT_PORT} {
 	# Without an explicit bind Caddy listens on ALL interfaces, where a LAN client sending
 	# "Host: 127.0.0.1" would reach the credentialed routes. The listener is the one
 	# chopi-smokescreen opened on 127.0.0.1 and handed to Caddy open, on descriptor CHOPI_GIT_FD,
-	# at the port in CHOPI_GIT_PORT.
+	# at the kernel-picked port in CHOPI_GIT_PORT.
 	bind fd/{$CHOPI_GIT_FD}
 
 	map {http.request.header.Content-Encoding} {content_encoding} {
