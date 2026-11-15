@@ -18,8 +18,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"github.com/sirupsen/logrus"
 )
 
 // The descriptors Caddy inherits its listeners on: ExtraFiles start at 3.
@@ -175,8 +173,6 @@ type relaySupervisor struct {
 	relays  *relays
 	logPath string // Caddy's output, every Caddy's in turn
 	config  relayConfig
-	file    *configFile   // the allowlist, as last taken up
-	log     *logrus.Entry // where reloads are logged
 
 	mu      sync.Mutex
 	live    map[*caddyProc]bool // every Caddy running: starting, serving, or finishing up once replaced
@@ -193,9 +189,9 @@ type relaySupervisor struct {
 	failedOnce sync.Once
 }
 
-func newRelaySupervisor(r *relays, logPath string, config relayConfig, file *configFile, log *logrus.Entry) *relaySupervisor {
+func newRelaySupervisor(r *relays, logPath string, config relayConfig) *relaySupervisor {
 	renderCtx, stopRenders := context.WithCancel(context.Background())
-	return &relaySupervisor{relays: r, logPath: logPath, config: config, file: file, log: log,
+	return &relaySupervisor{relays: r, logPath: logPath, config: config,
 		live: map[*caddyProc]bool{}, failed: make(chan struct{}),
 		renderCtx: renderCtx, stopRenders: stopRenders}
 }
@@ -352,11 +348,6 @@ func outputSince(path string, offset int64) string {
 	defer f.Close()
 	out, _ := io.ReadAll(io.NewSectionReader(f, offset, 1<<16))
 	return strings.Join(strings.Fields(string(out)), " ")
-}
-
-// reloadIfChanged reloads the relays if the allowlist changed since lastMod, as the rules are.
-func (s *relaySupervisor) reloadIfChanged(lastMod time.Time, warned bool) (time.Time, bool) {
-	return applyIfChanged(s.log, s.file, allowlistReloaded, allowlistReloadFailed, lastMod, warned, s.reload)
 }
 
 // stopAll stops every Caddy running, and any reload's render, at once, returning once they have

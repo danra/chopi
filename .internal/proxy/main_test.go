@@ -59,8 +59,14 @@ func setMtime(t *testing.T, path string, to time.Time) {
 	}
 }
 
-// testSetup returns a config whose log entries are captured by the returned hook, and
-// a holder loaded from the given rules file.
+// reloadIfChanged reloads the rules if f, the rules file, changed since last taken up, as its watch
+// does each tick.
+func reloadIfChanged(conf *smokescreen.Config, holder *swappableACL, f *configFile) {
+	f.applyIfChanged(conf.Log, takeRules(conf, holder, f))
+}
+
+// testSetup returns a config whose log entries are captured by the returned hook, a holder
+// loaded from the given rules file, and the file, as taken up.
 func testSetup(t *testing.T, path string) (*smokescreen.Config, *swappableACL, *configFile, *logrustest.Hook) {
 	t.Helper()
 	conf := smokescreen.NewConfig()
@@ -74,7 +80,7 @@ func testSetup(t *testing.T, path string) (*smokescreen.Config, *swappableACL, *
 	if err := holder.take(rules, func(error) {}); err != nil {
 		t.Fatalf("initial take: %v", err)
 	}
-	file, err := newConfigFile(path)
+	file, err := newConfigFile(path, rulesKind)
 	if err != nil {
 		t.Fatalf("initial check: %v", err)
 	}
@@ -116,7 +122,7 @@ func TestReloadSwapsRules(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rules.yaml")
 	writeFile(t, path, rulesAllowing("old.example"))
 	conf, holder, file, hook := testSetup(t, path)
-	lastMod := mtimeOf(t, path)
+	lastMod := file.lastMod
 
 	if got := decide(t, holder, "old.example"); got != acl.Allow {
 		t.Fatalf("old.example before reload: got %v, want Allow", got)
@@ -127,7 +133,8 @@ func TestReloadSwapsRules(t *testing.T) {
 
 	writeFile(t, path, rulesAllowing("new.example"))
 	setMtime(t, path, lastMod.Add(time.Second))
-	newMod, _ := reloadIfChanged(conf, holder, file, lastMod, false)
+	reloadIfChanged(conf, holder, file)
+	newMod := file.lastMod
 	if !newMod.After(lastMod) {
 		t.Fatalf("mtime not advanced: %v -> %v", lastMod, newMod)
 	}
@@ -144,11 +151,12 @@ func TestReloadFailureKeepsPreviousRules(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rules.yaml")
 	writeFile(t, path, rulesAllowing("old.example"))
 	conf, holder, file, hook := testSetup(t, path)
-	lastMod := mtimeOf(t, path)
+	lastMod := file.lastMod
 
 	writeFile(t, path, "version: v9\n")
 	setMtime(t, path, lastMod.Add(time.Second))
-	failedMod, _ := reloadIfChanged(conf, holder, file, lastMod, false)
+	reloadIfChanged(conf, holder, file)
+	failedMod := file.lastMod
 	if got := decide(t, holder, "old.example"); got != acl.Allow {
 		t.Fatalf("old.example after failed reload: got %v, want Allow (previous rules kept)", got)
 	}
@@ -157,8 +165,9 @@ func TestReloadFailureKeepsPreviousRules(t *testing.T) {
 	// The failed mtime is recorded: the broken file is not re-tried (and re-logged)
 	// every tick, only when it changes again.
 	hook.Reset()
-	if again, _ := reloadIfChanged(conf, holder, file, failedMod, false); !again.Equal(failedMod) {
-		t.Fatalf("mtime moved without a file change: %v -> %v", failedMod, again)
+	reloadIfChanged(conf, holder, file)
+	if !file.lastMod.Equal(failedMod) {
+		t.Fatalf("mtime moved without a file change: %v -> %v", failedMod, file.lastMod)
 	}
 	if len(hook.Entries) != 0 {
 		t.Fatalf("unexpected log entries on an unchanged broken file: %+v", hook.Entries)
@@ -167,7 +176,7 @@ func TestReloadFailureKeepsPreviousRules(t *testing.T) {
 	// Fixing the file recovers.
 	writeFile(t, path, rulesAllowing("fixed.example"))
 	setMtime(t, path, failedMod.Add(time.Second))
-	reloadIfChanged(conf, holder, file, failedMod, false)
+	reloadIfChanged(conf, holder, file)
 	if got := decide(t, holder, "fixed.example"); got != acl.Allow {
 		t.Fatalf("fixed.example after recovery: got %v, want Allow", got)
 	}
@@ -183,11 +192,12 @@ func TestReloadRefusesAFileWithOtherLinks(t *testing.T) {
 	path := filepath.Join(dir, "rules.yaml")
 	writeFile(t, path, rulesAllowing("old.example"))
 	conf, holder, file, hook := testSetup(t, path)
-	lastMod := mtimeOf(t, path)
+	lastMod := file.lastMod
 
 	other := filepath.Join(dir, "other-link.yaml")
 	writeThroughOtherLink(t, path, other, rulesAllowing("new.example"), lastMod.Add(time.Second))
-	refusedMod, _ := reloadIfChanged(conf, holder, file, lastMod, false)
+	reloadIfChanged(conf, holder, file)
+	refusedMod := file.lastMod
 	if got := decide(t, holder, "new.example"); got != acl.Deny {
 		t.Fatalf("new.example after a change through another link: got %v, want Deny", got)
 	}
@@ -225,22 +235,23 @@ func TestReloadRefusesAFileWithOtherLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	hook.Reset()
-	if again, _ := reloadIfChanged(conf, holder, file, refusedMod, false); !again.Equal(refusedMod) {
-		t.Fatalf("mtime moved without a file change: %v -> %v", refusedMod, again)
+	reloadIfChanged(conf, holder, file)
+	if !file.lastMod.Equal(refusedMod) {
+		t.Fatalf("mtime moved without a file change: %v -> %v", refusedMod, file.lastMod)
 	}
 	if len(hook.Entries) != 0 {
 		t.Fatalf("the put-back file should not be taken up again, got %+v", hook.Entries)
 	}
 	writeFile(t, path, rulesAllowing("fixed.example"))
 	setMtime(t, path, refusedMod.Add(time.Second))
-	reloadIfChanged(conf, holder, file, refusedMod, false)
+	reloadIfChanged(conf, holder, file)
 	if got := decide(t, holder, "fixed.example"); got != acl.Allow {
 		t.Fatalf("fixed.example after a change with no other links: got %v, want Allow", got)
 	}
 	// A later refusal puts back what was taken up last, not what the proxy started with.
-	fixedMod := mtimeOf(t, path)
+	fixedMod := file.lastMod
 	writeThroughOtherLink(t, path, other, rulesAllowing("new.example"), fixedMod.Add(time.Second))
-	reloadIfChanged(conf, holder, file, fixedMod, false)
+	reloadIfChanged(conf, holder, file)
 	if got := readFile(t, path); got != rulesAllowing("fixed.example") {
 		t.Fatalf("the rules file should hold the rules last taken up, got:\n%s", got)
 	}
@@ -265,15 +276,15 @@ func TestStartRefusesAFileWithOtherLinks(t *testing.T) {
 	allowlist := filepath.Join(dir, "allowlist")
 	writeFile(t, rules, rulesAllowing("old.example"))
 	writeFile(t, allowlist, "")
-	for _, path := range []string{rules, allowlist, filepath.Join(dir, "missing")} {
-		if _, err := newConfigFile(path); err != nil {
+	for path, kind := range map[string]configKind{rules: rulesKind, allowlist: allowlistKind, filepath.Join(dir, "missing"): rulesKind} {
+		if _, err := newConfigFile(path, kind); err != nil {
 			t.Fatalf("a config file with no other links: got %v, want no error", err)
 		}
 	}
 	if err := os.Link(allowlist, filepath.Join(dir, "other-link")); err != nil {
 		t.Fatal(err)
 	}
-	_, err := newConfigFile(allowlist)
+	_, err := newConfigFile(allowlist, allowlistKind)
 	if err == nil || !strings.Contains(err.Error(), allowlist) || !strings.Contains(err.Error(), "2 hard links") {
 		t.Fatalf("a hard-linked allowlist: got %v, want an error naming it and its hard links", err)
 	}
@@ -283,13 +294,14 @@ func TestMissingFileKeepsPreviousRules(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rules.yaml")
 	writeFile(t, path, rulesAllowing("old.example"))
 	conf, holder, file, hook := testSetup(t, path)
-	lastMod := mtimeOf(t, path)
+	lastMod := file.lastMod
 
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := reloadIfChanged(conf, holder, file, lastMod, false); !got.Equal(lastMod) {
-		t.Fatalf("mtime moved on a missing file: %v -> %v", lastMod, got)
+	reloadIfChanged(conf, holder, file)
+	if !file.lastMod.Equal(lastMod) {
+		t.Fatalf("mtime moved on a missing file: %v -> %v", lastMod, file.lastMod)
 	}
 	if len(hook.Entries) != 0 {
 		t.Fatalf("unexpected log entries for a missing file: %+v", hook.Entries)
@@ -301,7 +313,7 @@ func TestMissingFileKeepsPreviousRules(t *testing.T) {
 	// A recreated file reloads as usual.
 	writeFile(t, path, rulesAllowing("new.example"))
 	setMtime(t, path, lastMod.Add(time.Second))
-	reloadIfChanged(conf, holder, file, lastMod, false)
+	reloadIfChanged(conf, holder, file)
 	if got := decide(t, holder, "new.example"); got != acl.Allow {
 		t.Fatalf("new.example after the file reappeared: got %v, want Allow", got)
 	}
@@ -320,21 +332,22 @@ func TestUnreadableFileIsSurfacedOnce(t *testing.T) {
 	logger, hook := logrustest.NewNullLogger()
 	conf.Log = logger
 	holder := &swappableACL{} // untouched: a stat error returns before any load or swap
-	file := &configFile{path: path}
+	file := &configFile{path: path, kind: rulesKind}
 
-	// First failing tick surfaces the error and reports warned; the mtime does not move.
-	mod, warned := reloadIfChanged(conf, holder, file, time.Time{}, false)
-	if !warned {
-		t.Fatal("a non-ENOENT stat error should report warned = true")
+	// First failing tick surfaces the error and sets warned; the mtime does not move.
+	reloadIfChanged(conf, holder, file)
+	if !file.warned {
+		t.Fatal("a non-ENOENT stat error should set warned")
 	}
-	if !mod.Equal(time.Time{}) {
-		t.Fatalf("mtime should not advance on a stat error, got %v", mod)
+	if !file.lastMod.IsZero() {
+		t.Fatalf("mtime should not advance on a stat error, got %v", file.lastMod)
 	}
 	reloadFailure(t, hook) // the stat error attached, so the rendered line can name it
 
 	// A persistent error does not re-log while warned stays set.
 	hook.Reset()
-	if _, warned = reloadIfChanged(conf, holder, file, time.Time{}, warned); !warned {
+	reloadIfChanged(conf, holder, file)
+	if !file.warned {
 		t.Fatal("warned should stay set while the stat keeps failing")
 	}
 	if len(hook.Entries) != 0 {
@@ -349,7 +362,8 @@ func TestUnreadableFileIsSurfacedOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, path, rulesAllowing("ok.example"))
-	if _, warned = reloadIfChanged(conf, holder, file, time.Time{}, warned); warned {
+	reloadIfChanged(conf, holder, file)
+	if file.warned {
 		t.Fatal("a healthy stat should clear warned")
 	}
 	if got := decide(t, holder, "ok.example"); got != acl.Allow {
@@ -365,11 +379,11 @@ func reloadTo(t *testing.T, rules string, allowGitHub bool) (*swappableACL, *log
 	writeFile(t, path, rulesAllowing("old.example"))
 	conf, holder, file, hook := testSetup(t, path)
 	holder.allowGitHub = allowGitHub
-	lastMod := mtimeOf(t, path)
+	lastMod := file.lastMod
 
 	writeFile(t, path, rules)
 	setMtime(t, path, lastMod.Add(time.Second))
-	reloadIfChanged(conf, holder, file, lastMod, false)
+	reloadIfChanged(conf, holder, file)
 	return holder, hook
 }
 

@@ -116,7 +116,7 @@ func TestRelayConfigRenderStopsWithItsChildren(t *testing.T) {
 
 func TestStopAllStopsAReloadsRender(t *testing.T) {
 	cmd, pidFile := stuckRender(t)
-	s := newRelaySupervisor(nil, filepath.Join(t.TempDir(), "log"), relayConfig{cmd: cmd, allowlist: "/a"}, nil, nil)
+	s := newRelaySupervisor(nil, filepath.Join(t.TempDir(), "log"), relayConfig{cmd: cmd, allowlist: "/a"})
 	reloaded := make(chan error, 1)
 	go func() { reloaded <- s.reload() }()
 	pid := awaitPid(t, pidFile)
