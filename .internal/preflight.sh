@@ -136,6 +136,21 @@ replace it with a fresh copy, e.g.: cp '$file' '$file.tmp' && mv '$file.tmp' '$f
     done
 }
 
+# Succeed if the real path RESOLVED is in PROXY_CONFIG_DIR, where every session keeps its command
+# from changing it; else explain, with PROBLEM and FIX, and fail.
+#
+# usage: require_in_proxy_config_dir RESOLVED PROBLEM FIX
+require_in_proxy_config_dir() {
+    arity 3
+    local config_dir
+    resolved_path config_dir "$PROXY_CONFIG_DIR" || return 1
+    is_path_within "$1" "$config_dir" && return 0
+    echo "$2" >&2
+    echo "Every session keeps its command from changing what is in $PROXY_CONFIG_DIR; elsewhere," >&2
+    echo "another session's could rewrite it, lifting this session's limits. $3" >&2
+    return 1
+}
+
 # Resolve the proxy config file the sandbox config's variable VAR names -- or, when it names none,
 # the default config/DEFAULT the installer creates from config/templates/TEMPLATE -- setting VAR to
 # its real path. chopi hands the proxy that path, which it reads for the whole session, hot-reloading
@@ -147,7 +162,7 @@ replace it with a fresh copy, e.g.: cp '$file' '$file.tmp' && mv '$file.tmp' '$f
 resolve_proxy_config() {
     arity 3
     local var="$1" default="$CHOPI_DIR/config/$2" template="$CHOPI_DIR/config/templates/$3"
-    local path resolved config_dir
+    local path resolved
     path="${!var}"
     case "$path" in
         '') if [ ! -e "$default" ]; then
@@ -165,13 +180,9 @@ resolve_proxy_config() {
     [ -f "$path" ] || { echo "chopi: no $var file at '$path'" >&2; return 1; }
     resolved_path resolved "$path" || return 1
     if [ "$path" != "$default" ]; then
-        resolved_path config_dir "$PROXY_CONFIG_DIR" || return 1
-        if ! is_path_within "$resolved" "$config_dir"; then
-            echo "chopi: $var must be in $PROXY_CONFIG_DIR, got '$path'" >&2
-            echo "Every session keeps its command from changing what is there; elsewhere, another session's" >&2
-            echo "could rewrite it, lifting this session's limits. Move it there, and point $var at it." >&2
-            return 1
-        fi
+        require_in_proxy_config_dir "$resolved" \
+            "chopi: $var must be in $PROXY_CONFIG_DIR, got '$path'" \
+            "Move it there, and point $var at it." || return 1
     fi
     printf -v "$var" '%s' "$resolved"
 }
