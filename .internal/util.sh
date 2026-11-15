@@ -54,9 +54,13 @@ PROXY_RUN_DIR="${CHOPI_RUN_DIR%/}/run"
 # Where a custom proxy config -- the sandbox config's CHOPI_PROXY_RULES, CHOPI_GITHUB_ALLOWLIST --
 # must be (see proxy_config_paths).
 PROXY_CONFIG_DIR="${CHOPI_RUN_DIR%/}/config"
-# The default proxy config files' names, under $CHOPI_DIR/config (see proxy_config_paths).
+# The default proxy config files' names, under $CHOPI_DIR/config (see proxy_config_paths), and of a
+# workspace's own, in its dir (see workspace_config_dir).
 DEFAULT_PROXY_RULES="proxy-rules.yaml"
 DEFAULT_GITHUB_ALLOWLIST="github-allowlist"
+# The longest readable part of the name of a workspace's own config dir, before its id
+# (workspace_config_dir).
+WORKSPACE_NAME_MAX=200
 # The file in each session's proxy dir listing the config files its proxy reads, for as long as it
 # runs (see running_session_configs).
 PROXY_CONFIGS_FILE_NAME="configs"
@@ -585,17 +589,37 @@ resolution_paths() {
     printf '%s\n' "${cur:-/}"
 }
 
-# Print the queue or slot name for canonical path $1: 16 hex digits of its digest.
-#
-# A queue and a slot are both named this way -- a queue per workspace, a slot per target
-# inside it. Each records its own path, in WORKSPACE or TARGET, so it can be checked back
-# against the expected name.
+# Print the id of canonical path $1, to name a dir for it: 16 hex digits of its digest.
 path_id() {
     arity 1
     local digest
     digest="$(printf '%s' "$1" | shasum)" \
         || { echo "chopi: cannot digest the path '$1'" >&2; return 1; }
     printf '%s' "${digest:0:16}"
+}
+
+# Print the dir of the own proxy config of the workspace at DIR, adding to the base config for its
+# sessions alone: in PROXY_CONFIG_DIR's workspaces/, which every session keeps its command from
+# changing. One per repo, its worktrees sharing it, named for the repo's git common dir -- for the
+# usual .git, its main worktree's path: readable, for the user to tell whose it is, with each
+# character but a letter, digit or dash made a dash, as Claude Code names its project dirs, and cut
+# at WORKSPACE_NAME_MAX characters; then the id (path_id) of the git common dir itself, .git and
+# all, so that two repos whose names come out the same don't share one, each granted what the other
+# was. All within the 255 bytes a file name may have.
+#
+# usage: workspace_config_dir DIR
+workspace_config_dir() {
+    arity 1
+    local common id name
+    if ! common="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+        || ! common="$(realpath "$common")"; then
+        echo "chopi: cannot find the git repo of '$1'" >&2
+        return 1
+    fi
+    id="$(path_id "$common")" || return 1
+    name="${common%/.git}"
+    name="${name//[^A-Za-z0-9-]/-}"
+    printf '%s/workspaces/%s-%s' "${PROXY_CONFIG_DIR%/}" "${name:0:WORKSPACE_NAME_MAX}" "$id"
 }
 
 # Set VAR to where path $1 resolves: the last line of its resolution_paths. That is its real path

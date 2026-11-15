@@ -186,3 +186,20 @@ resolve_proxy_config() {
     fi
     printf -v "$var" '%s' "$resolved"
 }
+
+# Print the real path of the own proxy config dir of the workspace at RUN_DIR (workspace_config_dir),
+# whether or not it exists: chopi hands the proxy the files in it, and the proxy reads them all
+# session, as they appear. Resolved through any symlinks on the way, it must still be in
+# PROXY_CONFIG_DIR, where every session keeps its command from changing it.
+#
+# usage: resolve_workspace_config_dir RUN_DIR
+resolve_workspace_config_dir() {
+    arity 1
+    local dir resolved
+    dir="$(workspace_config_dir "$1")" || return 1
+    resolved_path resolved "$dir" || return 1
+    require_in_proxy_config_dir "$resolved" \
+        "chopi: the workspace's proxy config dir '$dir' leads out of $PROXY_CONFIG_DIR, to '$resolved'." \
+        "Replace the link on the way with a dir." || return 1
+    printf '%s' "$resolved"
+}
