@@ -28,7 +28,8 @@ const (
 )
 
 // relayStartTimeout bounds Caddy's start, from launch to serving: time enough for macOS to scan
-// a freshly installed Caddy on its first run.
+// a freshly installed Caddy on its first run. chopi sets no deadline of its own for the proxy's
+// start, so a Caddy that never serves fails the session by this one, with its own reason.
 const relayStartTimeout = 25 * time.Second
 
 // relayDrainTimeout bounds the stop of a Caddy a reload replaced, from TERM to exit, before it is
@@ -88,7 +89,7 @@ const maxSocketPath = 103
 func listenAPIRelay(sock string) (*net.UnixListener, error) {
 	if len(sock) > maxSocketPath {
 		return nil, fmt.Errorf("API relay: the socket path %s is %d bytes, past the %d macOS allows: "+
-			"a shorter CHOPI_RUN_DIR makes it fit", sock, len(sock), maxSocketPath)
+			"a shorter CHOPI_RUN_DIR, the tests' run dir, makes it fit", sock, len(sock), maxSocketPath)
 	}
 	api, err := net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"})
 	if err != nil {

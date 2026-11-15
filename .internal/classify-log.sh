@@ -57,8 +57,8 @@ known_deny_seen() {
 # zero-or-one line out (empty == the line is dropped) -- or, in verbose mode, one-or-two.
 #
 #   <is_interactive>  true/false -- enables the DENY bell + red color in format-deny.jq;
-#                     both are noise in a file or a pipe, so the proxy passes the result of
-#                     its own `[ -t 1 ]` and the tests drive both values explicitly.
+#                     both are noise in a file or a pipe, so the proxy, which logs to a file,
+#                     passes false; the tests drive both values explicitly.
 #   <script>          name shown in the "[<script>] DENY host @ time" prefix.
 #   <on_deny_cmd>     called as `<on_deny_cmd> <host>` once per denied connection -- except
 #                     known denies, see below -- or "" for none. The proxy passes notify_deny
@@ -72,7 +72,7 @@ known_deny_seen() {
 #                     file's stale. The proxy passes notify_reload (pops, or withdraws, a macOS
 #                     banner).
 #   <verbose>         true/false -- when true, nothing is dropped or replaced: every raw
-#                     smokescreen line is passed through as-is, interleaved with chopi-proxy's
+#                     smokescreen line is passed through as-is, interleaved with the proxy's
 #                     own output. Normally-dropped lines (allowed connections, known noise)
 #                     become visible, and a DENY's formatted line is emitted *after* its raw
 #                     line rather than in place of it.
