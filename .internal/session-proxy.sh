@@ -177,11 +177,15 @@ abandon_session_proxy() {
 
 # Stop the session's proxy, if running: chopi-proxy.sh passes the TERM on to chopi-smokescreen,
 # and stops Caddy with it (see lead_group), then removes its dir. The log formatter, left
-# unsignalled, finishes once their output ends, so a last denial still reaches the log.
+# unsignalled, finishes once their output ends, so a last denial still reaches the log. Returns
+# once the proxy is gone, Caddy taking up to five seconds: what chopi does next, offering the
+# review or exiting, is past the session's end, which the relays must not outlast. Its status is
+# dropped: chopi's is the command's.
 stop_session_proxy() {
     arity 0
     if session_proxy_alive; then
         kill -TERM "$SESSION_PROXY_PID" 2>/dev/null || true
+        wait "$SESSION_PROXY_PID" 2>/dev/null || true
     fi
     SESSION_PROXY_PID=""
 }
