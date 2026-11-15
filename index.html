@@ -281,9 +281,9 @@
                     <div class="tip">Files you want to read before they change, like shared
                     guidelines or a CLAUDE.md. The agent can read them, and queues a patch
                     instead of writing.</div></li>
-                  <li class="has-tip"><span><span class="q" tabindex="0">?</span><span class="name">Network</span></span><span class="v">chopi-proxy only</span>
+                  <li class="has-tip"><span><span class="q" tabindex="0">?</span><span class="name">Network</span></span><span class="v">session proxy only</span>
                     <div class="tip">Seatbelt can filter by IP and port but not by hostname, so
-                    it allows only the local proxies. A tool that ignores
+                    it allows only the session's own local proxies. A tool that ignores
                     <code>HTTP_PROXY</code> gets no network at all.</div></li>
                 </ul>
               </div>
@@ -317,11 +317,10 @@
           </div>
           <div class="nest proxy">
             <div class="nest-head has-tip">
-              <div class="nest-title"><span class="q" tabindex="0">?</span><span class="name">chopi-proxy</span></div>
-              <p>outside the sandbox, shared by all sessions</p>
-              <div class="tip">Runs in the foreground in its own terminal, so refused
-              connections are always in view. Chopi won't start a session without
-              it.</div>
+              <div class="nest-title"><span class="q" tabindex="0">?</span><span class="name">Session proxy</span></div>
+              <div class="tip">Chopi starts it with the session and stops it when the
+              command exits. Click a denial's notification to open the session's log,
+              kept in <code>~/Library/Logs/chopi</code> for two weeks.</div>
             </div>
             <div class="nest">
               <div class="nest-head has-tip">
@@ -351,7 +350,7 @@
   <section class="install">
     <div class="wrap">
       <h2>Get started</h2>
-      <p class="section-lead">Two terminals: one for the proxy, one for the agent.</p>
+      <p class="section-lead">Install once, then run your agent.</p>
 
       <div class="step">
         <h3><span class="n">1</span>Install</h3>
@@ -364,13 +363,7 @@
       </div>
 
       <div class="step">
-        <h3><span class="n">2</span>Start the proxy</h3>
-        <pre><span class="p">$</span> chopi-proxy    <span class="c"># leave it running; all sessions share it</span></pre>
-        <p>It runs in the foreground so refused connections are always visible.</p>
-      </div>
-
-      <div class="step">
-        <h3><span class="n">3</span>Run your agent</h3>
+        <h3><span class="n">2</span>Run your agent</h3>
         <pre><span class="p">$</span> cd ~/path/to/your/repo
 <span class="p">$</span> chopi claude                    <span class="c"># or codex, or any command</span>
 <span class="p">$</span> chopi --worktree fix-123 claude <span class="c"># or in a fresh worktree + branch</span></pre>
