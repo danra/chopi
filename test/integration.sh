@@ -934,6 +934,19 @@ await_step() {
     code="timeout"
 }
 
+# The alerter args of the banner a reload of FILE puts up, as notify_reload words it: WHAT is
+# "rules" or "GitHub allowlist", TOKEN_SOURCE the banner group's (see reload_banner_group).
+#
+# usage: reload_banner ok|failed WHAT FILE TOKEN_SOURCE
+reload_banner() {
+    local name
+    name="$(basename -- "$3")"
+    case "$1" in
+        ok)     echo "$2 reloaded --message Your edit to $name took effect --group $(reload_banner_group "$3" "$4") --timeout $NOTIFY_CONFIRM_SECS" ;;
+        failed) echo "$2 reload failed --message Your edit to $name did not take effect --group $(reload_banner_group "$3" "$4") --timeout $NOTIFY_ALERT_SECS" ;;
+    esac
+}
+
 # The session's proxy is up once a probe went through it.
 session_probe http_code "$OTHER_DENIED_HOST"
 reload_log="$(latest_proxy_log)"
@@ -945,6 +958,14 @@ if wait_for "$reload_log" "rules reloaded"; then
     ok "the proxy reloaded the rules after the file changed"
 else
     bad "the proxy did NOT log a rules reload after the file changed"
+fi
+# In the file's group, replacing any failure banner of its, and naming the file: the user's word
+# that the edit took effect, with no terminal for the proxy.
+rules_reloaded_banner="$(reload_banner ok rules "$rules" "")"
+if wait_for "$alerter_log" "$rules_reloaded_banner"; then
+    ok "  -> and notifies, briefly, that the edit took effect"
+else
+    bad "  -> but did NOT notify that the edit took effect"
 fi
 if curl -sS -o /dev/null --max-time 10 "https://$DENIED_HOST" 2>/dev/null; then
     session_probe http_connect "$DENIED_HOST"
@@ -962,7 +983,7 @@ else
     bad "a broken rules edit did NOT log a failed reload"
 fi
 # In its own group, so the next DENY banner doesn't replace it before the user sees it.
-if wait_for "$alerter_log" "rules reload failed --message Your edit to $(basename -- "$rules") did not take effect --group $(reload_banner_group "$rules" "")"; then
+if wait_for "$alerter_log" "$(reload_banner failed rules "$rules" "")"; then
     ok "a broken rules edit notifies that the edit did not take effect"
 else
     bad "a broken rules edit did NOT notify"
@@ -984,11 +1005,11 @@ if wait_for_count "$reload_log" "rules reloaded" 2; then
 else
     bad "the proxy did NOT reload after the rules were fixed"
 fi
-# Each successful reload withdraws the failure banner; (1) already did once.
-if wait_for_count "$alerter_log" "remove $(reload_banner_group "$rules" "")" 2; then
-    ok "the fixed rules withdraw the now-stale reload-failure notification"
+# Each successful reload's banner replaces the failure's in the file's group; (1) popped one too.
+if wait_for_count "$alerter_log" "$rules_reloaded_banner" 2; then
+    ok "the fixed rules' confirmation replaces the now-stale reload-failure notification"
 else
-    bad "the fixed rules did NOT withdraw the reload-failure notification"
+    bad "the fixed rules did NOT replace the reload-failure notification"
 fi
 session_probe http_code "$DENIED_HOST"
 assert_not_contains "$code" "200"                  "the restored rules refuse the host again"
@@ -1015,24 +1036,24 @@ if wait_for "$reload_log" "GITHUB ALLOWLIST RELOAD FAILED"; then
 else
     bad "a broken allowlist edit did NOT log a failed reload"
 fi
-if wait_for "$alerter_log" "GitHub allowlist reload failed --message Your edit to $(basename -- "$empty_github_allow") did not take effect --group $(reload_banner_group "$empty_github_allow" "$(gh_token_source)")"; then
+if wait_for "$alerter_log" "$(reload_banner failed 'GitHub allowlist' "$empty_github_allow" "$(gh_token_source)")"; then
     ok "a broken allowlist edit notifies that the edit did not take effect"
 else
     bad "a broken allowlist edit did NOT notify"
 fi
 relay_fetch "after a failed allowlist reload the relay still serves"
 
-# (5) Fixing it reloads the relays, on the same port, and withdraws the failure banner.
+# (5) Fixing it reloads the relays, on the same port, and its banner replaces the failure's.
 : > "$empty_github_allow"
 if wait_for "$reload_log" "GitHub allowlist reloaded"; then
     ok "the proxy reloaded the relays once the allowlist was fixed"
 else
     bad "the proxy did NOT reload the relays after the allowlist was fixed"
 fi
-if wait_for "$alerter_log" "remove $(reload_banner_group "$empty_github_allow" "$(gh_token_source)")"; then
-    ok "the fixed allowlist withdraws the now-stale reload-failure notification"
+if wait_for "$alerter_log" "$(reload_banner ok 'GitHub allowlist' "$empty_github_allow" "$(gh_token_source)")"; then
+    ok "the fixed allowlist's confirmation replaces the now-stale reload-failure notification"
 else
-    bad "the fixed allowlist did NOT withdraw the reload-failure notification"
+    bad "the fixed allowlist did NOT replace the reload-failure notification"
 fi
 relay_fetch "after an allowlist reload the session's relay serves, on the port it was confined to"
 
