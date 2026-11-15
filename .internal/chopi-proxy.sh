@@ -113,8 +113,7 @@ format_smokescreen_log() {
     RULES_RELOAD_GROUP="$(reload_banner_group "$RULES" "")"
     ALLOWLIST_RELOAD_GROUP="$(reload_banner_group "$GITHUB_ALLOWLIST" "$(gh_token_source)")"
     unset GH_TOKEN GITHUB_TOKEN
-    # Not interactive: the log is a file, where the bell and colors would be noise.
-    classify_log false "$SCRIPT_NAME" notify_deny notify_reload "$VERBOSE"
+    classify_log "$SCRIPT_NAME" notify_deny notify_reload "$VERBOSE"
 }
 
 report_formatter_failure() {
