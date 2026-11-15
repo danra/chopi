@@ -38,9 +38,8 @@ const relayDrainTimeout = 10 * time.Minute
 
 // options are chopi's own flags, given before "--" and smokescreen's flags.
 type options struct {
+	dir         string // where the ports are reported and the API relay's socket is
 	relayLog    string // Caddy's output
-	ghSock      string // the API relay's unix socket
-	portsFile   string // where the ports are reported once the proxy is up
 	allowlist   string // the GitHub allowlist, watched for changes
 	relayConfig string // the command rendering the relays' Caddy config from the allowlist
 	smokeArgs   []string
@@ -51,9 +50,8 @@ func parseOptions(args []string) (options, error) {
 	var opts options
 	fs := flag.NewFlagSet("chopi-smokescreen", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	fs.StringVar(&opts.dir, "dir", "", "")
 	fs.StringVar(&opts.relayLog, "relay-log", "", "")
-	fs.StringVar(&opts.ghSock, "gh-sock", "", "")
-	fs.StringVar(&opts.portsFile, "ports-file", "", "")
 	fs.StringVar(&opts.allowlist, "github-allowlist", "", "")
 	fs.StringVar(&opts.relayConfig, "relay-config", "", "")
 	if err := fs.Parse(args); err != nil {
@@ -63,10 +61,10 @@ func parseOptions(args []string) (options, error) {
 	if rest := len(args) - fs.NArg(); rest > 0 && args[rest-1] == "--" {
 		opts.smokeArgs = fs.Args()
 	}
-	if opts.relayLog == "" || opts.ghSock == "" || opts.portsFile == "" || opts.allowlist == "" ||
+	if opts.dir == "" || opts.relayLog == "" || opts.allowlist == "" ||
 		opts.relayConfig == "" || opts.smokeArgs == nil {
-		return opts, errors.New("usage: chopi-smokescreen --relay-log FILE --gh-sock PATH " +
-			"--ports-file FILE --github-allowlist FILE --relay-config CMD -- SMOKESCREEN_FLAGS...")
+		return opts, errors.New("usage: chopi-smokescreen --dir DIR --relay-log FILE " +
+			"--github-allowlist FILE --relay-config CMD -- SMOKESCREEN_FLAGS...")
 	}
 	return opts, nil
 }
@@ -75,8 +73,8 @@ func parseOptions(args []string) (options, error) {
 // take them first, and so Caddy, unable to report a port it picked, need not pick one. Kept open
 // here, for each Caddy a reload starts to serve them in turn.
 type relays struct {
-	git *net.TCPListener  // git smart-HTTP, on a loopback port
-	api *net.UnixListener // the gh REST API, on a unix socket
+	git *net.TCPListener  // git smart-HTTP, on a loopback port the kernel picks
+	api *net.UnixListener // the gh REST API, on DIR/gh.sock
 }
 
 // portOf is the port l listens on.
@@ -205,7 +203,7 @@ func (s *relaySupervisor) start(config []byte) (*caddyProc, error) {
 		return nil, err
 	}
 	defer logFile.Close()
-	pingback, err := listenLoopback(0)
+	pingback, err := listenLoopback()
 	if err != nil {
 		return nil, err
 	}
@@ -387,36 +385,6 @@ type ports struct {
 // and to know the proxy is up.
 func reportPorts(path string, p ports) error {
 	return writeAtomically(path, fmt.Sprintf("proxy %d\nrelay %d\n", p.proxy, p.relay), 0o600)
-}
-
-// lastPortsFile is where the ports reported in portsFile are recorded for the proxy's next run: kept
-// beside it, but left as the proxy stops, unlike portsFile, which says the proxy is up.
-func lastPortsFile(portsFile string) string {
-	return portsFile + ".last"
-}
-
-// readPorts reads the ports reportPorts wrote to path: zero for a port missing, invalid, or in a
-// file missing or unreadable.
-func readPorts(path string) ports {
-	var p ports
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return p
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		var name string
-		var port int
-		if n, _ := fmt.Sscan(line, &name, &port); n != 2 || port <= 0 || port > 65535 {
-			continue
-		}
-		switch name {
-		case "proxy":
-			p.proxy = port
-		case "relay":
-			p.relay = port
-		}
-	}
-	return p
 }
 
 // stopSignals are the signals that stop the proxy: chopi's TERM as the session ends, and a

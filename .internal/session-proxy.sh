@@ -87,7 +87,7 @@ await_session_proxy() {
     # for the GitHub token the relays' config needs. A start that takes long says what it waits
     # on, for the user to answer the prompt, or give up with a Ctrl-C.
     # Polled briskly for the usual quick start, then, once it waits on the user, less often.
-    local ports="$SESSION_PROXY_DIR/ports" notice=$((SECONDS + CHOPI_PROXY_START_NOTICE_SECS))
+    local ports="$SESSION_PROXY_DIR/$PROXY_PORTS_FILE_NAME" notice=$((SECONDS + CHOPI_PROXY_START_NOTICE_SECS))
     local interval=0.02
     while [ ! -f "$ports" ] && session_proxy_alive; do
         if ((notice && SECONDS >= notice)); then
@@ -121,7 +121,7 @@ $(tail -n 5 "$SESSION_PROXY_LOG" | sed 's/^/  /')"
         esac
     done <"$ports"
     # shellcheck disable=SC2034 # consumed by chopi.sh
-    SESSION_GH_SOCK="$SESSION_PROXY_DIR/gh.sock"
+    SESSION_GH_SOCK="$SESSION_PROXY_DIR/$PROXY_GH_SOCK_FILE_NAME"
     if ! [[ "$SESSION_PROXY_PORT" =~ ^[0-9]+$ && "$SESSION_RELAY_PORT" =~ ^[0-9]+$ ]]; then
         abandon_session_proxy "chopi: the proxy reported malformed ports in $ports"
         return 1

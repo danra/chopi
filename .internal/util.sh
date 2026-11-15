@@ -60,6 +60,10 @@ DEFAULT_GITHUB_ALLOWLIST="github-allowlist"
 # The file in each session's proxy dir listing the config files its proxy reads, for as long as it
 # runs (see proxy_config_paths).
 PROXY_CONFIGS_FILE_NAME="configs"
+# The files chopi-smokescreen makes in a session's proxy dir: the ports it reports once up, and the
+# API relay's socket. Its names for them, in .internal/proxy/main.go, must match.
+PROXY_PORTS_FILE_NAME="ports"
+PROXY_GH_SOCK_FILE_NAME="gh.sock"
 # The name each session's proxy dir in PROXY_RUN_DIR starts with, before a "." and a random suffix.
 PROXY_SESSION_DIR_PREFIX="chopi-proxy"
 
@@ -578,7 +582,7 @@ is_github_relay_reroute_effective() {
 # reported in DIR/ports. It execs, for its PID to be the proxy's: run it in the background.
 run_chopi_smokescreen() {
     arity 5
-    exec "$SMOKESCREEN_BIN" --relay-log "$5" --gh-sock "$1/gh.sock" --ports-file "$1/ports" \
+    exec "$SMOKESCREEN_BIN" --dir "$1" --relay-log "$5" \
         --github-allowlist "$3" --relay-config "$4" -- \
         --config-file "$CHOPI_DIR/.internal/smokescreen-config.yaml" \
         --egress-acl-file "$2"
