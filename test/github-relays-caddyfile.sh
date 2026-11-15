@@ -235,7 +235,8 @@ assert_contains     "$empty" 'unsupported host'               "empty: catch-all 
 
 echo "-- invalid entries are rejected (fail closed, non-zero exit) --"
 render 'no-slash-here' >/dev/null 2>&1; assert_nonzero "$?" "entry without owner/repo rejected"
-render 'own er/repo'   >/dev/null 2>&1; assert_nonzero "$?" "entry with illegal char rejected"
+render 'own er/repo'   >/dev/null 2>"$WORK/err"; assert_nonzero "$?" "entry with illegal char rejected"
+assert_contains "$(cat "$WORK/err")" 'using only A-Za-z0-9._-' "  -> naming the allowed characters"
 
 echo "-- github-relays-config.sh: the config with its credentials, as chopi-smokescreen runs it --"
 CONFIG="$CHOPI_DIR/.internal/github-relays-config.sh"

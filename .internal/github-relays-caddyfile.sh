@@ -63,18 +63,16 @@ build_allowlist_regex() {
     while IFS= read -r line || [ -n "$line" ]; do
         strip_comment_and_trim_into entry "$line"
         [ -z "$entry" ] && continue
-        case "$entry" in
-            */*) ;;
-            *) echo "github-relays-caddyfile.sh: allowlist entry needs owner/repo or owner/*: '$entry'" >&2; exit 2 ;;
-        esac
+        if ! is_allowlist_entry "$entry"; then
+            echo "github-relays-caddyfile.sh: allowlist entry needs owner/repo or owner/*, using only A-Za-z0-9._-: '$entry'" >&2
+            exit 2
+        fi
         owner="${entry%%/*}"
         repo="${entry#*/}"
-        validate_repo_slug "$owner" owner "$entry"
         esc_owner="${owner//./\\.}"
         if [ "$repo" = "*" ]; then
             entry_regex="$esc_owner/[^/]+"
         else
-            validate_repo_slug "$repo" repo "$entry"
             esc_repo="${repo//./\\.}"
             entry_regex="$esc_owner/$esc_repo(\\.git)?"
         fi
@@ -88,6 +86,15 @@ build_allowlist_regex() {
     printf '%s' "${entries_regexes[*]}"
 }
 
+# Is ENTRY a GitHub allowlist entry: owner/repo, or owner/* for the owner's every repo? A generic
+# sanity check that keeps a config value safe -- NOT an attempt to match GitHub's actual rules.
+#
+# usage: is_allowlist_entry ENTRY
+is_allowlist_entry() {
+    arity 1
+    [[ "$1" =~ ^[A-Za-z0-9._-]+/([A-Za-z0-9._-]+|\*)$ ]]
+}
+
 # deny_pkt -- print a git smart-HTTP body that makes git fail with "remote error: <message>":
 # the service advertisement preamble, a flush pkt, then an ERR pkt-line. $1 is the git service
 # name, $2 the message (ASCII only: the pkt-line length prefixes are byte counts).
@@ -97,17 +104,6 @@ deny_pkt() {
     local svc_line="# service=$service"$'\n'
     local err_line="ERR $message"
     printf '%04x%s0000%04x%s' "$((4 + ${#svc_line}))" "$svc_line" "$((4 + ${#err_line}))" "$err_line"
-}
-
-# validate_repo_slug -- verify VALUE is a "normal" non-empty string. A generic
-# sanity check that keeps a config value safe -- NOT an attempt to match GitHub's
-# actual owner/repo rules.
-validate_repo_slug() {
-    arity 3
-    local value="$1" kind="$2" entry="$3"
-    case "$value" in
-        ''|*[!A-Za-z0-9._-]*) echo "github-relays-caddyfile.sh: bad $kind in '$entry'" >&2; exit 2 ;;
-    esac
 }
 
 # emit_caddyfile -- assemble the Caddyfile from the fragments and fill every slot except the
