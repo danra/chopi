@@ -106,6 +106,11 @@ format_smokescreen_log() {
     # A formatter that fails takes the rest of the log with it, while the proxy keeps serving: the
     # log says so where it ends, rather than just going quiet.
     trap 'report_formatter_failure $?' EXIT
+    # The reload banners' groups (see notify_reload), worked out here, off the proxy's startup path,
+    # while the token is still ours: the allowlist's group is keyed by where it comes from.
+    RULES_RELOAD_GROUP="$(reload_banner_group "$RULES" "")"
+    ALLOWLIST_RELOAD_GROUP="$(reload_banner_group "$GITHUB_ALLOWLIST" "$(gh_token_source)")"
+    unset GH_TOKEN GITHUB_TOKEN
     # Not interactive: the log is a file, where the bell and colors would be noise.
     classify_log false "$SCRIPT_NAME" notify_deny notify_reload "$VERBOSE"
 }
@@ -131,9 +136,10 @@ notify_deny() {
 # usage: notify_reload ok|failed rules|allowlist
 notify_reload() {
     arity 2
-    local group="chopi-proxy-reload-$2" file="$RULES" subtitle='rules reload failed'
+    local file="$RULES" subtitle='rules reload failed' group="$RULES_RELOAD_GROUP"
     if [ "$2" = allowlist ]; then
         file="$GITHUB_ALLOWLIST" subtitle='GitHub allowlist reload failed'
+        group="$ALLOWLIST_RELOAD_GROUP"
     fi
     case "$1" in
         failed) notify "$group" "$LOG" "$subtitle" "Your edit to ${file##*/} did not take effect" ;;
@@ -170,7 +176,7 @@ mkfifo "$LOG_FIFO"
 # be held off until lead_group traps it. Should one end us, our end closes with us, and the
 # formatter ends with it.
 exec 3<>"$LOG_FIFO"
-(unset GH_TOKEN GITHUB_TOKEN; format_smokescreen_log 2>&1) <"$LOG_FIFO" 3>&- &
+format_smokescreen_log 2>&1 <"$LOG_FIFO" 3>&- &
 formatter=$!
 status=0
 TMPDIR="$PROXY_DIR" lead_group run_smokescreen "$PROXY_DIR" "$PARENT_PID" "$RULES" \
