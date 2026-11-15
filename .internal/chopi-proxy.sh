@@ -139,18 +139,23 @@ notify_deny() {
 # proxy, the confirmation is the user's word that an edit took effect before they retry what it
 # allows -- or, by its absence, that the edit went to a file the session doesn't read.
 #
-# usage: notify_reload ok|failed rules|allowlist
+# The banner says what reloaded and names the file as the proxy's log LINE does.
+#
+# usage: notify_reload ok|failed rules|allowlist LINE
 notify_reload() {
-    arity 2
-    local file="$RULES" what='rules' group="$RULES_RELOAD_GROUP"
-    if [ "$2" = allowlist ]; then
-        file="$GITHUB_ALLOWLIST" what='GitHub allowlist' group="$ALLOWLIST_RELOAD_GROUP"
-    fi
+    arity 3
+    local group what name
+    group="$RULES_RELOAD_GROUP"
+    [ "$2" = allowlist ] && group="$ALLOWLIST_RELOAD_GROUP"
+    # A jq of its own, not a filter file: one edited as the proxy runs can't swallow the banner.
+    { IFS= read -r what && IFS= read -r name; } \
+        < <(printf '%s\n' "$3" | jq -r '(.what // "proxy config"), (.name // "the proxy config")' 2>/dev/null) \
+        || { what='proxy config' name='the proxy config'; }
     case "$1" in
         failed) notify "$group" "$LOG" "$what reload failed" \
-                    "Your edit to ${file##*/} did not take effect" "$NOTIFY_ALERT_SECS" ;;
+                    "Your edit to $name did not take effect" "$NOTIFY_ALERT_SECS" ;;
         ok)     notify "$group" "$LOG" "$what reloaded" \
-                    "Your edit to ${file##*/} took effect" "$NOTIFY_CONFIRM_SECS" ;;
+                    "Your edit to $name took effect" "$NOTIFY_CONFIRM_SECS" ;;
     esac
 }
 

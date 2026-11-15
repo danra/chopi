@@ -233,7 +233,7 @@ assert_eq "$out" "[chopi-proxy.sh] RULES RELOAD FAILED (previous rules kept)  ? 
     "a failed reload missing the error field still surfaces loud"
 
 # The reload hook (the macOS notification in the live proxy) tells failures from successes.
-record_reload_hook() { arity 2; printf 'HOOK:%s %s\n' "$1" "$2"; }
+record_reload_hook() { arity 3; printf 'HOOK:%s %s%s\n' "$1" "$2" "${3:+ $3}"; }
 out="$(printf '%s\n' "$reload_fail" | classify_log "chopi-proxy.sh" "" record_reload_hook false)"
 assert_contains "$out" "HOOK:failed rules" "a failed reload fires the reload hook with 'failed', of the rules"
 assert_not_contains "$out" "HOOK:ok" "  -> and not with 'ok'"
@@ -279,6 +279,24 @@ out="$(printf '%s\n' "$allowlist_fail" | classify_log "chopi-proxy.sh" "" record
 assert_contains "$out" "HOOK:failed allowlist" "a failed allowlist reload fires the reload hook with 'failed', of the allowlist"
 out="$(printf '%s\n' "$allowlist_ok" | classify_log "chopi-proxy.sh" "" record_reload_hook false)"
 assert_contains "$out" "HOOK:ok allowlist" "a successful allowlist reload fires the reload hook with 'ok', of the allowlist"
+
+
+# ---------------------------------------------------------------------------
+echo "workspace config hot-reload lines (as the base config's, saying they are the workspace's)"
+# ---------------------------------------------------------------------------
+# The proxy logs a reload of a file added to the base one -- chopi's, the workspace's own -- as it
+# logs the base file's, saying what it reloaded, and naming the file, in fields of their own.
+ws_rules_ok='{"level":"info","msg":"egress ACL reloaded","name":"ws/proxy-rules.yaml","rules":"/x/ws/proxy-rules.yaml","time":"T","what":"workspace rules"}'
+ws_rules_fail='{"error":"bad key","level":"error","msg":"egress ACL reload failed; keeping the previous rules","name":"ws/proxy-rules.yaml","rules":"/x/ws/proxy-rules.yaml","time":"T","what":"workspace rules"}'
+
+out="$(printf '%s\n' "$ws_rules_ok" | classify)"
+assert_eq "$out" "[chopi-proxy.sh] workspace rules reloaded  @ T" "workspace rules reload -> says it is the workspace's"
+out="$(printf '%s\n' "$ws_rules_fail" | classify)"
+assert_eq "$out" "[chopi-proxy.sh] WORKSPACE RULES RELOAD FAILED (previous rules kept)  bad key  @ T" \
+    "  -> as does its failure, loud"
+
+out="$(printf '%s\n' "$ws_rules_fail" | classify_log "chopi-proxy.sh" "" record_reload_hook false)"
+assert_contains "$out" "HOOK:failed rules $ws_rules_fail" "a failed workspace rules reload fires the reload hook, with its line, for the banner to say"
 
 
 # ---------------------------------------------------------------------------
