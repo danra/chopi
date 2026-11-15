@@ -14,12 +14,13 @@ CHOPI_PROXY_LOG_DIR="$HOME/Library/Logs/chopi"
 # Seconds a proxy may take to start before chopi says what it waits on.
 CHOPI_PROXY_START_NOTICE_SECS=5
 
-# Set by launch_session_proxy and await_session_proxy: the session's proxy, its log and temp dir,
-# and its endpoints -- the smokescreen forward proxy's port (HTTP_PROXY), the git relay's port, and
+# Set by launch_session_proxy and await_session_proxy: the session's proxy, its log, temp dir and
+# the stderr of its start, and its endpoints -- the smokescreen forward proxy's port (HTTP_PROXY), the git relay's port, and
 # the API relay's unix socket (see github_relay_gh_env).
 SESSION_PROXY_PID=""
 SESSION_PROXY_LOG=""
 SESSION_PROXY_DIR=""
+SESSION_PROXY_ERR=""
 SESSION_PROXY_PORT=""
 SESSION_RELAY_PORT=""
 SESSION_GH_SOCK=""
@@ -50,29 +51,40 @@ launch_session_proxy() {
                  --github-allowlist "$allowlist")
     [ -n "$verbose" ] && flags+=(--verbose)
 
-    # The proxy's dir of its own, for its temporaries, the API relay's socket, and the ports the
-    # proxy reports: in the run dir, out of the sandbox's reach (see PROXY_RUN_DIR), which is ours
-    # alone, as the socket serves GitHub with the user's credential.
+    prepare_session_proxy_dir "$rules" "$allowlist" || return 1
+
+    # Job control puts the proxy in a process group of its own, out of reach of the terminal's
+    # signals: a Ctrl-C meant for the sandboxed command must not stop the proxy under it. chopi
+    # stops it itself, and --parent covers chopi dying without the chance to.
+    local tmpdir_env=(env -u TMPDIR)
+    [ -n "$user_tmpdir" ] && tmpdir_env=(env TMPDIR="$user_tmpdir")
+    set -m
+    "${tmpdir_env[@]}" "$CHOPI_PROXY_SCRIPT" --dir "$SESSION_PROXY_DIR" "${flags[@]}" </dev/null 2>"$SESSION_PROXY_ERR" &
+    SESSION_PROXY_PID=$!
+    set +m
+}
+
+# Make the proxy's dir of its own, for its temporaries, the API relay's socket, and the ports the
+# proxy reports: in the run dir, out of the sandbox's reach (see PROXY_RUN_DIR), which is ours
+# alone, as the socket serves GitHub with the user's credential. The proxy removes it as it exits,
+# so what it says as it starts goes in chopi's own temp dir, to read once it is gone. Lists RULES
+# and ALLOWLIST in it as the config files the proxy reads. Sets SESSION_PROXY_DIR and
+# SESSION_PROXY_ERR, for the proxy to be started with.
+#
+# usage: prepare_session_proxy_dir RULES ALLOWLIST
+prepare_session_proxy_dir() {
+    arity 2
     if ! { mkdir -p "$CHOPI_RUN_DIR" && make_private_dir "$PROXY_RUN_DIR"; }; then
         echo "chopi: cannot set up the proxy's run dir $PROXY_RUN_DIR" >&2
         return 1
     fi
-    SESSION_PROXY_DIR="$(mktemp -d "$PROXY_RUN_DIR/chopi-proxy.XXXXXX")" \
+    SESSION_PROXY_DIR="$(mktemp -d "$PROXY_RUN_DIR/$PROXY_SESSION_DIR_PREFIX.XXXXXX")" \
         || { echo "chopi: could not create a temp dir for the proxy" >&2; return 1; }
     # For every later session to keep its command from changing the files this proxy reads, whatever
     # their links point at by the time it starts (see proxy_config_paths).
-    printf '%s\n' "$rules" "$allowlist" >"$SESSION_PROXY_DIR/$PROXY_CONFIGS_FILE_NAME" \
+    printf '%s\n' "$1" "$2" >"$SESSION_PROXY_DIR/$PROXY_CONFIGS_FILE_NAME" \
         || { echo "chopi: could not list the proxy's config files in $SESSION_PROXY_DIR" >&2; return 1; }
-
-    # Job control puts the proxy in a process group of its own, out of reach of the terminal's
-    # signals: a Ctrl-C meant for the sandboxed command must not stop the proxy under it. chopi
-    # stops it itself.
-    local tmpdir_env=(env -u TMPDIR)
-    [ -n "$user_tmpdir" ] && tmpdir_env=(env TMPDIR="$user_tmpdir")
-    set -m
-    "${tmpdir_env[@]}" "$CHOPI_PROXY_SCRIPT" --dir "$SESSION_PROXY_DIR" "${flags[@]}" </dev/null 2>"$SESSION_PROXY_DIR/startup.err" &
-    SESSION_PROXY_PID=$!
-    set +m
+    SESSION_PROXY_ERR="$TMPDIR/proxy-startup.err"
 }
 
 # Wait for the proxy launch_session_proxy started to be up and serving, setting its endpoints, or
@@ -129,7 +141,7 @@ $(tail -n 5 "$SESSION_PROXY_LOG" | sed 's/^/  /')"
 
     # What chopi-proxy.sh said before it was up: notes and warnings, like a refusal the user
     # overrode, which are for the user to see all the same.
-    cat "$SESSION_PROXY_DIR/startup.err" >&2
+    cat "$SESSION_PROXY_ERR" >&2
 }
 
 # Is the session's proxy still running? Asked of bash's job table, not of the pid: once the proxy
@@ -146,23 +158,18 @@ session_proxy_alive() {
 #
 # usage: abandon_session_proxy [REASON]
 abandon_session_proxy() {
-    # Gone with its dir if the proxy stopped as asked, as it started: it said nothing then.
-    [ ! -f "$SESSION_PROXY_DIR/startup.err" ] || cat "$SESSION_PROXY_DIR/startup.err" >&2
+    cat "$SESSION_PROXY_ERR" >&2
     [ $# -eq 0 ] || echo "$1" >&2
     stop_session_proxy
 }
 
 # Stop the session's proxy, if running: chopi-proxy.sh passes the TERM on to chopi-smokescreen,
-# and stops Caddy with it (see lead_group). The log formatter, left unsignalled, finishes once
-# their output ends, so a last denial still reaches the log. Its dir goes too.
+# and stops Caddy with it (see lead_group), then removes its dir. The log formatter, left
+# unsignalled, finishes once their output ends, so a last denial still reaches the log.
 stop_session_proxy() {
     arity 0
     if session_proxy_alive; then
         kill -TERM "$SESSION_PROXY_PID" 2>/dev/null || true
     fi
     SESSION_PROXY_PID=""
-    if [ -n "$SESSION_PROXY_DIR" ]; then
-        rm -rf "$SESSION_PROXY_DIR"
-        SESSION_PROXY_DIR=""
-    fi
 }

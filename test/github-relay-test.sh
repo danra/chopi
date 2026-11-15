@@ -75,7 +75,6 @@ trap cleanup EXIT
 printf 'version: v1\nservices: []\ndefault:\n  name: default\n  action: enforce\n  allowed_domains: []\n' \
     > "$WORK/rules.yaml"
 
-mkdir -p "$PROXY_RUN_DIR"
 
 # start_relays CONFIG LOG -- start the proxy as a session's would, the relays on the Caddy config
 # CONFIG, logging to LOG (and caddy to LOG.caddy, which LOG quotes if caddy fails to start); sets
@@ -87,12 +86,12 @@ start_relays() {
     local config="$1" log="$2"
     printf '%s' "$config" > "$RELAY_CONFIG"
     RELAY_LOG="$log"
-    # shellcheck disable=SC2034 # consumed by await_session_proxy
-    SESSION_PROXY_DIR="$(mktemp -d "$PROXY_RUN_DIR/proxy.XXXXXX")"
+    prepare_session_proxy_dir "$WORK/rules.yaml" "$RELAY_CONFIG" || return 1
     # shellcheck disable=SC2034 # consumed by await_session_proxy
     SESSION_PROXY_LOG="$log"
-    run_chopi_smokescreen "$SESSION_PROXY_DIR" "$WORK/rules.yaml" "$RELAY_CONFIG" /bin/cat \
-        "$log.caddy" >>"$log" 2>"$SESSION_PROXY_DIR/startup.err" &
+    # shellcheck disable=SC2153 # set by prepare_session_proxy_dir
+    run_chopi_smokescreen "$SESSION_PROXY_DIR" $$ "$WORK/rules.yaml" "$RELAY_CONFIG" /bin/cat \
+        "$log.caddy" >>"$log" 2>"$SESSION_PROXY_ERR" &
     SESSION_PROXY_PID=$!
     await_session_proxy 2>>"$log" || return 1
     CADDY_PID="$(pgrep -P "$SESSION_PROXY_PID" -x caddy)"

@@ -40,6 +40,7 @@ const relayDrainTimeout = 10 * time.Minute
 // options are chopi's own flags, given before "--" and smokescreen's flags.
 type options struct {
 	dir         string // where the ports are reported and the API relay's socket is
+	parent      int    // the process whose exit stops the proxy: chopi
 	relayLog    string // Caddy's output
 	allowlist   string // the GitHub allowlist, watched for changes
 	relayConfig string // the command rendering the relays' Caddy config from the allowlist
@@ -52,6 +53,7 @@ func parseOptions(args []string) (options, error) {
 	fs := flag.NewFlagSet("chopi-smokescreen", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&opts.dir, "dir", "", "")
+	fs.IntVar(&opts.parent, "parent", 0, "")
 	fs.StringVar(&opts.relayLog, "relay-log", "", "")
 	fs.StringVar(&opts.allowlist, "github-allowlist", "", "")
 	fs.StringVar(&opts.relayConfig, "relay-config", "", "")
@@ -62,9 +64,9 @@ func parseOptions(args []string) (options, error) {
 	if rest := len(args) - fs.NArg(); rest > 0 && args[rest-1] == "--" {
 		opts.smokeArgs = fs.Args()
 	}
-	if opts.dir == "" || opts.relayLog == "" || opts.allowlist == "" ||
+	if opts.dir == "" || opts.parent <= 0 || opts.relayLog == "" || opts.allowlist == "" ||
 		opts.relayConfig == "" || opts.smokeArgs == nil {
-		return opts, errors.New("usage: chopi-smokescreen --dir DIR --relay-log FILE " +
+		return opts, errors.New("usage: chopi-smokescreen --dir DIR --parent PID --relay-log FILE " +
 			"--github-allowlist FILE --relay-config CMD -- SMOKESCREEN_FLAGS...")
 	}
 	return opts, nil
@@ -379,6 +381,40 @@ func (s *relaySupervisor) stopAll() {
 	}
 	wg.Wait()
 	s.rendering.Wait()
+}
+
+// watchExit returns a context derived from parent, cancelled too once process pid exits: the
+// kernel reports it, with kqueue, so nothing polls. It is cancelled right away for a process
+// already gone.
+func watchExit(parent context.Context, pid int) (context.Context, error) {
+	kq, err := syscall.Kqueue()
+	if err != nil {
+		return nil, err
+	}
+	syscall.CloseOnExec(kq)
+	ctx, exited := context.WithCancel(parent)
+	var ev syscall.Kevent_t
+	syscall.SetKevent(&ev, pid, syscall.EVFILT_PROC, syscall.EV_ADD|syscall.EV_ONESHOT)
+	ev.Fflags = syscall.NOTE_EXIT
+	if _, err := syscall.Kevent(kq, []syscall.Kevent_t{ev}, nil, nil); err != nil {
+		syscall.Close(kq)
+		exited()
+		if errors.Is(err, syscall.ESRCH) {
+			return ctx, nil
+		}
+		return nil, err
+	}
+	go func() {
+		defer syscall.Close(kq)
+		events := make([]syscall.Kevent_t, 1)
+		for {
+			if _, err := syscall.Kevent(kq, nil, events, nil); !errors.Is(err, syscall.EINTR) {
+				break
+			}
+		}
+		exited()
+	}()
+	return ctx, nil
 }
 
 // writeAtomically writes content to path, whole or not at all: it is written beside path and

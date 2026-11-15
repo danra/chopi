@@ -105,11 +105,13 @@ type supervisorRun struct {
 	allowlist string // what the fake render prints as Caddy's config
 	logFile   string // the supervisor's stdout
 	state     string
+	parent    *exec.Cmd
 	stderr    *strings.Builder
 	exited    chan struct{}
 }
 
-// startSupervisor runs chopi-smokescreen with a fake caddy behaving as caddyPlan says.
+// startSupervisor runs chopi-smokescreen with a fake caddy behaving as caddyPlan says, and a
+// `sleep` as the parent it watches.
 func startSupervisor(t *testing.T, caddyPlan string) *supervisorRun {
 	t.Helper()
 	exe, err := os.Executable()
@@ -154,10 +156,16 @@ cat "$1"
 	}
 
 	dir := filepath.Join(tmp, "dir")
+	parent := exec.Command("sleep", "30")
+	if err := parent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { parent.Process.Kill(); parent.Wait() })
+
 	run := &supervisorRun{dir: dir, allowlist: filepath.Join(tmp, "allowlist"),
-		logFile: filepath.Join(tmp, "supervisor.log"), state: state,
+		logFile: filepath.Join(tmp, "supervisor.log"), state: state, parent: parent,
 		stderr: &strings.Builder{}, exited: make(chan struct{})}
-	run.cmd = exec.Command(exe, "--dir", dir,
+	run.cmd = exec.Command(exe, "--dir", dir, "--parent", strconv.Itoa(parent.Process.Pid),
 		"--relay-log", filepath.Join(tmp, "caddy.log"),
 		"--github-allowlist", run.allowlist, "--relay-config", render, "--",
 		"--config-file", config, "--egress-acl-file", rules)
@@ -252,7 +260,7 @@ func get(t *testing.T, client *http.Client, url string) string {
 	return string(body)
 }
 
-func TestSupervisorServesAndStopsOnTERM(t *testing.T) {
+func TestSupervisorServesAndStopsWithItsParent(t *testing.T) {
 	t.Parallel()
 	run := startSupervisor(t, "")
 	up := run.awaitPorts(t)
@@ -284,10 +292,9 @@ func TestSupervisorServesAndStopsOnTERM(t *testing.T) {
 		t.Errorf("caddy got GH_TOKEN %q: the token is the render's alone", token)
 	}
 
-	// chopi's, as the session ends.
-	run.cmd.Process.Signal(syscall.SIGTERM)
+	run.parent.Process.Kill()
 	if status := run.awaitExit(t); status != 0 {
-		t.Errorf("exit status %d once stopped", status)
+		t.Errorf("exit status %d once the parent is gone", status)
 	}
 	if !run.caddyGone(t) {
 		t.Error("caddy outlives the supervisor")

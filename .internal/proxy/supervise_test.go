@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -13,12 +14,12 @@ import (
 )
 
 func TestParseOptionsSplitsChopisFlagsFromSmokescreens(t *testing.T) {
-	opts, err := parseOptions([]string{"--dir", "/d", "--relay-log", "/l",
+	opts, err := parseOptions([]string{"--dir", "/d", "--parent", "42", "--relay-log", "/l",
 		"--github-allowlist", "/a", "--relay-config", "/r", "--", "--config-file", "/c"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opts.dir != "/d" || opts.relayLog != "/l" ||
+	if opts.dir != "/d" || opts.parent != 42 || opts.relayLog != "/l" ||
 		opts.allowlist != "/a" || opts.relayConfig != "/r" {
 		t.Errorf("parsed %+v", opts)
 	}
@@ -28,7 +29,7 @@ func TestParseOptionsSplitsChopisFlagsFromSmokescreens(t *testing.T) {
 }
 
 func TestParseOptionsRefuses(t *testing.T) {
-	all := []string{"--dir", "/d", "--relay-log", "/l",
+	all := []string{"--dir", "/d", "--parent", "42", "--relay-log", "/l",
 		"--github-allowlist", "/a", "--relay-config", "/r"}
 	// Each of chopi's flags left out in turn.
 	for i := 0; i < len(all); i += 2 {
@@ -40,6 +41,10 @@ func TestParseOptionsRefuses(t *testing.T) {
 	for _, args := range [][]string{
 		all, // no smokescreen flags
 		append(slices.Clone(all), "--bogus", "1", "--"), // unknown
+		{"--dir", "/d", "--parent", "x", "--relay-log", "/l", "--github-allowlist", "/a",
+			"--relay-config", "/r", "--"}, // not a pid
+		{"--dir", "/d", "--parent", "-1", "--relay-log", "/l", "--github-allowlist", "/a",
+			"--relay-config", "/r", "--"}, // not a pid
 		{"--dir"}, // no value
 	} {
 		if _, err := parseOptions(args); err == nil {
@@ -161,6 +166,45 @@ func TestOutputSinceIsTheRestOnOneLine(t *testing.T) {
 	}
 	if got := outputSince(filepath.Join(t.TempDir(), "missing"), 0); got != "" {
 		t.Errorf("got %q from no file", got)
+	}
+}
+
+func TestWatchExitCancelsOnceTheProcessExits(t *testing.T) {
+	child := exec.Command("sleep", "30")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited, err := watchExit(context.Background(), child.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-exited.Done():
+		t.Fatal("cancelled while the process runs")
+	case <-time.After(100 * time.Millisecond):
+	}
+	child.Process.Kill()
+	select {
+	case <-exited.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("not cancelled after the process exited")
+	}
+	child.Wait()
+}
+
+func TestWatchExitCancelsForAProcessAlreadyGone(t *testing.T) {
+	child := exec.Command("true")
+	if err := child.Run(); err != nil {
+		t.Fatal(err)
+	}
+	exited, err := watchExit(context.Background(), child.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-exited.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("not cancelled for a process already gone")
 	}
 }
 
