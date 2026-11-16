@@ -3,12 +3,17 @@
 // session's GitHub relays, served by Caddy.
 //
 //	chopi-smokescreen --dir DIR --parent PID --relay-log FILE --github-allowlist FILE
+//	                  --add-rules FILE
 //	                  --relay-config CMD -- SMOKESCREEN_FLAGS...
 //
 //   - Smokescreen's flags and log output are identical to the standalone smokescreen binary's,
 //     but for where it listens: --listen-ip and --listen-port are ignored.
 //   - The rules file is polled for changes, with a new valid rules set immediately
 //     and atomically swapped in.
+//   - The --add-rules add to the base ones (see added.go), and are polled for
+//     changes as the base ones are, including for being made, or deleted, mid-session. A change to
+//     either file takes up the two, the other as last read; an added file refused as the proxy
+//     starts keeps it from starting, naming that file.
 //   - Rules allowing a GitHub host that takes writes (see gitHubExfiltration) are refused, as the
 //     proxy starts and on a reload alike: they would let a sandboxed command around the GitHub relays.
 //   - Every listener is opened here, on a loopback port the kernel picks, or the unix socket
@@ -51,7 +56,6 @@ import (
 	"github.com/stripe/smokescreen/cmd"
 	"github.com/stripe/smokescreen/pkg/smokescreen"
 	acl "github.com/stripe/smokescreen/pkg/smokescreen/acl/v1"
-	"gopkg.in/yaml.v2"
 )
 
 const reloadPollInterval = time.Second
@@ -64,7 +68,7 @@ const (
 )
 
 type swappableACL struct {
-	current     atomic.Pointer[acl.ACL]
+	current     atomic.Pointer[ruleSet]
 	allowGitHub bool // gitHubExfiltrationOverride is set: rules allowing GitHub's domains only warn
 }
 
@@ -73,30 +77,29 @@ func (s *swappableACL) Decide(args acl.DecideArgs) (acl.Decision, error) {
 }
 
 // take swaps in rules, the one way rules take effect, as the proxy starts and on a reload alike.
-// It refuses rules gitHubExfiltration refuses, unless allowGitHub: then it takes them up and
-// passes the refusal to warn instead.
-func (s *swappableACL) take(rules *acl.ACL, warn func(error)) error {
-	if err := gitHubExfiltration(rules); err != nil {
-		if !s.allowGitHub {
-			return err
-		}
-		warn(fmt.Errorf("%w; taking up the rules anyway, as %s is set", err, gitHubExfiltrationOverride))
+// It refuses rules with gitHubExfiltration's refusals, exfiltration, with the first, unless
+// allowGitHub: then it takes them up and passes each refusal to warn instead.
+func (s *swappableACL) take(rules *ruleSet, exfiltration []*exfiltrationError, warn func(error)) error {
+	if len(exfiltration) > 0 && !s.allowGitHub {
+		return exfiltration[0]
+	}
+	for _, refusal := range exfiltration {
+		warn(fmt.Errorf("%w; taking up the rules anyway, as %s is set", refusal, gitHubExfiltrationOverride))
 	}
 	s.current.Store(rules)
 	return nil
 }
 
-// parseRules is the rules in content, parsed as smokescreen's own YAML loader (acl.YAMLLoader)
-// parses a rules file.
-func parseRules(conf *smokescreen.Config, content []byte) (*acl.ACL, error) {
-	var config acl.YAMLConfig
-	if err := yaml.Unmarshal(content, &config); err != nil {
-		return nil, err
+// takeRules is the rules files' taker: it takes up the rules from the contents of the files at
+// basePath and addedPath ("" for none) into holder.
+func takeRules(conf *smokescreen.Config, holder *swappableACL, basePath, addedPath string) taker {
+	return func(base, added []byte, warn func(error)) error {
+		rules, exfiltration, err := loadRules(conf, basePath, addedPath, base, added)
+		if err != nil {
+			return err
+		}
+		return holder.take(rules, exfiltration, warn)
 	}
-	if config.Version != "v1" {
-		return nil, fmt.Errorf("expected version \"v1\" got %#v", config.Version)
-	}
-	return acl.New(conf.Log, &config, conf.DisabledAclPolicyActions)
 }
 
 // The log messages of a config file's reload, its failure keeping the previous config. The
@@ -119,17 +122,6 @@ var (
 	allowlistKind = configKind{"allowlist", allowlistReloaded, allowlistReloadFailed, "GitHub allowlist"}
 )
 
-// takeRules is the rules files' taker: it parses the base config and takes it up in holder.
-func takeRules(conf *smokescreen.Config, holder *swappableACL) taker {
-	return func(base, _ []byte, warn func(error)) error {
-		rules, err := parseRules(conf, base)
-		if err != nil {
-			return err
-		}
-		return holder.take(rules, warn)
-	}
-}
-
 // gitHubExfiltrationOverride is the environment variable that lets the proxy take up rules
 // allowing GitHub's own domains. Its name marks the relays' coverage; it rotates when coverage
 // grows, so an override set for an already-closed gap doesn't silently carry over.
@@ -141,8 +133,9 @@ const gitHubExfiltrationOverride = "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAIN
 // sandboxed command could push data to ANY repo directly, skipping the relays. A *.github.com glob
 // is refused too, as it would allow any such host GitHub adds; a read-only host named alone, like
 // codeload.github.com, is not. The rules themselves decide, so whatever way they allow a host
-// counts -- a glob, the global allow list, an open or report policy.
-func gitHubExfiltration(rules *acl.ACL) error {
+// counts -- a glob, the global allow list, an open or report policy. path is the rules file the
+// refusal names, as the one allowing the hosts.
+func gitHubExfiltration(rules *ruleSet, path string) *exfiltrationError {
 	services := append(slices.Collect(maps.Keys(rules.Rules)), "") // "": the default rule
 	allows := func(host string) bool {
 		return slices.ContainsFunc(services, func(service string) bool {
@@ -168,8 +161,19 @@ func gitHubExfiltration(rules *acl.ACL) error {
 	if len(allowed) == 0 {
 		return nil
 	}
-	return fmt.Errorf("the rules allow %s: a sandboxed command could push data to any GitHub repo, around the relays",
-		strings.Join(allowed, ", "))
+	return &exfiltrationError{path, allowed}
+}
+
+// exfiltrationError is gitHubExfiltration's refusal: the GitHub hosts the rules in the file at path
+// allow.
+type exfiltrationError struct {
+	path    string
+	allowed []string
+}
+
+func (e *exfiltrationError) Error() string {
+	return fmt.Sprintf("%s allows %s: a sandboxed command could push data to any GitHub repo, around the relays",
+		e.path, strings.Join(e.allowed, ", "))
 }
 
 // rulesTemplate is chopi's current proxy rules template, relative to chopi's directory.
@@ -496,16 +500,17 @@ func (f *configFile) warn(log *logrus.Logger) func(error) {
 }
 
 // logEntry is the log entry for the config file: its path under its kind's key, what the user knows
-// it as ("what"), and its name for a banner to show ("name"), for the log's formatter and banners to
-// say as they are (.internal/format-reload.jq, .internal/chopi-proxy.sh's notify_reload). One added
-// to the base config is the workspace's own, named with its dir, which says whose it is.
+// it as ("what"), its name for a banner to show ("name"), and whether it is added to the base config
+// ("added"), for the log's formatter and banners to say as they are, and the banner's group to be
+// the file's (.internal/format-reload.jq, .internal/chopi-proxy.sh's notify_reload). One added to
+// the base config is the workspace's own, named with its dir, which says whose it is.
 func (f *configFile) logEntry(log *logrus.Logger) *logrus.Entry {
 	what, name := f.kind.name, filepath.Base(f.path)
 	if f.added {
 		what = "workspace " + what
 		name = filepath.Join(filepath.Base(filepath.Dir(f.path)), name)
 	}
-	return log.WithFields(logrus.Fields{f.kind.key: f.path, "what": what, "name": name})
+	return log.WithFields(logrus.Fields{f.kind.key: f.path, "what": what, "name": name, "added": f.added})
 }
 
 // putBack moves the config file, refused for its other hard links (refusal), to
@@ -644,8 +649,10 @@ func main() {
 		fail("--egress-acl-file not found on the command line; chopi requires a hot-reloadable egress ACL")
 	}
 	args := append([]string{os.Args[0]}, smokeArgs...)
-	// The config files, as taken up now, for their watches to take up any edit made from here on.
-	rulesFiles := takeUp(rulesKind, path, "")
+	// The config files, as taken up now, the proxy's config taken up from them alone, for their
+	// watches to take up any edit made from here on: the base files, and the rules added to them,
+	// which, missing, are taken up once made.
+	rulesFiles := takeUp(rulesKind, path, opts.addRules)
 	allowlistFiles := takeUp(allowlistKind, opts.allowlist, "")
 
 	// Smokescreen logs to stdout, the log, from the start, its global logger included: stderr is
@@ -667,17 +674,16 @@ func main() {
 	log.SetOutput(&smokescreen.Log2LogrusWriter{Entry: conf.Log.WithField("stdlog", "1")})
 	log.SetFlags(0)
 
-	rules, err := parseRules(conf, rulesFiles.base.content)
-	if err != nil {
-		fail("could not load the egress ACL: %v", err)
-	}
 	holder := &swappableACL{allowGitHub: os.Getenv(gitHubExfiltrationOverride) != ""}
-	if err := holder.take(rules, func(warning error) { complain("warning: %v", warning) }); err != nil {
-		fail("refusing to run: %v\n\n%s", err, gitHubExfiltrationAdvice(path, opts.allowlist))
+	rulesFiles.take = takeRules(conf, holder, path, opts.addRules)
+	if err := rulesFiles.takeUpAtStart(func(warning error) { complain("warning: %v", warning) }); err != nil {
+		// The advice is for a base file from a template predating the relays.
+		if e := (*exfiltrationError)(nil); errors.As(err, &e) && e.path == path {
+			fail("refusing to run: %v\n\n%s", err, gitHubExfiltrationAdvice(path, opts.allowlist))
+		}
+		fail("could not load the rules: %v", err)
 	}
-	rulesFiles.base.accepted = rulesFiles.base.content
 	conf.EgressACL = holder
-	rulesFiles.take = takeRules(conf, holder)
 
 	proxyListener, err := listenLoopback()
 	if err != nil {

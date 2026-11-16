@@ -17,6 +17,9 @@ import (
 	acl "github.com/stripe/smokescreen/pkg/smokescreen/acl/v1"
 )
 
+// A minimal valid rules file with no default rule, allowing nothing.
+const rulesWithoutDefault = "version: v1\nservices: []\n"
+
 // A minimal valid rules file allowing exactly one host.
 func rulesAllowing(host string) string {
 	return fmt.Sprintf(`version: v1
@@ -86,23 +89,45 @@ func chmod(t *testing.T, path string, mode os.FileMode) {
 	}
 }
 
+// rewrite writes content to f and has rules apply it.
+func rewrite(t *testing.T, rules *configFiles, f *configFile, log *logrus.Logger, content string) {
+	t.Helper()
+	writeFile(t, f.path, content)
+	rules.applyIfChanged(log, f)
+}
+
 // testSetup returns a config whose log entries are captured by the returned hook, a holder
 // loaded from the given rules file, and the file, alone in the files the proxy watches.
 func testSetup(t *testing.T, path string) (*smokescreen.Config, *swappableACL, *configFiles, *configFile, *logrustest.Hook) {
+	t.Helper()
+	conf, holder, rules, hook := setupWith(t, path, "")
+	return conf, holder, rules, rules.base, hook
+}
+
+// setupWith is testSetup for the base rules file at base, and the one added to it at added, if any
+// ("" for none), returned as the proxy watches them.
+func setupWith(t *testing.T, base, added string) (*smokescreen.Config, *swappableACL, *configFiles, *logrustest.Hook) {
+	t.Helper()
+	conf, holder, rules, hook := untakenSetup(t, base, added)
+	if err := rules.takeUpAtStart(func(error) {}); err != nil {
+		t.Fatalf("initial take: %v", err)
+	}
+	return conf, holder, rules, hook
+}
+
+// untakenSetup is setupWith but for taking up the rules, left to the test.
+func untakenSetup(t *testing.T, base, added string) (*smokescreen.Config, *swappableACL, *configFiles, *logrustest.Hook) {
 	t.Helper()
 	conf := smokescreen.NewConfig()
 	logger, hook := logrustest.NewNullLogger()
 	conf.Log = logger
 	holder := &swappableACL{}
-	rules, err := newConfigFiles(rulesKind, path, "")
+	rules, err := newConfigFiles(rulesKind, base, added)
 	if err != nil {
 		t.Fatalf("initial check: %v", err)
 	}
-	rules.take = takeRules(conf, holder)
-	if err := rules.takeUpAtStart(func(error) {}); err != nil {
-		t.Fatalf("initial take: %v", err)
-	}
-	return conf, holder, rules, rules.base, hook
+	rules.take = takeRules(conf, holder, base, added)
+	return conf, holder, rules, hook
 }
 
 // reloaded expects the last log entry to be a successful reload's.
@@ -136,6 +161,19 @@ func decide(t *testing.T, holder *swappableACL, host string) acl.DecisionResult 
 	return d.Result
 }
 
+// wantDecisions checks holder decides each host as wanted, when saying when, if anything.
+func wantDecisions(t *testing.T, holder *swappableACL, when string, want map[string]acl.DecisionResult) {
+	t.Helper()
+	if when != "" {
+		when = " " + when
+	}
+	for host, w := range want {
+		if got := decide(t, holder, host); got != w {
+			t.Errorf("%s%s: got %v, want %v", host, when, got, w)
+		}
+	}
+}
+
 func TestReloadSwapsRules(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rules.yaml")
 	writeFile(t, path, rulesAllowing("old.example"))
@@ -149,9 +187,7 @@ func TestReloadSwapsRules(t *testing.T) {
 		t.Fatalf("new.example before reload: got %v, want Deny", got)
 	}
 
-	writeFile(t, path, rulesAllowing("new.example"))
-	setMtime(t, path, lastMod.Add(time.Second))
-	rules.applyIfChanged(conf.Log, file)
+	rewrite(t, rules, file, conf.Log, rulesAllowing("new.example"))
 	newMod := file.lastMod
 	if !newMod.After(lastMod) {
 		t.Fatalf("mtime not advanced: %v -> %v", lastMod, newMod)
@@ -169,11 +205,8 @@ func TestReloadFailureKeepsPreviousRules(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rules.yaml")
 	writeFile(t, path, rulesAllowing("old.example"))
 	conf, holder, rules, file, hook := testSetup(t, path)
-	lastMod := file.lastMod
 
-	writeFile(t, path, "version: v9\n")
-	setMtime(t, path, lastMod.Add(time.Second))
-	rules.applyIfChanged(conf.Log, file)
+	rewrite(t, rules, file, conf.Log, "version: v9\n")
 	failedMod := file.lastMod
 	if got := decide(t, holder, "old.example"); got != acl.Allow {
 		t.Fatalf("old.example after failed reload: got %v, want Allow (previous rules kept)", got)
@@ -192,9 +225,7 @@ func TestReloadFailureKeepsPreviousRules(t *testing.T) {
 	}
 
 	// Fixing the file recovers.
-	writeFile(t, path, rulesAllowing("fixed.example"))
-	setMtime(t, path, failedMod.Add(time.Second))
-	rules.applyIfChanged(conf.Log, file)
+	rewrite(t, rules, file, conf.Log, rulesAllowing("fixed.example"))
 	if got := decide(t, holder, "fixed.example"); got != acl.Allow {
 		t.Fatalf("fixed.example after recovery: got %v, want Allow", got)
 	}
@@ -397,9 +428,7 @@ func TestReloadRefusesAFileWithOtherLinks(t *testing.T) {
 	if len(hook.Entries) != 0 {
 		t.Fatalf("the put-back file should not be taken up again, got %+v", hook.Entries)
 	}
-	writeFile(t, path, rulesAllowing("fixed.example"))
-	setMtime(t, path, refusedMod.Add(time.Second))
-	rules.applyIfChanged(conf.Log, file)
+	rewrite(t, rules, file, conf.Log, rulesAllowing("fixed.example"))
 	if got := decide(t, holder, "fixed.example"); got != acl.Allow {
 		t.Fatalf("fixed.example after a change with no other links: got %v, want Allow", got)
 	}
@@ -520,9 +549,7 @@ func TestMissingFileKeepsPreviousRules(t *testing.T) {
 	}
 
 	// A recreated file reloads as usual.
-	writeFile(t, path, rulesAllowing("new.example"))
-	setMtime(t, path, lastMod.Add(time.Second))
-	rules.applyIfChanged(conf.Log, file)
+	rewrite(t, rules, file, conf.Log, rulesAllowing("new.example"))
 	if got := decide(t, holder, "new.example"); got != acl.Allow {
 		t.Fatalf("new.example after the file reappeared: got %v, want Allow", got)
 	}
@@ -542,7 +569,8 @@ func TestUnreadableFileIsSurfacedOnce(t *testing.T) {
 	conf.Log = logger
 	holder := &swappableACL{} // untouched: a stat error returns before any load or swap
 	file := &configFile{path: path, kind: rulesKind}
-	rules := &configFiles{base: file, take: takeRules(conf, holder)}
+	rules := &configFiles{base: file}
+	rules.take = takeRules(conf, holder, path, "")
 
 	// First failing tick surfaces the error and sets unreadable; the mtime does not move.
 	rules.applyIfChanged(conf.Log, file)
@@ -589,11 +617,7 @@ func reloadTo(t *testing.T, to string, allowGitHub bool) (*swappableACL, *logrus
 	writeFile(t, path, rulesAllowing("old.example"))
 	conf, holder, rules, file, hook := testSetup(t, path)
 	holder.allowGitHub = allowGitHub
-	lastMod := file.lastMod
-
-	writeFile(t, path, to)
-	setMtime(t, path, lastMod.Add(time.Second))
-	rules.applyIfChanged(conf.Log, file)
+	rewrite(t, rules, file, conf.Log, to)
 	return holder, hook
 }
 
@@ -623,7 +647,7 @@ func TestReloadTakesUpRulesAllowingGitHubWithTheOverride(t *testing.T) {
 	}
 	reloaded(t, hook)
 	if !slices.ContainsFunc(hook.Entries, func(e logrus.Entry) bool {
-		return e.Level == logrus.WarnLevel && strings.Contains(e.Message, "allow github.com") &&
+		return e.Level == logrus.WarnLevel && strings.Contains(e.Message, "allows github.com") &&
 			strings.Contains(e.Message, gitHubExfiltrationOverride+" is set")
 	}) {
 		t.Fatalf("expected a warning that the rules allow github.com, naming the override, got %+v", hook.Entries)
@@ -654,7 +678,7 @@ default:
 `, "github.com, *.github.com"},
 		{"the upload host counts", rulesAllowing(`uploads.github.com`), "uploads.github.com"},
 		{"the gist host counts", rulesAllowing(`gist.github.com`), "gist.github.com"},
-		{"a subdomain glob counts, as one", rulesAllowing(`"*.github.com"`), "the rules allow *.github.com:"},
+		{"a subdomain glob counts, as one", rulesAllowing(`"*.github.com"`), "rules.yaml allows *.github.com:"},
 		{"a read-only subdomain named alone doesn't", rulesAllowing("codeload.github.com"), ""},
 		{"the global deny list wins over the global allow list", rulesAllowing("api.anthropic.com") +
 			"global_allow_list:\n  - github.com\nglobal_deny_list:\n  - github.com\n", ""},
@@ -662,16 +686,15 @@ default:
 			"    - mygithub.com\n    - github.com.evil.example\n", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rules, err := parseRules(smokescreen.NewConfig(), []byte(tc.rules))
+			_, refusals, err := loadRules(smokescreen.NewConfig(), "rules.yaml", "", []byte(tc.rules), nil)
 			if err != nil {
 				t.Fatalf("load: %v", err)
 			}
-			err = gitHubExfiltration(rules)
 			switch {
-			case tc.want == "" && err != nil:
-				t.Fatalf("want no refusal, got %v", err)
-			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
-				t.Fatalf("want a refusal naming %q, got %v", tc.want, err)
+			case tc.want == "" && len(refusals) != 0:
+				t.Fatalf("want no refusal, got %v", refusals)
+			case tc.want != "" && (len(refusals) != 1 || !strings.Contains(refusals[0].Error(), tc.want)):
+				t.Fatalf("want a refusal naming %q, got %v", tc.want, refusals)
 			}
 		})
 	}

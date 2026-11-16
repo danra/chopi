@@ -40,6 +40,32 @@ To set the GitHub repos allowlist, edit `config/github-allowlist`. This too take
 `chopi` session, immediately. An edit also has the session's proxy take up a GitHub token that
 `gh` has replaced since the session started.
 
+Both of those apply to every project. To allow a host for a single project, put it in that repo's
+own config instead, which adds to the base rules for its sessions alone. It lives in
+`~/.chopi/config/workspaces/`, in a dir named for the repo's path, every character but a letter,
+digit or dash made a dash (as Claude Code names its project dirs; a very long one is cut short),
+then a digest of the path, telling apart repos whose paths would otherwise name the same dir. A
+session has its file's path in `$CHOPI_WORKSPACE_PROXY_RULES`, which Claude is told to quote when
+suggesting it. E.g. for `~/dev/myapp`:
+
+```
+~/.chopi/config/workspaces/-Users-me-dev-myapp-1a2b3c4d5e6f7a8b/
+    proxy-rules.yaml     # allowed_domains: [pypi.org], and/or global_deny_list
+```
+
+It is optional, and takes effect immediately, even when created or deleted mid-session. The rules
+file can only add hosts, or deny them: any key but `allowed_domains` and `global_deny_list` is
+refused, and the base config's `global_deny_list` still holds against the hosts it adds; its own
+`global_deny_list` denies a host even where the base config allows it. A mistake made in it
+mid-session never stops a running session: the edit doesn't take effect, as the notification says,
+and what the file added before it stays. An edit to the base config still takes effect, with what
+the file last added. But a mistake keeps a new session from starting, as a mistake in the base
+config does, so that the repo's sessions all run on the same config; so does a file `chopi` won't
+read -- a symlink, one with other hard links, or one it can't read. The repo's worktrees,
+`chopi --worktree` ones included, share its config. When a repo has its own, `chopi` says so as a
+session starts. Like the base config, it's outside every workspace, and no sandboxed command can
+change it.
+
 To configure the sandbox policy, edit the first two settings in `config/sandbox.sh` (other
 settings can be reviewed later):
 

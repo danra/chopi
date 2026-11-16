@@ -42,7 +42,12 @@ type options struct {
 	relayLog    string // Caddy's output
 	allowlist   string // the GitHub allowlist, watched for changes
 	relayConfig string // the command rendering the relays' Caddy config from the allowlist
-	smokeArgs   []string
+
+	// Rules adding to the base ones (see added.go), watched for changes as they are; they may be
+	// missing.
+	addRules string
+
+	smokeArgs []string
 }
 
 // parseOptions parses args (without the program name): chopi's flags, then "--" and smokescreen's.
@@ -55,6 +60,7 @@ func parseOptions(args []string) (options, error) {
 	fs.StringVar(&opts.relayLog, "relay-log", "", "")
 	fs.StringVar(&opts.allowlist, "github-allowlist", "", "")
 	fs.StringVar(&opts.relayConfig, "relay-config", "", "")
+	fs.StringVar(&opts.addRules, "add-rules", "", "")
 	if err := fs.Parse(args); err != nil {
 		return opts, err
 	}
@@ -63,9 +69,10 @@ func parseOptions(args []string) (options, error) {
 		opts.smokeArgs = fs.Args()
 	}
 	if opts.dir == "" || opts.parent <= 0 || opts.relayLog == "" ||
-		opts.allowlist == "" || opts.relayConfig == "" || opts.smokeArgs == nil {
+		opts.allowlist == "" || opts.relayConfig == "" || opts.addRules == "" || opts.smokeArgs == nil {
 		return opts, errors.New("usage: chopi-smokescreen --dir DIR --parent PID " +
-			"--relay-log FILE --github-allowlist FILE --relay-config CMD -- SMOKESCREEN_FLAGS...")
+			"--relay-log FILE --github-allowlist FILE --add-rules FILE " +
+			"--relay-config CMD -- SMOKESCREEN_FLAGS...")
 	}
 	return opts, nil
 }

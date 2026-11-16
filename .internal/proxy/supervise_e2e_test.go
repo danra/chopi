@@ -155,6 +155,9 @@ cat "$1"
 		t.Fatal(err)
 	}
 
+	// The added rules are missing, at a real path, as chopi gives it (configFile.open).
+	ws := filepath.Join(realTempDir(t), "ws")
+
 	dir := filepath.Join(tmp, "dir")
 	parent := exec.Command("sleep", "30")
 	if err := parent.Start(); err != nil {
@@ -167,7 +170,8 @@ cat "$1"
 		stderr: &strings.Builder{}, exited: make(chan struct{})}
 	run.cmd = exec.Command(exe, "--dir", dir, "--parent", strconv.Itoa(parent.Process.Pid),
 		"--relay-log", filepath.Join(tmp, "caddy.log"),
-		"--github-allowlist", run.allowlist, "--relay-config", render, "--",
+		"--github-allowlist", run.allowlist, "--relay-config", render,
+		"--add-rules", filepath.Join(ws, "rules.yaml"), "--",
 		"--config-file", config, "--egress-acl-file", rules)
 	run.cmd.Env = append(os.Environ(), "CHOPI_TEST_ROLE=supervisor", "CHOPI_TEST_STATE="+state,
 		"CHOPI_TEST_CADDY="+caddyPlan, "PATH="+bin+":"+os.Getenv("PATH"), "GH_TOKEN=the-token")

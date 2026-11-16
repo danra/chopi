@@ -15,12 +15,13 @@ import (
 
 func TestParseOptionsSplitsChopisFlagsFromSmokescreens(t *testing.T) {
 	opts, err := parseOptions([]string{"--dir", "/d", "--parent", "42", "--relay-log", "/l",
-		"--github-allowlist", "/a", "--relay-config", "/r", "--", "--config-file", "/c"})
+		"--github-allowlist", "/a", "--relay-config", "/r",
+		"--add-rules", "/ar", "--", "--config-file", "/c"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if opts.dir != "/d" || opts.parent != 42 || opts.relayLog != "/l" ||
-		opts.allowlist != "/a" || opts.relayConfig != "/r" {
+		opts.allowlist != "/a" || opts.relayConfig != "/r" || opts.addRules != "/ar" {
 		t.Errorf("parsed %+v", opts)
 	}
 	if !slices.Equal(opts.smokeArgs, []string{"--config-file", "/c"}) {
@@ -30,7 +31,7 @@ func TestParseOptionsSplitsChopisFlagsFromSmokescreens(t *testing.T) {
 
 func TestParseOptionsRefuses(t *testing.T) {
 	all := []string{"--dir", "/d", "--parent", "42", "--relay-log", "/l",
-		"--github-allowlist", "/a", "--relay-config", "/r"}
+		"--github-allowlist", "/a", "--relay-config", "/r", "--add-rules", "/ar"}
 	// Each of chopi's flags left out in turn.
 	for i := 0; i < len(all); i += 2 {
 		args := append(slices.Clone(all[:i]), all[i+2:]...)

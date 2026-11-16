@@ -670,8 +670,9 @@ running_session_configs() {
 }
 
 # Set array VAR to the proxy config files a proxy may read, each once: the FILEs given, the default
-# files, and those running sessions' proxies read (running_session_configs). Fails on a path with a
-# newline, VAR then untouched, as on any failure: never a partial list.
+# files, and those running sessions' proxies read (running_session_configs). A file may be missing:
+# a workspace may have no file there yet. Fails on a path with a newline, VAR then untouched, as on
+# any failure: never a partial list.
 #
 # usage: proxy_config_files VAR [FILE...]
 proxy_config_files() {
@@ -686,8 +687,9 @@ proxy_config_files() {
 }
 
 # Set array VAR to every path deciding which proxy config a session's proxy reads, now or as a later
-# session starts (resolution_paths): PROXY_CONFIG_DIR's, where a custom one must be; and those of
-# the files proxies may read (proxy_config_files) -- the default files, which may link elsewhere,
+# session starts (resolution_paths): PROXY_CONFIG_DIR's, where a custom one must be, as is a repo's
+# own (workspace_config_dir) -- the whole dir, so a file made there later is covered too; and those
+# of the files proxies may read (proxy_config_files) -- the default files, which may link elsewhere,
 # through any number of links, and the running sessions', should a link have been repointed since
 # one started. Every session keeps its command from changing them all, as a safe write target must
 # not overlap them. On failure VAR is left untouched, never a partial list.
@@ -751,15 +753,14 @@ write_proxy_network_profile() {
 # allowlist: one per file, shared by the proxy of every session reading it. They all reload the same
 # edit, so a broken one shows a single banner, rather than one per session, and the next good one's
 # confirmation replaces it, whichever session's proxy reloads it first. That holds only among
-# sessions whose reloads of FILE can't differ: a non-empty KEY sets apart those that can -- the
-# allowlist's render depends on where the session takes its GitHub token from (gh_token_source).
+# sessions whose reloads of FILE can't differ: each KEY sets apart those that can -- the file FILE
+# is taken up with, base or added; for the allowlist, where the session takes its GitHub token from
+# (gh_token_source), which its render depends on.
 #
-# usage: reload_banner_group FILE KEY
+# usage: reload_banner_group FILE KEY...
 reload_banner_group() {
-    arity 2
     local hash
-    hash="$(md5 -q -s "$1${2:+
-$2}")"
+    hash="$(printf '%s\n' "$@" | md5 -q)"
     printf 'chopi-proxy-reload-%s' "${hash:0:12}"
 }
 
@@ -794,16 +795,18 @@ is_github_relay_reroute_effective() {
     return 0
 }
 
-# run_chopi_smokescreen DIR PARENT RULES ALLOWLIST RENDER RELAY_LOG -- run a session's proxy and
-# its GitHub relays, on the rules file RULES, with Caddy's config the output of RENDER run on
-# ALLOWLIST, again on each edit to it, and Caddy's output in RELAY_LOG; the API relay on DIR/gh.sock,
-# and the ports reported in DIR/ports; stopping once process PARENT exits. It execs, for its PID to
-# be the proxy's: run it in the background.
+# run_chopi_smokescreen DIR PARENT RULES ALLOWLIST RENDER RELAY_LOG ADD_RULES -- run a
+# session's proxy and its GitHub relays, on the rules file RULES, with Caddy's config the output of
+# RENDER run on ALLOWLIST, again on each edit to it, and Caddy's output in RELAY_LOG; the API relay
+# on DIR/gh.sock, and the ports reported in DIR/ports; stopping once process PARENT exits.
+# ADD_RULES add to RULES; they may be missing. It execs, for its PID to be the proxy's: run it in the background.
 run_chopi_smokescreen() {
-    arity 6
+    arity 7
     local dir="$1" parent="$2" rules="$3" allowlist="$4" render="$5" relay_log="$6"
+    local add_rules="$7"
     exec "$SMOKESCREEN_BIN" --dir "$dir" --parent "$parent" --relay-log "$relay_log" \
-        --github-allowlist "$allowlist" --relay-config "$render" -- \
+        --github-allowlist "$allowlist" --add-rules "$add_rules" \
+        --relay-config "$render" -- \
         --config-file "$CHOPI_DIR/.internal/smokescreen-config.yaml" \
         --egress-acl-file "$rules"
 }

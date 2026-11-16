@@ -108,7 +108,6 @@ main() {
     resolve_proxy_config CHOPI_PROXY_RULES "$DEFAULT_PROXY_RULES" proxy-rules.template.yaml || return 1
     resolve_proxy_config CHOPI_GITHUB_ALLOWLIST "$DEFAULT_GITHUB_ALLOWLIST" github-allowlist.template \
         || return 1
-    preflight_proxy_config_links "$CHOPI_PROXY_RULES" "$CHOPI_GITHUB_ALLOWLIST" || return $?
 
     if [ -n "$worktree_given" ]; then
         local wt_out_file
@@ -140,6 +139,15 @@ main() {
         preflight_config_placement "$config" "$run_dir" || return $?
     fi
 
+    # The repo's own proxy config, adding to the base config for its sessions alone; it may be
+    # missing, and be made mid-session.
+    local ws_config_dir ws_rules
+    ws_config_dir="$(resolve_workspace_config_dir "$run_dir")" \
+        || { echo "chopi: refusing to run" >&2; return 1; }
+    ws_rules="$ws_config_dir/$DEFAULT_PROXY_RULES"
+    preflight_proxy_config_links "$CHOPI_PROXY_RULES" "$CHOPI_GITHUB_ALLOWLIST" "$ws_rules" \
+        || return $?
+
     # The patch queue: where the command drops changes it wants made to a configured
     # write target, for the user to review and apply on the host with chopi-review.
     # A config that can't be honored stops the session before any of it is granted.
@@ -161,12 +169,16 @@ main() {
         queue_env=(CHOPI_PATCH_QUEUE="$queue_dir" CHOPI_SAFE_WRITE_TARGETS="$targets")
     fi
 
+    if [ -e "$ws_rules" ]; then
+        echo "chopi: network: the base config, plus this repo's own in $ws_config_dir" >&2
+    fi
+
     # The session's own proxy, which the sandboxed command gets as its only way out. Launched
     # once the checks that may refuse the session have passed, so a refused session doesn't wait
     # for it; it starts as chopi goes on with the rest of its setup, and nothing reaches it before
     # the sandbox starts.
     launch_session_proxy "$CHOPI_PROXY_RULES" "$CHOPI_GITHUB_ALLOWLIST" "$verbose" \
-        "$CHOPI_USER_TMPDIR" \
+        "$CHOPI_USER_TMPDIR" "$ws_rules" \
         || { echo "chopi: refusing to run without the proxy" >&2; return 1; }
     [ -n "$verbose" ] && echo "chopi: the proxy logs to $SESSION_PROXY_LOG" >&2
 
@@ -292,6 +304,7 @@ main() {
         CHOPI_DIR="$CHOPI_DIR" \
         CHOPI_GITHUB_RELAY_PORT="$SESSION_RELAY_PORT" \
         CHOPI_PROXY_LOG="$SESSION_PROXY_LOG" \
+        CHOPI_WORKSPACE_PROXY_RULES="$ws_rules" \
         HTTP_PROXY="$proxy"  HTTPS_PROXY="$proxy" \
         http_proxy="$proxy"  https_proxy="$proxy" \
         NODE_USE_ENV_PROXY=1 \
