@@ -155,7 +155,7 @@ cat "$1"
 		t.Fatal(err)
 	}
 
-	// The added rules are missing, at a real path, as chopi gives it (configFile.open).
+	// The added config files are missing, at a real path, as chopi gives them (configFile.open).
 	ws := filepath.Join(realTempDir(t), "ws")
 
 	dir := filepath.Join(tmp, "dir")
@@ -171,7 +171,8 @@ cat "$1"
 	run.cmd = exec.Command(exe, "--dir", dir, "--parent", strconv.Itoa(parent.Process.Pid),
 		"--relay-log", filepath.Join(tmp, "caddy.log"),
 		"--github-allowlist", run.allowlist, "--relay-config", render,
-		"--add-rules", filepath.Join(ws, "rules.yaml"), "--",
+		"--add-rules", filepath.Join(ws, "rules.yaml"),
+		"--add-github-allowlist", filepath.Join(ws, "allowlist"), "--",
 		"--config-file", config, "--egress-acl-file", rules)
 	run.cmd.Env = append(os.Environ(), "CHOPI_TEST_ROLE=supervisor", "CHOPI_TEST_STATE="+state,
 		"CHOPI_TEST_CADDY="+caddyPlan, "PATH="+bin+":"+os.Getenv("PATH"), "GH_TOKEN=the-token")

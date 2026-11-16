@@ -895,6 +895,7 @@ echo "rules and GitHub allowlist hot reload (edits take effect within a running 
 steps="$ws/steps"; mkdir -p "$steps"
 # The workspace's own files, which the session's proxy is given, missing or not.
 ws_rules="$ws_config/$DEFAULT_PROXY_RULES"
+ws_allowlist="$ws_config/$DEFAULT_GITHUB_ALLOWLIST"
 # shellcheck disable=SC2016  # expands in the sandboxed shell, not here
 chopi_t /bin/sh -c '
     n=1
@@ -1051,6 +1052,7 @@ relay_fetch() {
 }
 
 # (4) A broken allowlist edit is refused loudly, and the relays serving keep serving.
+allowlist_key="$(gh_token_source)"
 printf 'no-slash-here\n' > "$empty_github_allow"
 if wait_for "$reload_log" "GITHUB ALLOWLIST RELOAD FAILED"; then
     ok "a broken allowlist edit is logged loudly as a failed reload"
@@ -1059,7 +1061,7 @@ else
     bad "a broken allowlist edit did NOT log a failed reload"
 fi
 if wait_for "$alerter_log" "$(reload_banner failed 'GitHub allowlist' "${empty_github_allow##*/}" "$empty_github_allow" \
-    "$(gh_token_source)")"; then
+    "$ws_allowlist" "$allowlist_key")"; then
     ok "a broken allowlist edit notifies that the edit did not take effect"
 else
     bad "a broken allowlist edit did NOT notify"
@@ -1074,7 +1076,7 @@ else
     bad "the proxy did NOT reload the relays after the allowlist was fixed"
 fi
 if wait_for "$alerter_log" "$(reload_banner ok 'GitHub allowlist' "${empty_github_allow##*/}" "$empty_github_allow" \
-    "$(gh_token_source)")"; then
+    "$ws_allowlist" "$allowlist_key")"; then
     ok "the fixed allowlist's confirmation replaces the now-stale reload-failure notification"
 else
     bad "the fixed allowlist did NOT replace the reload-failure notification"

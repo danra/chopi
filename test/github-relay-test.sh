@@ -91,7 +91,7 @@ start_relays() {
     SESSION_PROXY_LOG="$log"
     # shellcheck disable=SC2153 # set by prepare_session_proxy_dir
     run_chopi_smokescreen "$SESSION_PROXY_DIR" $$ "$WORK/rules.yaml" "$RELAY_CONFIG" /bin/cat \
-        "$log.caddy" "$(realpath "$WORK")/ws/rules.yaml" >>"$log" 2>"$SESSION_PROXY_ERR" &
+        "$log.caddy" "$(realpath "$WORK")/ws/rules.yaml" "$(realpath "$WORK")/ws/allowlist" >>"$log" 2>"$SESSION_PROXY_ERR" &
     SESSION_PROXY_PID=$!
     await_session_proxy 2>>"$log" || return 1
     CADDY_PID="$(pgrep -P "$SESSION_PROXY_PID" -x caddy)"

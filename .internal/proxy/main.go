@@ -3,24 +3,25 @@
 // session's GitHub relays, served by Caddy.
 //
 //	chopi-smokescreen --dir DIR --parent PID --relay-log FILE --github-allowlist FILE
-//	                  --add-rules FILE
+//	                  --add-rules FILE --add-github-allowlist FILE
 //	                  --relay-config CMD -- SMOKESCREEN_FLAGS...
 //
 //   - Smokescreen's flags and log output are identical to the standalone smokescreen binary's,
 //     but for where it listens: --listen-ip and --listen-port are ignored.
 //   - The rules file is polled for changes, with a new valid rules set immediately
 //     and atomically swapped in.
-//   - The --add-rules add to the base ones (see added.go), and are polled for
-//     changes as the base ones are, including for being made, or deleted, mid-session. A change to
-//     either file takes up the two, the other as last read; an added file refused as the proxy
-//     starts keeps it from starting, naming that file.
+//   - The --add-rules and --add-github-allowlist add to the base ones (see added.go), and are
+//     polled for changes as the base ones are, including for being made, or deleted, mid-session.
+//     A change to either file of a kind takes it up with the other as last taken up; an added file
+//     refused as the proxy starts keeps it from starting, naming that file.
 //   - Rules allowing a GitHub host that takes writes (see gitHubExfiltration) are refused, as the
 //     proxy starts and on a reload alike: they would let a sandboxed command around the GitHub relays.
 //   - Every listener is opened here, on a loopback port the kernel picks, or the unix socket
 //     DIR/gh.sock, so no other process can take it first. Smokescreen serves its own; Caddy, started
 //     with its config on stdin and its output in the --relay-log FILE, inherits the relays'.
-//   - Caddy's config is CMD's output, run on the --github-allowlist FILE. GH_TOKEN and
-//     GITHUB_TOKEN, where set, are CMD's alone: taken out of the environment everything else gets.
+//   - Caddy's config is CMD's output, run on copies of the --github-allowlist FILE and of the added
+//     allowlist. GH_TOKEN and GITHUB_TOKEN, where set, are CMD's alone: taken out
+//     of the environment everything else gets.
 //   - The allowlist is polled for changes, as the rules are, and on one, a Caddy on the new config
 //     replaces the one serving, on the same listeners: their ports and socket path don't change.
 //     The one replaced finishes the requests it has. A config that fails to render, or a Caddy
@@ -90,8 +91,8 @@ func (s *swappableACL) take(rules *ruleSet, exfiltration []*exfiltrationError, w
 	return nil
 }
 
-// takeRules is the rules files' taker: it takes up the rules from the contents of the files at
-// basePath and addedPath ("" for none) into holder.
+// takeRules is the taker of the rules files at basePath and addedPath: it takes up the rules from
+// their contents into holder.
 func takeRules(conf *smokescreen.Config, holder *swappableACL, basePath, addedPath string) taker {
 	return func(base, added []byte, warn func(error)) error {
 		rules, exfiltration, err := loadRules(conf, basePath, addedPath, base, added)
@@ -291,38 +292,22 @@ func (f *configFile) open() (*os.File, fs.FileInfo, error) {
 	return file, st, nil
 }
 
-// taker takes up a config from the contents of its files: added nil for an added file missing, or
-// none. warn is for what it has to say of a config it takes up.
+// taker takes up a config from the contents of its files: added nil for an added file missing.
+// warn is for what it has to say of a config it takes up.
 type taker func(base, added []byte, warn func(error)) error
 
-// configFiles are the config files of one kind -- the base file, and the one added to it, if any
-// (nil for none) -- taken up as one: a change to either takes it up with the other as last taken
-// up (takeOnChange). take takes up their config, set before they are taken up or watched.
+// configFiles are the config files of one kind -- the base file, and the one added to it -- taken
+// up as one: a change to either takes it up with the other as last taken up (takeOnChange). take
+// takes up their config, set before they are taken up or watched.
 type configFiles struct {
 	base, added *configFile
 	take        taker
 }
 
-// contentOrNil is the config file's content as last read: nil for none, as for no file (nil f).
-func (f *configFile) contentOrNil() []byte {
-	if f == nil {
-		return nil
-	}
-	return f.content
-}
-
-// acceptedOrNil is the config file's content last taken up: nil for none, as for no file (nil f).
-func (f *configFile) acceptedOrNil() []byte {
-	if f == nil {
-		return nil
-	}
-	return f.accepted
-}
-
 // currentPending checks that a refused edit still matches the file before a partner reload
 // retries it. The file's own poll handles any replacement, disappearance, or read failure.
 func (f *configFile) currentPending() bool {
-	if f == nil || f.content == nil || f.accepted != nil && bytes.Equal(f.content, f.accepted) {
+	if f.content == nil || f.accepted != nil && bytes.Equal(f.content, f.accepted) {
 		return false
 	}
 	content, _, err := f.readChecked()
@@ -336,7 +321,7 @@ func (f *configFile) currentPending() bool {
 // one starts only on what it would take up, so every session of the workspace runs on the same
 // config, and their reloads' banners speak for them all.
 func (g *configFiles) takeUpAtStart(warn func(error)) error {
-	if err := g.take(g.base.content, g.added.contentOrNil(), warn); err != nil {
+	if err := g.take(g.base.content, g.added.content, warn); err != nil {
 		return err
 	}
 	g.accept()
@@ -345,19 +330,14 @@ func (g *configFiles) takeUpAtStart(warn func(error)) error {
 
 // accept records the files' content as last read as the config taken up.
 func (g *configFiles) accept() {
-	g.base.accepted = g.base.content
-	if g.added != nil {
-		g.added.accepted = g.added.content
-	}
+	g.base.accepted, g.added.accepted = g.base.content, g.added.content
 }
 
 // watch polls the files for changes, in turn, taking up the two on a change to either.
 func (g *configFiles) watch(log *logrus.Logger) {
 	for range time.Tick(reloadPollInterval) {
 		g.applyIfChanged(log, g.base)
-		if g.added != nil {
-			g.applyIfChanged(log, g.added)
-		}
+		g.applyIfChanged(log, g.added)
 	}
 }
 
@@ -475,9 +455,9 @@ func (g *configFiles) apply(log *logrus.Logger, f *configFile) error {
 // file's as last taken up, recording f's as accepted on success. An edit refused to one is not
 // taken up with an edit to the other, which is then taken or refused on its own merits.
 func (g *configFiles) takeOnChange(log *logrus.Logger, f *configFile) error {
-	base, added := f.content, g.added.acceptedOrNil()
+	base, added := f.content, g.other(f).accepted
 	if f.added {
-		base, added = g.base.accepted, f.content
+		base, added = added, base
 	}
 	if err := g.take(base, added, f.warn(log)); err != nil {
 		return err
@@ -548,21 +528,18 @@ func singleLink(path string, st fs.FileInfo) error {
 	return nil
 }
 
-// newConfigFiles is the config files of kind -- the base file, and the one added to it, if any (""
-// for none) -- as the proxy takes them up as it starts, their config not yet taken up
-// (takeUpAtStart).
+// newConfigFiles is the config files of kind -- the base file, and the one added to it -- as the
+// proxy takes them up as it starts, their config not yet taken up (takeUpAtStart).
 func newConfigFiles(kind configKind, base, added string) (*configFiles, error) {
 	baseFile, err := newConfigFile(base, kind, false)
 	if err != nil {
 		return nil, err
 	}
-	files := &configFiles{base: baseFile}
-	if added != "" {
-		if files.added, err = newConfigFile(added, kind, true); err != nil {
-			return nil, err
-		}
+	addedFile, err := newConfigFile(added, kind, true)
+	if err != nil {
+		return nil, err
 	}
-	return files, nil
+	return &configFiles{base: baseFile, added: addedFile}, nil
 }
 
 // takeUp is newConfigFiles, exiting the proxy on a refusal.
@@ -641,19 +618,19 @@ func main() {
 	if err != nil {
 		fail("can't watch process %d: %v", opts.parent, err)
 	}
-	// The token is for rendering the relays' config, not for smokescreen or Caddy.
-	relayConf := relayConfig{cmd: opts.relayConfig, allowlistPath: opts.allowlist,
-		env: takeEnv("GH_TOKEN", "GITHUB_TOKEN")}
 	path, smokeArgs := takeEgressACLPath(opts.smokeArgs)
 	if path == "" {
 		fail("--egress-acl-file not found on the command line; chopi requires a hot-reloadable egress ACL")
 	}
 	args := append([]string{os.Args[0]}, smokeArgs...)
 	// The config files, as taken up now, the proxy's config taken up from them alone, for their
-	// watches to take up any edit made from here on: the base files, and the rules added to them,
+	// watches to take up any edit made from here on: the base files, and the ones added to them,
 	// which, missing, are taken up once made.
 	rulesFiles := takeUp(rulesKind, path, opts.addRules)
-	allowlistFiles := takeUp(allowlistKind, opts.allowlist, "")
+	allowlistFiles := takeUp(allowlistKind, opts.allowlist, opts.addAllowlist)
+	// The token is for rendering the relays' config, not for smokescreen or Caddy.
+	relayConf := relayConfig{cmd: opts.relayConfig, env: takeEnv("GH_TOKEN", "GITHUB_TOKEN"),
+		paths: [2]string{allowlistFiles.base.path, allowlistFiles.added.path}}
 
 	// Smokescreen logs to stdout, the log, from the start, its global logger included: stderr is
 	// for why the proxy can't start.
@@ -695,7 +672,7 @@ func main() {
 	if err := conf.Validate(); err != nil {
 		fail("invalid smokescreen config: %v", err)
 	}
-	initialConfig, notes, err := relayConf.render(stop, allowlistFiles.base.content)
+	initialConfig, notes, err := relayConf.render(stop, allowlistFiles.base.content, allowlistFiles.added.content)
 	if err != nil {
 		if stop.Err() != nil {
 			// Stopped as it rendered, maybe at a keychain prompt: nothing else is up yet.
@@ -773,7 +750,7 @@ func main() {
 	// Should the log's formatter die, the log is lost from here on, but not the session's
 	// network: writing to it then fails instead of killing the proxy.
 	signal.Ignore(syscall.SIGPIPE)
-	allowlistFiles.take = func(base, _ []byte, _ func(error)) error { return relaySup.reload(base) }
+	allowlistFiles.take = func(base, added []byte, _ func(error)) error { return relaySup.reload(base, added) }
 	go allowlistFiles.watch(conf.Log)
 
 	// ...then serve, until the session ends or a server exits.

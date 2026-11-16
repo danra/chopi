@@ -97,15 +97,15 @@ func rewrite(t *testing.T, rules *configFiles, f *configFile, log *logrus.Logger
 }
 
 // testSetup returns a config whose log entries are captured by the returned hook, a holder
-// loaded from the given rules file, and the file, alone in the files the proxy watches.
+// loaded from the given rules file, and the file, the rules added to it missing.
 func testSetup(t *testing.T, path string) (*smokescreen.Config, *swappableACL, *configFiles, *configFile, *logrustest.Hook) {
 	t.Helper()
-	conf, holder, rules, hook := setupWith(t, path, "")
+	conf, holder, rules, hook := setupWith(t, path, missingAdded(t))
 	return conf, holder, rules, rules.base, hook
 }
 
-// setupWith is testSetup for the base rules file at base, and the one added to it at added, if any
-// ("" for none), returned as the proxy watches them.
+// setupWith is testSetup for the base rules file at base, and the one added to it at added,
+// returned as the proxy watches them.
 func setupWith(t *testing.T, base, added string) (*smokescreen.Config, *swappableACL, *configFiles, *logrustest.Hook) {
 	t.Helper()
 	conf, holder, rules, hook := untakenSetup(t, base, added)
@@ -113,6 +113,13 @@ func setupWith(t *testing.T, base, added string) (*smokescreen.Config, *swappabl
 		t.Fatalf("initial take: %v", err)
 	}
 	return conf, holder, rules, hook
+}
+
+// missingAdded is the path of an added config file that is missing, at a real path, as chopi gives
+// one (configFile.open).
+func missingAdded(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(realTempDir(t), "ws.yaml")
 }
 
 // untakenSetup is setupWith but for taking up the rules, left to the test.
@@ -126,7 +133,7 @@ func untakenSetup(t *testing.T, base, added string) (*smokescreen.Config, *swapp
 	if err != nil {
 		t.Fatalf("initial check: %v", err)
 	}
-	rules.take = takeRules(conf, holder, base, added)
+	rules.take = takeRules(conf, holder, rules.base.path, rules.added.path)
 	return conf, holder, rules, hook
 }
 
@@ -569,8 +576,9 @@ func TestUnreadableFileIsSurfacedOnce(t *testing.T) {
 	conf.Log = logger
 	holder := &swappableACL{} // untouched: a stat error returns before any load or swap
 	file := &configFile{path: path, kind: rulesKind}
-	rules := &configFiles{base: file}
-	rules.take = takeRules(conf, holder, path, "")
+	added := &configFile{path: missingAdded(t), kind: rulesKind, added: true}
+	rules := &configFiles{base: file, added: added}
+	rules.take = takeRules(conf, holder, rules.base.path, rules.added.path)
 
 	// First failing tick surfaces the error and sets unreadable; the mtime does not move.
 	rules.applyIfChanged(conf.Log, file)

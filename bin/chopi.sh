@@ -139,14 +139,15 @@ main() {
         preflight_config_placement "$config" "$run_dir" || return $?
     fi
 
-    # The repo's own proxy config, adding to the base config for its sessions alone; it may be
-    # missing, and be made mid-session.
-    local ws_config_dir ws_rules
+    # The repo's own proxy config, adding to the base config for its sessions alone; either file may
+    # be missing, and be made mid-session.
+    local ws_config_dir ws_rules ws_allowlist
     ws_config_dir="$(resolve_workspace_config_dir "$run_dir")" \
         || { echo "chopi: refusing to run" >&2; return 1; }
     ws_rules="$ws_config_dir/$DEFAULT_PROXY_RULES"
-    preflight_proxy_config_links "$CHOPI_PROXY_RULES" "$CHOPI_GITHUB_ALLOWLIST" "$ws_rules" \
-        || return $?
+    ws_allowlist="$ws_config_dir/$DEFAULT_GITHUB_ALLOWLIST"
+    preflight_proxy_config_links "$CHOPI_PROXY_RULES" "$CHOPI_GITHUB_ALLOWLIST" \
+        "$ws_rules" "$ws_allowlist" || return $?
 
     # The patch queue: where the command drops changes it wants made to a configured
     # write target, for the user to review and apply on the host with chopi-review.
@@ -169,7 +170,7 @@ main() {
         queue_env=(CHOPI_PATCH_QUEUE="$queue_dir" CHOPI_SAFE_WRITE_TARGETS="$targets")
     fi
 
-    if [ -e "$ws_rules" ]; then
+    if [ -e "$ws_rules" ] || [ -e "$ws_allowlist" ]; then
         echo "chopi: network: the base config, plus this repo's own in $ws_config_dir" >&2
     fi
 
@@ -178,7 +179,7 @@ main() {
     # for it; it starts as chopi goes on with the rest of its setup, and nothing reaches it before
     # the sandbox starts.
     launch_session_proxy "$CHOPI_PROXY_RULES" "$CHOPI_GITHUB_ALLOWLIST" "$verbose" \
-        "$CHOPI_USER_TMPDIR" "$ws_rules" \
+        "$CHOPI_USER_TMPDIR" "$ws_rules" "$ws_allowlist" \
         || { echo "chopi: refusing to run without the proxy" >&2; return 1; }
     [ -n "$verbose" ] && echo "chopi: the proxy logs to $SESSION_PROXY_LOG" >&2
 
@@ -305,6 +306,7 @@ main() {
         CHOPI_GITHUB_RELAY_PORT="$SESSION_RELAY_PORT" \
         CHOPI_PROXY_LOG="$SESSION_PROXY_LOG" \
         CHOPI_WORKSPACE_PROXY_RULES="$ws_rules" \
+        CHOPI_WORKSPACE_GITHUB_ALLOWLIST="$ws_allowlist" \
         HTTP_PROXY="$proxy"  HTTPS_PROXY="$proxy" \
         http_proxy="$proxy"  https_proxy="$proxy" \
         NODE_USE_ENV_PROXY=1 \

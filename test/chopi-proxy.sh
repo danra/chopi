@@ -288,15 +288,20 @@ echo "workspace config hot-reload lines (as the base config's, saying they are t
 # logs the base file's, saying what it reloaded, and naming the file, in fields of their own.
 ws_rules_ok='{"level":"info","msg":"egress ACL reloaded","name":"ws/proxy-rules.yaml","rules":"/x/ws/proxy-rules.yaml","time":"T","what":"workspace rules"}'
 ws_rules_fail='{"error":"bad key","level":"error","msg":"egress ACL reload failed; keeping the previous rules","name":"ws/proxy-rules.yaml","rules":"/x/ws/proxy-rules.yaml","time":"T","what":"workspace rules"}'
+ws_allowlist_ok='{"allowlist":"/x/ws/github-allowlist","level":"info","msg":"GitHub allowlist reloaded","name":"ws/github-allowlist","time":"T","what":"workspace GitHub allowlist"}'
 
 out="$(printf '%s\n' "$ws_rules_ok" | classify)"
 assert_eq "$out" "[chopi-proxy.sh] workspace rules reloaded  @ T" "workspace rules reload -> says it is the workspace's"
 out="$(printf '%s\n' "$ws_rules_fail" | classify)"
 assert_eq "$out" "[chopi-proxy.sh] WORKSPACE RULES RELOAD FAILED (previous rules kept)  bad key  @ T" \
     "  -> as does its failure, loud"
+out="$(printf '%s\n' "$ws_allowlist_ok" | classify)"
+assert_eq "$out" "[chopi-proxy.sh] workspace GitHub allowlist reloaded  @ T" "workspace allowlist reload -> says it is the workspace's"
 
 out="$(printf '%s\n' "$ws_rules_fail" | classify_log "chopi-proxy.sh" "" record_reload_hook false)"
 assert_contains "$out" "HOOK:failed rules $ws_rules_fail" "a failed workspace rules reload fires the reload hook, with its line, for the banner to say"
+out="$(printf '%s\n' "$ws_allowlist_ok" | classify_log "chopi-proxy.sh" "" record_reload_hook false)"
+assert_contains "$out" "HOOK:ok allowlist $ws_allowlist_ok" "a workspace allowlist reload fires the reload hook, with its line"
 
 
 # ---------------------------------------------------------------------------
@@ -472,7 +477,7 @@ while [ "\$#" -gt 0 ]; do
         --dir) dir="\$2" ;;
     esac
     case "\$1" in
-        --log|--parent|--dir|--rules|--github-allowlist|--add-rules) printf '%s=%s\n' "\$1" "\$2" >> "$TMPDIR/stub-args"; shift 2 ;;
+        --log|--parent|--dir|--rules|--github-allowlist|--add-rules|--add-github-allowlist) printf '%s=%s\n' "\$1" "\$2" >> "$TMPDIR/stub-args"; shift 2 ;;
         *) shift ;;
     esac
 done
@@ -501,7 +506,8 @@ user_tmpdir="$TMPDIR/user tmp"
 start_proxy_with() {
     : > "$TMPDIR/stub-args"
     STUB_PLAN="$1" launch_session_proxy "$TMPDIR/rules.yaml" "$TMPDIR/allowlist" "" \
-        "${2-$user_tmpdir}" "$TMPDIR/ws/$DEFAULT_PROXY_RULES" && await_session_proxy
+        "${2-$user_tmpdir}" "$TMPDIR/ws/$DEFAULT_PROXY_RULES" "$TMPDIR/ws/$DEFAULT_GITHUB_ALLOWLIST" \
+        && await_session_proxy
 }
 
 # Not in a $(...): the proxy must outlive the call, as it does in chopi, and a job started under job
@@ -515,6 +521,7 @@ assert_eq "$SESSION_GH_SOCK" "$SESSION_PROXY_DIR/$PROXY_GH_SOCK_FILE_NAME" "  ->
 assert_contains "$(cat "$TMPDIR/stub-args")" "--rules=$TMPDIR/rules.yaml" "  -> passing the configured rules"
 assert_contains "$(cat "$TMPDIR/stub-args")" "--github-allowlist=$TMPDIR/allowlist" "  -> and the configured allowlist"
 assert_contains "$(cat "$TMPDIR/stub-args")" "--add-rules=$TMPDIR/ws/$DEFAULT_PROXY_RULES" "  -> and the rules adding to them"
+assert_contains "$(cat "$TMPDIR/stub-args")" "--add-github-allowlist=$TMPDIR/ws/$DEFAULT_GITHUB_ALLOWLIST" "  -> and the allowlist"
 assert_contains "$(cat "$TMPDIR/stub-args")" "--log=$CHOPI_PROXY_LOG_DIR/proxy-" "  -> logging under the log dir"
 pid="$SESSION_PROXY_PID" dir="$SESSION_PROXY_DIR" child="$(cat "$TMPDIR/stub-child")"
 kill -0 "$pid" 2>/dev/null
@@ -523,7 +530,8 @@ assert_contains "$(cat "$TMPDIR/stub-args")" "--dir=$dir" "  -> with a dir of it
 # For later sessions to protect what it reads (proxy_config_paths), the added files included.
 assert_eq "$(cat "$dir/$PROXY_CONFIGS_FILE_NAME")" "$TMPDIR/rules.yaml
 $TMPDIR/allowlist
-$TMPDIR/ws/$DEFAULT_PROXY_RULES" "  -> listing every config file it reads there"
+$TMPDIR/ws/$DEFAULT_PROXY_RULES
+$TMPDIR/ws/$DEFAULT_GITHUB_ALLOWLIST" "  -> listing every config file it reads there"
 assert_eq "$(dirname "$dir")" "$PROXY_RUN_DIR" "  -> in the run dir, out of the sandbox's reach"
 # Not chopi's TMPDIR, which goes with the session: an editor a banner opens can outlive it.
 assert_contains "$(cat "$TMPDIR/stub-args")" "TMPDIR=$user_tmpdir"$'\n' "  -> with the TMPDIR chopi was started with"
@@ -568,7 +576,7 @@ stop_session_proxy
 
 # Stopped while still starting, as chopi stops it when its own setup fails or the user hits Ctrl-C.
 STUB_PLAN=starting launch_session_proxy "$TMPDIR/rules.yaml" "$TMPDIR/allowlist" "" "" \
-    "$TMPDIR/ws/$DEFAULT_PROXY_RULES"
+    "$TMPDIR/ws/$DEFAULT_PROXY_RULES" "$TMPDIR/ws/$DEFAULT_GITHUB_ALLOWLIST"
 pid="$SESSION_PROXY_PID" dir="$SESSION_PROXY_DIR"
 sleep 0.2
 stop_session_proxy
@@ -607,7 +615,7 @@ kill "$(cat "$TMPDIR/stub-child")" 2>/dev/null
 echo "option values (an option given no value, or an empty one, is refused)"
 # ---------------------------------------------------------------------------
 # Refused before anything is started, the log included.
-required=(--dir --log --parent --rules --github-allowlist --add-rules)
+required=(--dir --log --parent --rules --github-allowlist --add-rules --add-github-allowlist)
 for opt in "${required[@]}"; do
     others=()
     for other in "${required[@]}"; do
@@ -660,7 +668,8 @@ no_rules="$TMPDIR/no-such-rules.yaml"
 mkdir -p "$TMPDIR/pg-proxy"
 out="$("$repo/.internal/chopi-proxy.sh" --dir "$TMPDIR/pg-proxy" --log "$TMPDIR/pg-proxy.log" \
     --parent $$ --rules "$no_rules" --github-allowlist /dev/null \
-    --add-rules "$TMPDIR/no-such-ws/$DEFAULT_PROXY_RULES" 2>&1)"
+    --add-rules "$TMPDIR/no-such-ws/$DEFAULT_PROXY_RULES" \
+    --add-github-allowlist "$TMPDIR/no-such-ws/$DEFAULT_GITHUB_ALLOWLIST" 2>&1)"
 assert_contains "$out" "$no_rules" "a missing rules file is named on stderr"
 
 

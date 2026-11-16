@@ -1,8 +1,9 @@
 package main
 
-// Added config: proxy rules that add to the base ones, the --add-rules -- chopi's for a workspace's
-// own, for its sessions alone. The file may be missing, which adds nothing, and may
-// appear, or go, mid-session: it is watched as the base ones are.
+// Added config: proxy rules and GitHub allowlists that add to the base ones, the --add-rules and
+// --add-github-allowlist -- chopi's for a workspace's own, for its sessions alone. Each may be
+// missing, which adds nothing, and may appear, or go, mid-session: it is watched as the base ones
+// are.
 
 import (
 	"fmt"
@@ -68,7 +69,7 @@ func (content yamlRules) Load() (*acl.ACL, error) {
 }
 
 // loadRules loads the rules from the contents of the base rules file, at basePath, and of the one
-// added to it, at addedPath, if any: nil content for one missing -- as smokescreen would, with conf.
+// added to it, at addedPath: nil content for one missing -- as smokescreen would, with conf.
 // The paths are for errors to name, each naming the file to fix. It returns too the rules'
 // gitHubExfiltration refusals, for the caller to decide on: the base rules', if any, then that of
 // the GitHub hosts the added ones allow beyond them, if any, naming the added file.

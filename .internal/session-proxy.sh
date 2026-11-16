@@ -29,16 +29,17 @@ SESSION_GH_SOCK=""
 
 # Start the session's proxy, with RULES and ALLOWLIST as its configuration, and its log verbose when
 # VERBOSE is non-empty. Returns as soon as it is launched, for chopi to go on with its own setup as
-# the proxy starts; await_session_proxy waits for it. ADD_RULES add to RULES; they may be missing.
+# the proxy starts; await_session_proxy waits for it. ADD_RULES and ADD_ALLOWLIST add to RULES and
+# ALLOWLIST; either may be missing.
 #
 # USER_TMPDIR is the TMPDIR chopi was started with, before it took a temp dir of its own; empty for
 # none. The proxy runs with it, not with chopi's, which goes with the session: an editor its banner
 # opens can outlive the session, and so must the TMPDIR it's given.
 #
-# usage: launch_session_proxy RULES ALLOWLIST VERBOSE USER_TMPDIR ADD_RULES
+# usage: launch_session_proxy RULES ALLOWLIST VERBOSE USER_TMPDIR ADD_RULES ADD_ALLOWLIST
 launch_session_proxy() {
-    arity 5
-    local rules="$1" allowlist="$2" verbose="$3" user_tmpdir="$4" add_rules="$5"
+    arity 6
+    local rules="$1" allowlist="$2" verbose="$3" user_tmpdir="$4" add_rules="$5" add_allowlist="$6"
 
     if ! mkdir -p "$CHOPI_PROXY_LOG_DIR" 2>/dev/null; then
         echo "chopi: cannot create the proxy log dir $CHOPI_PROXY_LOG_DIR" >&2
@@ -60,10 +61,11 @@ launch_session_proxy() {
     # The proxy puts the relays' log beside its own, as a .caddy.log, which the sweep above covers
     # too.
     local flags=(--log "$SESSION_PROXY_LOG" --parent "$$" --rules "$rules"
-                 --github-allowlist "$allowlist" --add-rules "$add_rules")
+                 --github-allowlist "$allowlist" --add-rules "$add_rules"
+                 --add-github-allowlist "$add_allowlist")
     [ -n "$verbose" ] && flags+=(--verbose)
 
-    prepare_session_proxy_dir "$rules" "$allowlist" "$add_rules" || return 1
+    prepare_session_proxy_dir "$rules" "$allowlist" "$add_rules" "$add_allowlist" || return 1
 
     # Job control puts the proxy in a process group of its own, out of reach of the terminal's
     # signals: a Ctrl-C meant for the sandboxed command must not stop the proxy under it. chopi

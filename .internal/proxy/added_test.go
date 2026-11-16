@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -62,6 +63,13 @@ func mustSymlink(t *testing.T, target, link string) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// writeScript writes an executable script at path.
+func writeScript(t *testing.T, path, content string) {
+	t.Helper()
+	writeFile(t, path, content)
+	chmod(t, path, 0o755)
 }
 
 // wantReloadFailure checks the last log entry is a refused reload's, its error containing substr,
@@ -200,6 +208,44 @@ func TestAddedAllowedDomainsNeedABaseDefaultRule(t *testing.T) {
 	base, added := []byte(rulesWithoutDefault), []byte("allowed_domains: [ws.example]\n")
 	if _, _, err := loadRules(smokescreen.NewConfig(), "/rules.yaml", "/ws.yaml", base, added); err == nil || !strings.Contains(err.Error(), "no default rule") {
 		t.Errorf("got %v, want a refusal naming the missing default rule", err)
+	}
+}
+
+// The relays' config is rendered from the allowlists' contents as taken up, each in a file of its
+// own, gone once rendered; an added one missing adds nothing.
+func TestRelayConfigRendersFromBothAllowlists(t *testing.T) {
+	dir := t.TempDir()
+	cmd := filepath.Join(dir, "render")
+	writeScript(t, cmd, "#!/bin/sh\necho \"$*\" >>'"+filepath.Join(dir, "args")+"'\nfor f; do printf '[%s]' \"$(cat \"$f\")\"; done\n")
+	c := relayConfig{cmd: cmd}
+	for _, tc := range []struct {
+		added     []byte
+		want, why string
+	}{
+		{[]byte("ws/r\n"), "[base/r][ws/r]", "both allowlists given, each a file of its own"},
+		{[]byte{}, "[base/r][]", "an empty added allowlist given, as it is"},
+		{nil, "[base/r]", "the base allowlist alone, the missing added one adding nothing"},
+	} {
+		config, _, err := c.render(context.Background(), []byte("base/r"), tc.added)
+		if err != nil || string(config) != tc.want {
+			t.Errorf("rendered %q, err %v: want %s", config, err, tc.why)
+		}
+	}
+	for _, file := range strings.Fields(readFile(t, filepath.Join(dir, "args"))) {
+		if _, err := os.Stat(file); err == nil {
+			t.Errorf("%s, an allowlist given to render, outlived it", file)
+		}
+	}
+}
+
+// What the render says of an allowlist's file names the allowlist's own path, not its copy's.
+func TestRelayConfigNamesTheAllowlistsInWhatItSays(t *testing.T) {
+	cmd := filepath.Join(t.TempDir(), "render")
+	writeScript(t, cmd, "#!/bin/sh\necho \"$2: bad entry\" >&2\nexit 1\n")
+	c := relayConfig{cmd: cmd, paths: [2]string{"/cfg/github-allowlist", "/ws/github-allowlist"}}
+	_, _, err := c.render(context.Background(), []byte("base/r\n"), []byte("bad\n"))
+	if err == nil || !strings.Contains(err.Error(), "/ws/github-allowlist: bad entry") {
+		t.Errorf("got %v, want the added allowlist named", err)
 	}
 }
 

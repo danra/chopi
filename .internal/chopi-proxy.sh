@@ -9,10 +9,10 @@
 # to a .caddy.log beside it.
 #
 # usage: chopi-proxy.sh --dir DIR --log FILE --parent PID --rules FILE --github-allowlist FILE
-#                       --add-rules FILE [--verbose]
+#                       --add-rules FILE --add-github-allowlist FILE [--verbose]
 #
-# The --add-rules add to the base ones -- chopi's, a workspace's own (see workspace_config_dir);
-# they may be missing.
+# The --add-rules and --add-github-allowlist add to the base ones -- chopi's, a workspace's own (see
+# workspace_config_dir); either may be missing.
 
 set -euo pipefail
 # The GitHub token is chopi-smokescreen's alone, which exports it again (see run_smokescreen): kept
@@ -28,6 +28,7 @@ PARENT_PID=""
 RULES=""
 GITHUB_ALLOWLIST=""
 ADD_RULES=""
+ADD_GITHUB_ALLOWLIST=""
 VERBOSE=false
 # The --dir, which chopi made for us, is ours to remove, however we exit: only once what we lead is
 # gone, as chopi-smokescreen and Caddy keep their temporaries, and the API relay's socket, in it.
@@ -41,6 +42,7 @@ while [ "$#" -gt 0 ]; do
         --rules)            RULES="${2:-}" ;;
         --github-allowlist) GITHUB_ALLOWLIST="${2:-}" ;;
         --add-rules)        ADD_RULES="${2:-}" ;;
+        --add-github-allowlist) ADD_GITHUB_ALLOWLIST="${2:-}" ;;
         --log)              LOG="${2:-}" ;;
         --parent)           PARENT_PID="${2:-}" ;;
         --verbose) VERBOSE=true; shift; continue ;;
@@ -53,8 +55,10 @@ done
 . "$SCRIPT_DIR/util.sh"
 
 if [ -z "$PROXY_DIR" ] || [ -z "$LOG" ] || [ -z "$PARENT_PID" ] \
-    || [ -z "$RULES" ] || [ -z "$GITHUB_ALLOWLIST" ] || [ -z "$ADD_RULES" ]; then
-    echo "error: --dir, --log, --parent, --rules, --github-allowlist and --add-rules are required" >&2
+    || [ -z "$RULES" ] || [ -z "$GITHUB_ALLOWLIST" ] \
+    || [ -z "$ADD_RULES" ] || [ -z "$ADD_GITHUB_ALLOWLIST" ]; then
+    echo "error: --dir, --log, --parent, --rules, --github-allowlist, --add-rules and" \
+         "--add-github-allowlist are required" >&2
     exit 1
 fi
 # The relays' log sits beside ours, outliving the session as it does: named for chopi's sweep of
@@ -93,6 +97,7 @@ fi
 echo "[$SCRIPT_NAME] using proxy rules: $RULES"
 echo "[$SCRIPT_NAME] using GitHub allowlist: $GITHUB_ALLOWLIST"
 echo "[$SCRIPT_NAME] adding the proxy rules in, where present: $ADD_RULES"
+echo "[$SCRIPT_NAME] adding the GitHub allowlist in, where present: $ADD_GITHUB_ALLOWLIST"
 
 . "$CHOPI_DIR/.internal/classify-log.sh"
 for f in "$CONNECTION_FILTER" "$DENY_HOST_FILTER" "$KNOWN_DENY_FILTER" \
@@ -124,8 +129,8 @@ format_smokescreen_log() {
     token_source="$(gh_token_source)"
     RULES_RELOAD_GROUP="$(reload_banner_group "$RULES" "$ADD_RULES")"
     RULES_WS_RELOAD_GROUP="$(reload_banner_group "$ADD_RULES" "$RULES")"
-    ALLOWLIST_RELOAD_GROUP="$(reload_banner_group "$GITHUB_ALLOWLIST" "$token_source")"
-    ALLOWLIST_WS_RELOAD_GROUP="$ALLOWLIST_RELOAD_GROUP"
+    ALLOWLIST_RELOAD_GROUP="$(reload_banner_group "$GITHUB_ALLOWLIST" "$ADD_GITHUB_ALLOWLIST" "$token_source")"
+    ALLOWLIST_WS_RELOAD_GROUP="$(reload_banner_group "$ADD_GITHUB_ALLOWLIST" "$GITHUB_ALLOWLIST" "$token_source")"
     classify_log "$SCRIPT_NAME" notify_deny notify_reload "$VERBOSE"
 }
 
@@ -147,11 +152,10 @@ notify_deny() {
 # Each config file's reloads have a banner group of their own: a reload of one says nothing of the
 # other's last edit. It is shared by the sessions whose reloads of the file go alike, those reading
 # the same base and workspace files (reload_banner_group): a base edit shows once per workspace, so
-# one refused for what a workspace's file has shows in that workspace's sessions alone. A reload's
-# banner replaces its group's last one: a failure stays up until the user fixes it, and the fix's
-# confirmation takes its place, briefly. With no terminal for the proxy, the confirmation is the
-# user's word that an edit took effect before they retry what it allows -- or, by its absence, that
-# the edit went to a file the session doesn't read.
+# one refused for what a workspace's file has shows in that workspace's sessions alone. A reload's banner replaces its group's last one: a failure stays up
+# until the user fixes it, and the fix's confirmation takes its place, briefly. With no terminal for
+# the proxy, the confirmation is the user's word that an edit took effect before they retry what it
+# allows -- or, by its absence, that the edit went to a file the session doesn't read.
 #
 # The banner says what reloaded and names the file as the proxy's log LINE does.
 #
@@ -213,7 +217,7 @@ formatter=$!
 status=0
 TMPDIR="$PROXY_DIR" lead_group run_smokescreen "$PROXY_DIR" "$PARENT_PID" "$RULES" \
     "$GITHUB_ALLOWLIST" "$CHOPI_DIR/.internal/github-relays-config.sh" "$CADDY_LOG" \
-    "$ADD_RULES" 4>&2 2>&1 >&3 3>&- || status=$?
+    "$ADD_RULES" "$ADD_GITHUB_ALLOWLIST" 4>&2 2>&1 >&3 3>&- || status=$?
 exec 3>&-
 # Our end of the FIFO closed, the formatter ends once it reads the rest. A second stop signal while
 # it does stops us waiting.
