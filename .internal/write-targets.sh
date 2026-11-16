@@ -31,21 +31,12 @@ target_real_path() {
     realpath_or_self "$target_path"
 }
 
-# Print the queue or slot name for canonical path $1: 16 hex digits of its digest.
-#
-# A queue and a slot are both named this way -- a queue per workspace, a slot per target
-# inside it. Each records its own path, in WORKSPACE or TARGET, so it can be checked back
-# against the expected name.
-path_id() {
-    arity 1
-    local digest
-    digest="$(printf '%s' "$1" | shasum)" \
-        || { echo "chopi: cannot digest the path '$1'" >&2; return 1; }
-    printf '%s' "${digest:0:16}"
-}
-
 # Print the slot under queue $1 that holds the patches for target $2. Composed in one place,
 # since chopi creates the slot and the profile below grants write inside exactly it.
+#
+# A queue and a slot are both named by path_id -- a queue per workspace, a slot per target
+# inside it. Each records its own path, in WORKSPACE or TARGET, so it can be checked back
+# against the expected name.
 slot_dir() {
     arity 2
     local queue_dir="$1" path="$2" id

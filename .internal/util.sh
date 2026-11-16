@@ -585,6 +585,19 @@ resolution_paths() {
     printf '%s\n' "${cur:-/}"
 }
 
+# Print the queue or slot name for canonical path $1: 16 hex digits of its digest.
+#
+# A queue and a slot are both named this way -- a queue per workspace, a slot per target
+# inside it. Each records its own path, in WORKSPACE or TARGET, so it can be checked back
+# against the expected name.
+path_id() {
+    arity 1
+    local digest
+    digest="$(printf '%s' "$1" | shasum)" \
+        || { echo "chopi: cannot digest the path '$1'" >&2; return 1; }
+    printf '%s' "${digest:0:16}"
+}
+
 # Set VAR to where path $1 resolves: the last line of its resolution_paths. That is its real path
 # when it exists; past a missing node, the rest is appended unresolved.
 #
