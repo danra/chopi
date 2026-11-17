@@ -59,6 +59,21 @@ func setMtime(t *testing.T, path string, to time.Time) {
 	}
 }
 
+// skipIfRoot skips a test relying on a file's mode to make it unreadable, which root reads anyway.
+func skipIfRoot(t *testing.T) {
+	t.Helper()
+	if os.Getuid() == 0 {
+		t.Skip("root reads a file whatever its mode")
+	}
+}
+
+func chmod(t *testing.T, path string, mode os.FileMode) {
+	t.Helper()
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // reloadIfChanged reloads the rules if f, the rules file, changed since last taken up, as its watch
 // does each tick.
 func reloadIfChanged(conf *smokescreen.Config, holder *swappableACL, f *configFile) {
@@ -179,6 +194,36 @@ func TestReloadFailureKeepsPreviousRules(t *testing.T) {
 	reloadIfChanged(conf, holder, file)
 	if got := decide(t, holder, "fixed.example"); got != acl.Allow {
 		t.Fatalf("fixed.example after recovery: got %v, want Allow", got)
+	}
+}
+
+// unreadableEdit makes the rules file unreadable, as edited at mod, and checks the poll that sees
+// it logs a reload failure.
+func unreadableEdit(t *testing.T, conf *smokescreen.Config, holder *swappableACL, file *configFile,
+	hook *logrustest.Hook, mod time.Time) {
+	t.Helper()
+	chmod(t, file.path, 0)
+	setMtime(t, file.path, mod)
+	reloadIfChanged(conf, holder, file)
+	reloadFailure(t, hook)
+}
+
+// An edit the proxy can't read, for the file's mode, is taken up once the mode is fixed, though a
+// chmod changes no modification time.
+func TestAnEditMadeReadableIsTakenUp(t *testing.T) {
+	skipIfRoot(t)
+	path := filepath.Join(t.TempDir(), "rules.yaml")
+	writeFile(t, path, rulesAllowing("old.example"))
+	conf, holder, file, hook := testSetup(t, path)
+
+	writeFile(t, path, rulesAllowing("new.example"))
+	unreadableEdit(t, conf, holder, file, hook, file.lastMod.Add(time.Second))
+
+	chmod(t, path, 0o644)
+	reloadIfChanged(conf, holder, file)
+	reloaded(t, hook)
+	if got := decide(t, holder, "new.example"); got != acl.Allow {
+		t.Fatalf("new.example once the file is readable: got %v, want Allow", got)
 	}
 }
 
