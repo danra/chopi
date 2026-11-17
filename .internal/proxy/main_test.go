@@ -233,6 +233,32 @@ func TestAnEditMadeReadableIsTakenUp(t *testing.T) {
 	}
 }
 
+// What a refusal puts back is the config in effect, though the file changed as apply read it.
+func TestARefusalPutsBackTheConfigInEffect(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rules.yaml")
+	writeFile(t, path, rulesAllowing("old.example"))
+	conf, holder, file, _ := testSetup(t, path)
+
+	writeFile(t, path, rulesAllowing("a.example"))
+	setMtime(t, path, file.lastMod.Add(time.Second))
+	take := takeRules(conf, holder, file)
+	file.applyIfChanged(conf.Log, func() error {
+		writeFile(t, path, rulesAllowing("b.example"))
+		return take()
+	})
+	if got := decide(t, holder, "a.example"); got != acl.Allow {
+		t.Fatalf("a.example, as the watcher read it: got %v, want Allow", got)
+	}
+
+	writeThroughOtherLink(t, path, filepath.Join(dir, "other-link.yaml"), rulesAllowing("c.example"),
+		file.lastMod.Add(time.Hour))
+	reloadIfChanged(conf, holder, file)
+	if got := readFile(t, path); got != rulesAllowing("a.example") {
+		t.Fatalf("the put-back file should allow a.example, the config in effect, got:\n%s", got)
+	}
+}
+
 // Each edit that can't be read is logged, though the previous one couldn't be read either: the user
 // is told the new one wasn't taken up.
 func TestASecondUnreadableEditIsLogged(t *testing.T) {
