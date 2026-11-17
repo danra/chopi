@@ -87,17 +87,17 @@ func testSetup(t *testing.T, path string) (*smokescreen.Config, *swappableACL, *
 	conf := smokescreen.NewConfig()
 	logger, hook := logrustest.NewNullLogger()
 	conf.Log = logger
-	rules, err := loadRules(conf, path)
+	file, err := newConfigFile(path, rulesKind)
+	if err != nil {
+		t.Fatalf("initial check: %v", err)
+	}
+	rules, err := parseRules(conf, file.accepted)
 	if err != nil {
 		t.Fatalf("initial load: %v", err)
 	}
 	holder := &swappableACL{}
 	if err := holder.take(rules, func(error) {}); err != nil {
 		t.Fatalf("initial take: %v", err)
-	}
-	file, err := newConfigFile(path, rulesKind)
-	if err != nil {
-		t.Fatalf("initial check: %v", err)
 	}
 	return conf, holder, file, hook
 }
@@ -243,9 +243,9 @@ func TestARefusalPutsBackTheConfigInEffect(t *testing.T) {
 	writeFile(t, path, rulesAllowing("a.example"))
 	setMtime(t, path, file.lastMod.Add(time.Second))
 	take := takeRules(conf, holder, file)
-	file.applyIfChanged(conf.Log, func() error {
+	file.applyIfChanged(conf.Log, func(content []byte) error {
 		writeFile(t, path, rulesAllowing("b.example"))
-		return take()
+		return take(content)
 	})
 	if got := decide(t, holder, "a.example"); got != acl.Allow {
 		t.Fatalf("a.example, as the watcher read it: got %v, want Allow", got)
@@ -576,9 +576,7 @@ default:
 			"    - mygithub.com\n    - github.com.evil.example\n", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "rules.yaml")
-			writeFile(t, path, tc.rules)
-			rules, err := loadRules(smokescreen.NewConfig(), path)
+			rules, err := parseRules(smokescreen.NewConfig(), []byte(tc.rules))
 			if err != nil {
 				t.Fatalf("load: %v", err)
 			}
@@ -590,5 +588,20 @@ default:
 				t.Fatalf("want a refusal naming %q, got %v", tc.want, err)
 			}
 		})
+	}
+}
+
+// The egress ACL file is taken out of smokescreen's args, in either flag form, for smokescreen not
+// to read it too.
+func TestTakeEgressACLPath(t *testing.T) {
+	for _, args := range [][]string{
+		{"--listen-ip", "127.0.0.1", "--egress-acl-file", "/rules.yaml", "--deny-range", "10.0.0.0/8"},
+		{"--listen-ip", "127.0.0.1", "--egress-acl-file=/rules.yaml", "--deny-range", "10.0.0.0/8"},
+	} {
+		path, rest := takeEgressACLPath(args)
+		want := []string{"--listen-ip", "127.0.0.1", "--deny-range", "10.0.0.0/8"}
+		if path != "/rules.yaml" || !slices.Equal(rest, want) {
+			t.Fatalf("%q: got %q, %q; want /rules.yaml, %q", args, path, rest, want)
+		}
 	}
 }

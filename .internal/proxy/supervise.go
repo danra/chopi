@@ -111,22 +111,31 @@ func takeEnv(names ...string) []string {
 	return taken
 }
 
-// relayConfig renders the relays' Caddy config: the output of cmd run on the GitHub allowlist, with
-// env added to our environment -- the GitHub token the user exported, if any, which only cmd gets.
+// relayConfig renders the relays' Caddy config: the output of cmd run on a copy, in the temporary
+// directory, of the GitHub allowlist as its watcher read it (render), with env added to our
+// environment -- the GitHub token the user exported, if any, which only cmd gets.
 type relayConfig struct {
-	cmd, allowlist string
-	env            []string
+	cmd, allowlistPath string
+	env                []string
 }
 
 // renderCancelGrace bounds how long a cancelled render's output pipes are waited on, once its
 // process group is TERMed, before they are closed on whatever still holds them.
 const renderCancelGrace = 2 * time.Second
 
-// render returns the relays' config, with any notes cmd had for the user on stderr -- or, failing,
-// an error with what cmd said on stderr: why. Cancelling ctx TERMs cmd's whole process group: what
-// it waits on, like gh at a keychain prompt for the token, is a child of its own.
-func (c relayConfig) render(ctx context.Context) (config []byte, notes string, err error) {
-	cmd := exec.CommandContext(ctx, c.cmd, c.allowlist)
+// render returns the relays' config for allowlist, the allowlist as its watcher read it, with any
+// notes cmd had for the user on stderr -- or, failing, an error with what cmd said on stderr: why.
+// cmd runs on a copy of allowlist: the file may have changed since, and what is rendered must be
+// what the watcher records as taken up (configFile.accepted). Cancelling ctx TERMs cmd's whole
+// process group: what it waits on, like gh at a keychain prompt for the token, is a child of its
+// own.
+func (c relayConfig) render(ctx context.Context, allowlist []byte) (config []byte, notes string, err error) {
+	copied, err := writeTemp("", "allowlist-*", allowlist)
+	if err != nil {
+		return nil, "", fmt.Errorf("can't copy the GitHub allowlist to render it: %v", err)
+	}
+	defer os.Remove(copied)
+	cmd := exec.CommandContext(ctx, c.cmd, copied)
 	cmd.Env = append(os.Environ(), c.env...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
@@ -137,9 +146,27 @@ func (c relayConfig) render(ctx context.Context) (config []byte, notes string, e
 	said := strings.TrimSpace(stderr.String())
 	if err != nil {
 		return nil, "", fmt.Errorf("rendering the GitHub relays' config from %s failed (%v): %s",
-			c.allowlist, err, said)
+			c.allowlistPath, err, said)
 	}
 	return config, said, nil
+}
+
+// writeTemp writes content to a new file in dir, named for pattern as os.CreateTemp names it, and
+// returns its path; failing, it leaves no file behind.
+func writeTemp(dir, pattern string, content []byte) (string, error) {
+	f, err := os.CreateTemp(dir, pattern)
+	if err != nil {
+		return "", err
+	}
+	_, err = f.Write(content)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
 }
 
 // caddyProc is a Caddy serving the relays, or starting or stopping to.
@@ -300,10 +327,10 @@ func (s *relaySupervisor) serve(proc *caddyProc) (replaced *caddyProc) {
 	return replaced
 }
 
-// reload replaces the serving Caddy with one on the config rendered from the allowlist as it now
-// is, unless that is the config it already serves (a save with no edit). On failure, the serving
-// Caddy stays.
-func (s *relaySupervisor) reload() error {
+// reload replaces the serving Caddy with one on the config rendered from allowlist, an edit to the
+// allowlist (render), unless that is the config it already serves (a save with no edit). On
+// failure, the serving Caddy stays.
+func (s *relaySupervisor) reload(allowlist []byte) error {
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
@@ -311,7 +338,7 @@ func (s *relaySupervisor) reload() error {
 	}
 	s.rendering.Add(1)
 	s.mu.Unlock()
-	config, notes, err := s.config.render(s.renderCtx)
+	config, notes, err := s.config.render(s.renderCtx, allowlist)
 	s.rendering.Done()
 	if err != nil {
 		return err
@@ -412,23 +439,15 @@ func watchExit(parent context.Context, pid int) (context.Context, error) {
 // renamed over it, so a reader polling for path never sees it partly written, and no other
 // hard link reaches it.
 func writeAtomically(path, content string, perm fs.FileMode) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
+	tmp, err := writeTemp(filepath.Dir(path), ".tmp-*", []byte(content))
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
+	defer os.Remove(tmp)
+	if err := os.Chmod(tmp, perm); err != nil {
 		return err
 	}
-	if _, err := tmp.WriteString(content); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
+	return os.Rename(tmp, path)
 }
 
 // ports are the proxy's and the git relay's ports, as reported to chopi.

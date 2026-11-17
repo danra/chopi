@@ -49,6 +49,7 @@ import (
 	"github.com/stripe/smokescreen/cmd"
 	"github.com/stripe/smokescreen/pkg/smokescreen"
 	acl "github.com/stripe/smokescreen/pkg/smokescreen/acl/v1"
+	"gopkg.in/yaml.v2"
 )
 
 const reloadPollInterval = time.Second
@@ -83,8 +84,17 @@ func (s *swappableACL) take(rules *acl.ACL, warn func(error)) error {
 	return nil
 }
 
-func loadRules(conf *smokescreen.Config, path string) (*acl.ACL, error) {
-	return acl.New(conf.Log, acl.NewYAMLLoader(path), conf.DisabledAclPolicyActions)
+// parseRules is the rules in content, parsed as smokescreen's own YAML loader (acl.YAMLLoader)
+// parses a rules file.
+func parseRules(conf *smokescreen.Config, content []byte) (*acl.ACL, error) {
+	var config acl.YAMLConfig
+	if err := yaml.Unmarshal(content, &config); err != nil {
+		return nil, err
+	}
+	if config.Version != "v1" {
+		return nil, fmt.Errorf("expected version \"v1\" got %#v", config.Version)
+	}
+	return acl.New(conf.Log, &config, conf.DisabledAclPolicyActions)
 }
 
 // The log messages of a config file's reload, its failure keeping the previous config. The
@@ -107,11 +117,11 @@ var (
 	allowlistKind = configKind{"allowlist", allowlistReloaded, allowlistReloadFailed}
 )
 
-// takeRules takes up the rules file: loads it, and swaps it into holder, its warnings logged as
-// its reloads are.
-func takeRules(conf *smokescreen.Config, holder *swappableACL, file *configFile) func() error {
-	return func() error {
-		rules, err := loadRules(conf, file.path)
+// takeRules takes up an edit to the rules file, its content: parses it, and swaps it into holder,
+// its warnings logged as its reloads are.
+func takeRules(conf *smokescreen.Config, holder *swappableACL, file *configFile) func([]byte) error {
+	return func(content []byte) error {
+		rules, err := parseRules(conf, content)
 		if err != nil {
 			return err
 		}
@@ -225,13 +235,14 @@ func mustConfigFile(path string, kind configKind) *configFile {
 	return file
 }
 
-// applyIfChanged runs apply, which takes up the config file, if it changed since last taken up.
+// applyIfChanged runs apply, which takes up the config file's content, if it changed since last
+// taken up: the content as read here, for what is taken up to be what a refusal puts back.
 // Its success is logged, to log as the file's kind logs it; so are its failure, a file with other
 // hard links (singleLink), and a file that can't be read: each keeps the previous config. A file
 // with other links is moved aside, the config last taken up put back in its place (putBack). One
 // that can't be read is tried again on every poll, until it can be -- a chmod making it readable
 // changes no modification time -- with its being unreadable logged once per edit.
-func (f *configFile) applyIfChanged(log *logrus.Logger, apply func() error) {
+func (f *configFile) applyIfChanged(log *logrus.Logger, apply func([]byte) error) {
 	st, err := os.Stat(f.path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -265,13 +276,13 @@ func (f *configFile) applyIfChanged(log *logrus.Logger, apply func() error) {
 		f.unreadMod = st.ModTime()
 		return
 	}
-	f.lastMod = st.ModTime()
-	if err := apply(); err != nil {
+	if err := apply(content); err != nil {
 		entry.WithError(err).Error(f.kind.failedMsg)
 	} else {
 		f.accepted = content
 		entry.Info(f.kind.okMsg)
 	}
+	f.lastMod = st.ModTime()
 }
 
 // logEntry is the log entry for the config file: its path under its kind's key.
@@ -312,7 +323,7 @@ func singleLink(path string, st fs.FileInfo) error {
 
 // watch polls the config file for changes, for apply to take each up (applyIfChanged), logged to
 // log.
-func (f *configFile) watch(log *logrus.Logger, apply func() error) {
+func (f *configFile) watch(log *logrus.Logger, apply func([]byte) error) {
 	for range time.Tick(reloadPollInterval) {
 		f.applyIfChanged(log, apply)
 	}
@@ -327,16 +338,21 @@ func modTime(path string) time.Time {
 	return st.ModTime()
 }
 
-func egressACLPath(args []string) string {
-	for i, arg := range args {
-		if arg == "--egress-acl-file" && i+1 < len(args) {
-			return args[i+1]
-		}
-		if v, ok := strings.CutPrefix(arg, "--egress-acl-file="); ok {
-			return v
+// takeEgressACLPath is the path smokescreen's args name as the egress ACL file, and the args without
+// it: the proxy takes the file up itself (configFile), for smokescreen not to read it too.
+func takeEgressACLPath(args []string) (path string, rest []string) {
+	rest = make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--egress-acl-file" && i+1 < len(args) {
+			path = args[i+1]
+			i++
+		} else if v, ok := strings.CutPrefix(args[i], "--egress-acl-file="); ok {
+			path = v
+		} else {
+			rest = append(rest, args[i])
 		}
 	}
-	return ""
+	return path, rest
 }
 
 // Same role resolution as standalone smokescreen (https://github.com/stripe/smokescreen/blob/a3294a6cc4e4/main.go#L16-L24)
@@ -381,10 +397,10 @@ func main() {
 		fail("can't watch process %d: %v", opts.parent, err)
 	}
 	// The token is for rendering the relays' config, not for smokescreen or Caddy.
-	relayConf := relayConfig{cmd: opts.relayConfig, allowlist: opts.allowlist,
+	relayConf := relayConfig{cmd: opts.relayConfig, allowlistPath: opts.allowlist,
 		env: takeEnv("GH_TOKEN", "GITHUB_TOKEN")}
-	args := append([]string{os.Args[0]}, opts.smokeArgs...)
-	path := egressACLPath(opts.smokeArgs)
+	path, smokeArgs := takeEgressACLPath(opts.smokeArgs)
+	args := append([]string{os.Args[0]}, smokeArgs...)
 	// The config files, as taken up now, for their watches to take up any edit made from here on.
 	rulesFile := mustConfigFile(path, rulesKind)
 	allowlistFile := mustConfigFile(opts.allowlist, allowlistKind)
@@ -409,9 +425,11 @@ func main() {
 	if path == "" {
 		fail("--egress-acl-file not found on the command line; chopi requires a hot-reloadable egress ACL")
 	}
-	rules, ok := conf.EgressACL.(*acl.ACL)
-	if !ok {
-		fail("expected NewConfiguration to have loaded the egress ACL")
+	// The rules as rulesFile read them: what a refusal puts back (configFile.accepted) must be what
+	// is in effect.
+	rules, err := parseRules(conf, rulesFile.accepted)
+	if err != nil {
+		fail("could not load the egress ACL: %v", err)
 	}
 	holder := &swappableACL{allowGitHub: os.Getenv(gitHubExfiltrationOverride) != ""}
 	if err := holder.take(rules, func(warning error) { complain("warning: %v", warning) }); err != nil {
@@ -429,7 +447,7 @@ func main() {
 	if err := conf.Validate(); err != nil {
 		fail("invalid smokescreen config: %v", err)
 	}
-	initialConfig, notes, err := relayConf.render(stop)
+	initialConfig, notes, err := relayConf.render(stop, allowlistFile.accepted)
 	if err != nil {
 		if stop.Err() != nil {
 			// Stopped as it rendered, maybe at a keychain prompt: nothing else is up yet.
