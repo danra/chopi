@@ -392,15 +392,14 @@ func writeThroughOtherLink(t *testing.T, path, other, content string, mod time.T
 	setMtime(t, path, mod)
 }
 
-// As the proxy starts, a hard-linked config file is refused, whichever it is; a missing one is
-// left for its loading to report.
+// As the proxy starts, a hard-linked config file is refused, whichever it is.
 func TestStartRefusesAFileWithOtherLinks(t *testing.T) {
 	dir := t.TempDir()
 	rules := filepath.Join(dir, "rules.yaml")
 	allowlist := filepath.Join(dir, "allowlist")
 	writeFile(t, rules, rulesAllowing("old.example"))
 	writeFile(t, allowlist, "")
-	for path, kind := range map[string]configKind{rules: rulesKind, allowlist: allowlistKind, filepath.Join(dir, "missing"): rulesKind} {
+	for path, kind := range map[string]configKind{rules: rulesKind, allowlist: allowlistKind} {
 		if _, err := newConfigFile(path, kind); err != nil {
 			t.Fatalf("a config file with no other links: got %v, want no error", err)
 		}
@@ -411,6 +410,22 @@ func TestStartRefusesAFileWithOtherLinks(t *testing.T) {
 	_, err := newConfigFile(allowlist, allowlistKind)
 	if err == nil || !strings.Contains(err.Error(), allowlist) || !strings.Contains(err.Error(), "2 hard links") {
 		t.Fatalf("a hard-linked allowlist: got %v, want an error naming it and its hard links", err)
+	}
+}
+
+// As the proxy starts, a config file it can't read, missing or for its mode, is refused, the error
+// naming it: one taken up as empty would start a session on a config other than the user's, and,
+// should the file be fixed by a chmod, which changes no modification time, on it for good.
+func TestStartRefusesAFileItCantRead(t *testing.T) {
+	skipIfRoot(t)
+	dir := t.TempDir()
+	unreadable := filepath.Join(dir, "allowlist")
+	writeFile(t, unreadable, "owner/repo\n")
+	chmod(t, unreadable, 0)
+	for _, path := range []string{unreadable, filepath.Join(dir, "missing")} {
+		if _, err := newConfigFile(path, allowlistKind); err == nil || !strings.Contains(err.Error(), path) {
+			t.Fatalf("%s: got %v, want an error naming it", path, err)
+		}
 	}
 }
 
