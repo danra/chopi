@@ -475,7 +475,7 @@ func TestUnreadableFileIsSurfacedOnce(t *testing.T) {
 
 	// First failing tick surfaces the error and sets warned; the mtime does not move.
 	reloadIfChanged(conf, holder, file)
-	if !file.warned {
+	if file.warned == nil {
 		t.Fatal("a non-ENOENT stat error should set warned")
 	}
 	if !file.lastMod.IsZero() {
@@ -486,7 +486,7 @@ func TestUnreadableFileIsSurfacedOnce(t *testing.T) {
 	// A persistent error does not re-log while warned stays set.
 	hook.Reset()
 	reloadIfChanged(conf, holder, file)
-	if !file.warned {
+	if file.warned == nil {
 		t.Fatal("warned should stay set while the stat keeps failing")
 	}
 	if len(hook.Entries) != 0 {
@@ -502,7 +502,7 @@ func TestUnreadableFileIsSurfacedOnce(t *testing.T) {
 	}
 	writeFile(t, path, rulesAllowing("ok.example"))
 	reloadIfChanged(conf, holder, file)
-	if file.warned {
+	if file.warned != nil {
 		t.Fatal("a healthy stat should clear warned")
 	}
 	if got := decide(t, holder, "ok.example"); got != acl.Allow {

@@ -198,91 +198,107 @@ To run anyway, set %s=1.`, allowlist, template, path, path, gitHubExfiltrationOv
 
 // configFile is a config file the proxy watches, of kind, and what it last took up from it, to put
 // back should a change to it be refused (putBack). lastMod is the modification time last taken up,
-// for the next poll (applyIfChanged); warned whether the file's failing to stat was already logged,
-// and unreadMod the modification time of an edit whose failing to read was.
+// for the next poll (take); warned, if the file's being unreadable was already logged, the
+// modification time of the edit it couldn't read -- zero if it couldn't stat the file.
 type configFile struct {
-	path      string
-	kind      configKind
-	accepted  []byte
-	lastMod   time.Time
-	warned    bool
-	unreadMod time.Time
+	path     string
+	kind     configKind
+	accepted []byte
+	lastMod  time.Time
+	warned   *time.Time
 }
 
-// newConfigFile is the config file at path, as the proxy is about to take it up, refused if it has
-// other hard links (singleLink): it takes it up as it is then, so one written through another link
-// since chopi's preflight checked would be served. One that can't be read is left for its loading
-// to report. Its modification time is taken before it is read, for an edit made as it is read to
-// be taken up again.
+// newConfigFile is the config file at path, as the proxy takes it up as it starts (take): refused
+// if it has other hard links, so one written through another link since chopi's preflight checked
+// isn't served, or if it can't be read, missing or for its mode, as taking it up as empty would
+// start the session on a config other than the user's.
 func newConfigFile(path string, kind configKind) (*configFile, error) {
-	var lastMod time.Time
-	if st, err := os.Stat(path); err == nil {
-		if err := singleLink(path, st); err != nil {
-			return nil, err
-		}
-		lastMod = st.ModTime()
+	f := &configFile{path: path, kind: kind}
+	if _, err := f.take(func([]byte) error { return nil }); err != nil {
+		return nil, fmt.Errorf("can't take up the %s config: %w", kind.key, err)
 	}
-	accepted, _ := os.ReadFile(path)
-	return &configFile{path: path, kind: kind, accepted: accepted, lastMod: lastMod}, nil
+	return f, nil
 }
 
 // mustConfigFile is newConfigFile, exiting the proxy on a refusal.
 func mustConfigFile(path string, kind configKind) *configFile {
 	file, err := newConfigFile(path, kind)
 	if err != nil {
-		fail("%v: review it, as it may have been written through another hard link, before replacing it with a fresh copy", err)
+		fail("%v", err)
 	}
 	return file
 }
 
-// applyIfChanged runs apply, which takes up the config file's content, if it changed since last
-// taken up: the content as read here, for what is taken up to be what a refusal puts back.
-// Its success is logged, to log as the file's kind logs it; so are its failure, a file with other
-// hard links (singleLink), and a file that can't be read: each keeps the previous config. A file
-// with other links is moved aside, the config last taken up put back in its place (putBack). One
-// that can't be read is tried again on every poll, until it can be -- a chmod making it readable
-// changes no modification time -- with its being unreadable logged once per edit.
-func (f *configFile) applyIfChanged(log *logrus.Logger, apply func([]byte) error) {
+// unreadable is take's error for a config file it can't stat, mod then zero, or can't read: mod
+// is then the modification time of the edit it can't read.
+type unreadable struct {
+	mod time.Time
+	err error
+}
+
+func (u *unreadable) Error() string { return u.err.Error() }
+func (u *unreadable) Unwrap() error { return u.err }
+
+// take takes up the config file if it changed since last taken up (lastMod), returning whether it
+// took an edit up: has apply take up its content, recorded as taken up (accepted) unless apply refuses it --
+// the content as read here, for what is taken up to be what a refusal puts back. It refuses a file
+// with other hard links (singleLink), moved aside, the config last taken up put back in its place
+// (putBack), and one it can't stat or read (*unreadable). One it can't read is tried again on
+// every call, until it can be: a chmod making it readable changes no modification time. The
+// modification time is taken before the file is read, for an edit made as it is read to be taken
+// up again.
+func (f *configFile) take(apply func([]byte) error) (taken bool, err error) {
 	st, err := os.Stat(f.path)
 	if err != nil {
+		return false, &unreadable{err: err}
+	}
+	if st.ModTime().Equal(f.lastMod) {
+		return false, nil
+	}
+	if err := singleLink(f.path, st); err != nil {
+		f.lastMod = st.ModTime()
+		return false, f.putBack(st, err)
+	}
+	content, err := os.ReadFile(f.path)
+	if err != nil {
+		return false, &unreadable{mod: st.ModTime(), err: err}
+	}
+	f.lastMod = st.ModTime()
+	if err := apply(content); err != nil {
+		return false, err
+	}
+	f.accepted = content
+	return true, nil
+}
+
+// applyIfChanged takes up the config file, for apply to take up its content, if it changed since
+// last taken up (take). Its success is logged, to log as the file's kind logs it; so is its
+// refusal, keeping the previous config -- a file that can't be stat'ed or read once until it can
+// be, once per edit for one that can't be read -- unless it is missing.
+func (f *configFile) applyIfChanged(log *logrus.Logger, apply func([]byte) error) {
+	taken, err := f.take(apply)
+	var unread *unreadable
+	if errors.As(err, &unread) {
 		if errors.Is(err, fs.ErrNotExist) {
 			// Ignore a missing file: atomic-rename saves make it momentarily disappear, and the
 			// edge-case of a genuinely deleted file once its config is already in effect is also
 			// harmless.
 			return
 		}
-		// Warn on other errors (once, until the file can be stat'ed again)
-		if !f.warned {
+		// Warn once until the file can be read, or an edit to it is made that can't be either.
+		if f.warned == nil || !unread.mod.Equal(*f.warned) {
 			f.logEntry(log).WithError(err).Error(f.kind.failedMsg)
 		}
-		f.warned = true
+		f.warned = &unread.mod
 		return
 	}
-	f.warned = false
-	if st.ModTime().Equal(f.lastMod) {
-		return
+	f.warned = nil
+	switch {
+	case err != nil:
+		f.logEntry(log).WithError(err).Error(f.kind.failedMsg)
+	case taken:
+		f.logEntry(log).Info(f.kind.okMsg)
 	}
-	entry := f.logEntry(log)
-	if err := singleLink(f.path, st); err != nil {
-		f.lastMod = st.ModTime()
-		entry.WithError(f.putBack(st, err)).Error(f.kind.failedMsg)
-		return
-	}
-	content, err := os.ReadFile(f.path)
-	if err != nil {
-		if !st.ModTime().Equal(f.unreadMod) {
-			entry.WithError(err).Error(f.kind.failedMsg)
-		}
-		f.unreadMod = st.ModTime()
-		return
-	}
-	if err := apply(content); err != nil {
-		entry.WithError(err).Error(f.kind.failedMsg)
-	} else {
-		f.accepted = content
-		entry.Info(f.kind.okMsg)
-	}
-	f.lastMod = st.ModTime()
 }
 
 // logEntry is the log entry for the config file: its path under its kind's key.
@@ -294,10 +310,11 @@ func (f *configFile) logEntry(log *logrus.Logger) *logrus.Entry {
 // path.refused-TIMESTAMP for review, and rewrites path, under a new inode, with the content last
 // taken up: what was written through another link is then never served, now or as the proxy next
 // starts. Having rewritten it, it records the rewritten file's modification time, so it isn't taken
-// up as a change. It returns refusal, saying what became of the file.
+// up as a change. It returns refusal, saying what became of the file -- or, refused as the proxy
+// starts, nothing taken up yet to put back, what to do about it.
 func (f *configFile) putBack(st fs.FileInfo, refusal error) error {
 	if f.accepted == nil {
-		return fmt.Errorf("%w; nothing was taken up from it to put back: review it", refusal)
+		return fmt.Errorf("%w: review it, as it may have been written through another hard link, before replacing it with a fresh copy", refusal)
 	}
 	aside := f.path + ".refused-" + time.Now().Format("20060102-150405")
 	if err := os.Rename(f.path, aside); err != nil {
@@ -400,6 +417,9 @@ func main() {
 	relayConf := relayConfig{cmd: opts.relayConfig, allowlistPath: opts.allowlist,
 		env: takeEnv("GH_TOKEN", "GITHUB_TOKEN")}
 	path, smokeArgs := takeEgressACLPath(opts.smokeArgs)
+	if path == "" {
+		fail("--egress-acl-file not found on the command line; chopi requires a hot-reloadable egress ACL")
+	}
 	args := append([]string{os.Args[0]}, smokeArgs...)
 	// The config files, as taken up now, for their watches to take up any edit made from here on.
 	rulesFile := mustConfigFile(path, rulesKind)
@@ -422,9 +442,6 @@ func main() {
 	log.SetOutput(&smokescreen.Log2LogrusWriter{Entry: conf.Log.WithField("stdlog", "1")})
 	log.SetFlags(0)
 
-	if path == "" {
-		fail("--egress-acl-file not found on the command line; chopi requires a hot-reloadable egress ACL")
-	}
 	// The rules as rulesFile read them: what a refusal puts back (configFile.accepted) must be what
 	// is in effect.
 	rules, err := parseRules(conf, rulesFile.accepted)
