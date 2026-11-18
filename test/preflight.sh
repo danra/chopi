@@ -459,6 +459,15 @@ out="$(links_check 2>&1)"; st=$?
 assert_nonzero "$st" "a hard-linked config in use by another session is refused"
 assert_contains "$out" "'$hl/config/team/rules.yaml' has other hard links" "  -> naming it"
 
+if [ "$EUID" -ne 0 ]; then
+    chmod 000 "$hl/config/team"
+    out="$(CHOPI_ALLOW_SELF=1 links_check 2>&1)"; st=$?
+    chmod 700 "$hl/config/team"
+    assert_nonzero "$st" "a registered config whose directory can't be searched blocks startup"
+    assert_contains "$out" "could not check proxy config file '$hl/config/team/rules.yaml'" \
+        "  -> naming the file that couldn't be checked"
+fi
+
 
 # ---------------------------------------------------------------------------
 echo "rule (the Seatbelt-rule emitter)"

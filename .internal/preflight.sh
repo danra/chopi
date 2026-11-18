@@ -115,28 +115,25 @@ preflight_config_placement() {
 #
 # usage: preflight_proxy_config_links FILE...
 preflight_proxy_config_links() {
-    local path file files existing=()
+    local file info files
     proxy_config_files files "$@" || return 1
     for file in "${files[@]}"; do
-        path="$(realpath "$file" 2>/dev/null)" && [ -f "$path" ] || continue
-        is_item_in_list "$path" ${existing[@]+"${existing[@]}"} || existing+=("$path")
-    done
-    [ "${#existing[@]}" -gt 0 ] || return 0
-    local linked
-    if ! linked="$(find "${existing[@]}" -prune -type f -links +1 -print)"; then
-        echo "error: could not check every proxy config file for other hard links, which the sandboxed" >&2
-        echo "       command may write through (see find's error above)." >&2
-        return 1
-    fi
-    [ -n "$linked" ] || return 0
-    while IFS= read -r file; do
+        # stat follows symlinks and distinguishes missing files from files we can't inspect.
+        # Pin the locale so we can recognize the error for a file that has gone away.
+        if ! info="$(LC_ALL=C /usr/bin/stat -L -f '%HT:%l' "$file" 2>&1)"; then
+            [[ "$info" == *': No such file or directory' ]] && continue
+            echo "error: could not check proxy config file '$file' for other hard links" >&2
+            echo "$info" >&2
+            return 1
+        fi
+        [[ "$info" == 'Regular File:'* && "${info#*:}" -gt 1 ]] || continue
         refuse_or_warn \
             "the proxy's config file '$file' has other hard links, which the sandboxed command may write through" \
             "the sandboxed command could lift its own outgoing limits, and every other session's" \
             "Review what is in it, as it may have been written through another hard link, then
 replace it with a fresh copy, e.g.: cp '$file' '$file.tmp' && mv '$file.tmp' '$file'" \
             || return 1
-    done <<<"$linked"
+    done
 }
 
 # Resolve the proxy config file the sandbox config's variable VAR names -- or, when it names none,
