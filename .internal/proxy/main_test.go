@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -426,6 +427,40 @@ func TestStartRefusesAFileItCantRead(t *testing.T) {
 		if _, err := newConfigFile(path, allowlistKind); err == nil || !strings.Contains(err.Error(), path) {
 			t.Fatalf("%s: got %v, want an error naming it", path, err)
 		}
+	}
+}
+
+func TestConfigFIFOIsRefusedAndReloadRecovers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rules.yaml")
+	writeFile(t, path, rulesAllowing("old.example"))
+	conf, holder, file, hook := testSetup(t, path)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	setMtime(t, path, file.lastMod.Add(time.Second))
+
+	if _, err := newConfigFile(path, rulesKind); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("starting with a FIFO: got %v, want a non-regular file error", err)
+	}
+	reloadIfChanged(conf, holder, file)
+	reloadFailure(t, hook)
+	if got := decide(t, holder, "old.example"); got != acl.Allow {
+		t.Fatalf("old.example after FIFO refusal: got %v, want Allow", got)
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, path, rulesAllowing("new.example"))
+	setMtime(t, path, file.lastMod.Add(2*time.Second))
+	hook.Reset()
+	reloadIfChanged(conf, holder, file)
+	reloaded(t, hook)
+	if got := decide(t, holder, "new.example"); got != acl.Allow {
+		t.Fatalf("new.example after replacing the FIFO: got %v, want Allow", got)
 	}
 }
 
