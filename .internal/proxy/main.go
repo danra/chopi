@@ -433,7 +433,9 @@ func main() {
 		fail("could not create the smokescreen configuration: %v", err)
 	}
 	if conf == nil {
-		return // --help or --version, already handled by NewConfiguration
+		// What NewConfiguration gives for --help or --version, having printed them: never passed by
+		// chopi-proxy.sh, so nothing to run.
+		fail("smokescreen gave no configuration (--help or --version on the command line?)")
 	}
 	conf.RoleFromRequest = defaultRoleFromRequest
 
