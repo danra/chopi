@@ -188,13 +188,15 @@ To run anyway, set %s=1.`, allowlist, template, path, path, gitHubExfiltrationOv
 
 // configFile is a config file the proxy watches, of kind, and what it last took up from it, to put
 // back should a change to it be refused (putBack). lastMod is the modification time last taken up,
-// and warned whether its being unreadable was already logged, for the next poll (applyIfChanged).
+// for the next poll (applyIfChanged); warned whether the file's failing to stat was already logged,
+// and unreadMod the modification time of an edit whose failing to read was.
 type configFile struct {
-	path     string
-	kind     configKind
-	accepted []byte
-	lastMod  time.Time
-	warned   bool
+	path      string
+	kind      configKind
+	accepted  []byte
+	lastMod   time.Time
+	warned    bool
+	unreadMod time.Time
 }
 
 // newConfigFile is the config file at path, as the proxy is about to take it up, refused if it has
@@ -226,7 +228,9 @@ func mustConfigFile(path string, kind configKind) *configFile {
 // applyIfChanged runs apply, which takes up the config file, if it changed since last taken up.
 // Its success is logged, to log as the file's kind logs it; so are its failure, a file with other
 // hard links (singleLink), and a file that can't be read: each keeps the previous config. A file
-// with other links is moved aside, the config last taken up put back in its place (putBack).
+// with other links is moved aside, the config last taken up put back in its place (putBack). One
+// that can't be read is tried again on every poll, until it can be -- a chmod making it readable
+// changes no modification time -- with its being unreadable logged once per edit.
 func (f *configFile) applyIfChanged(log *logrus.Logger, apply func() error) {
 	st, err := os.Stat(f.path)
 	if err != nil {
@@ -236,7 +240,7 @@ func (f *configFile) applyIfChanged(log *logrus.Logger, apply func() error) {
 			// harmless.
 			return
 		}
-		// Warn on other errors (once, until the file can be read again)
+		// Warn on other errors (once, until the file can be stat'ed again)
 		if !f.warned {
 			f.logEntry(log).WithError(err).Error(f.kind.failedMsg)
 		}
@@ -248,16 +252,21 @@ func (f *configFile) applyIfChanged(log *logrus.Logger, apply func() error) {
 		return
 	}
 	entry := f.logEntry(log)
-	f.lastMod = st.ModTime()
 	if err := singleLink(f.path, st); err != nil {
+		f.lastMod = st.ModTime()
 		entry.WithError(f.putBack(st, err)).Error(f.kind.failedMsg)
 		return
 	}
 	content, err := os.ReadFile(f.path)
-	if err == nil {
-		err = apply()
-	}
 	if err != nil {
+		if !st.ModTime().Equal(f.unreadMod) {
+			entry.WithError(err).Error(f.kind.failedMsg)
+		}
+		f.unreadMod = st.ModTime()
+		return
+	}
+	f.lastMod = st.ModTime()
+	if err := apply(); err != nil {
 		entry.WithError(err).Error(f.kind.failedMsg)
 	} else {
 		f.accepted = content

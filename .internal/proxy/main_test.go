@@ -218,6 +218,12 @@ func TestAnEditMadeReadableIsTakenUp(t *testing.T) {
 
 	writeFile(t, path, rulesAllowing("new.example"))
 	unreadableEdit(t, conf, holder, file, hook, file.lastMod.Add(time.Second))
+	// Tried again on the next poll, its being unreadable isn't logged again.
+	hook.Reset()
+	reloadIfChanged(conf, holder, file)
+	if len(hook.Entries) != 0 {
+		t.Fatalf("unexpected log entries on a file still unreadable: %+v", hook.Entries)
+	}
 
 	chmod(t, path, 0o644)
 	reloadIfChanged(conf, holder, file)
@@ -225,6 +231,53 @@ func TestAnEditMadeReadableIsTakenUp(t *testing.T) {
 	if got := decide(t, holder, "new.example"); got != acl.Allow {
 		t.Fatalf("new.example once the file is readable: got %v, want Allow", got)
 	}
+}
+
+// Each edit that can't be read is logged, though the previous one couldn't be read either: the user
+// is told the new one wasn't taken up.
+func TestASecondUnreadableEditIsLogged(t *testing.T) {
+	skipIfRoot(t)
+	path := filepath.Join(t.TempDir(), "rules.yaml")
+	writeFile(t, path, rulesAllowing("old.example"))
+	conf, holder, file, hook := testSetup(t, path)
+	mod := file.lastMod
+
+	unreadableEdit(t, conf, holder, file, hook, mod.Add(time.Second))
+
+	hook.Reset()
+	unreadableEdit(t, conf, holder, file, hook, mod.Add(2*time.Second))
+}
+
+// An edit that can't be read after a refused one is logged, though the refused change couldn't be
+// put back.
+func TestUnreadableAfterARefusalIsLogged(t *testing.T) {
+	skipIfRoot(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rules.yaml")
+	writeFile(t, path, rulesAllowing("old.example"))
+	conf, holder, file, hook := testSetup(t, path)
+	mod := file.lastMod
+
+	unreadableEdit(t, conf, holder, file, hook, mod.Add(time.Second))
+
+	// Refused, and not put back: its directory can't take the move aside.
+	chmod(t, path, 0o644)
+	other := filepath.Join(dir, "other-link.yaml")
+	writeThroughOtherLink(t, path, other, rulesAllowing("new.example"), mod.Add(2*time.Second))
+	chmod(t, dir, 0o555)
+	t.Cleanup(func() { chmod(t, dir, 0o755) })
+	hook.Reset()
+	reloadIfChanged(conf, holder, file)
+	if err := reloadFailure(t, hook); !strings.Contains(err.Error(), "could not move it aside") {
+		t.Fatalf("expected the refused file not to be moved aside, got %v", err)
+	}
+
+	chmod(t, dir, 0o755)
+	if err := os.Remove(other); err != nil {
+		t.Fatal(err)
+	}
+	hook.Reset()
+	unreadableEdit(t, conf, holder, file, hook, mod.Add(3*time.Second))
 }
 
 // A config file with another hard link, which the sandbox profile can't see by its path, may have
