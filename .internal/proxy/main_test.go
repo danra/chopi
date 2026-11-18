@@ -59,6 +59,21 @@ func setMtime(t *testing.T, path string, to time.Time) {
 	}
 }
 
+// skipIfRoot skips a test relying on a file's mode to make it unreadable, which root reads anyway.
+func skipIfRoot(t *testing.T) {
+	t.Helper()
+	if os.Getuid() == 0 {
+		t.Skip("root reads a file whatever its mode")
+	}
+}
+
+func chmod(t *testing.T, path string, mode os.FileMode) {
+	t.Helper()
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // reloadIfChanged reloads the rules if f, the rules file, changed since last taken up, as its watch
 // does each tick.
 func reloadIfChanged(conf *smokescreen.Config, holder *swappableACL, f *configFile) {
@@ -72,17 +87,17 @@ func testSetup(t *testing.T, path string) (*smokescreen.Config, *swappableACL, *
 	conf := smokescreen.NewConfig()
 	logger, hook := logrustest.NewNullLogger()
 	conf.Log = logger
-	rules, err := loadRules(conf, path)
+	file, err := newConfigFile(path, rulesKind)
+	if err != nil {
+		t.Fatalf("initial check: %v", err)
+	}
+	rules, err := parseRules(conf, file.accepted)
 	if err != nil {
 		t.Fatalf("initial load: %v", err)
 	}
 	holder := &swappableACL{}
 	if err := holder.take(rules, func(error) {}); err != nil {
 		t.Fatalf("initial take: %v", err)
-	}
-	file, err := newConfigFile(path, rulesKind)
-	if err != nil {
-		t.Fatalf("initial check: %v", err)
 	}
 	return conf, holder, file, hook
 }
@@ -182,6 +197,115 @@ func TestReloadFailureKeepsPreviousRules(t *testing.T) {
 	}
 }
 
+// unreadableEdit makes the rules file unreadable, as edited at mod, and checks the poll that sees
+// it logs a reload failure.
+func unreadableEdit(t *testing.T, conf *smokescreen.Config, holder *swappableACL, file *configFile,
+	hook *logrustest.Hook, mod time.Time) {
+	t.Helper()
+	chmod(t, file.path, 0)
+	setMtime(t, file.path, mod)
+	reloadIfChanged(conf, holder, file)
+	reloadFailure(t, hook)
+}
+
+// An edit the proxy can't read, for the file's mode, is taken up once the mode is fixed, though a
+// chmod changes no modification time.
+func TestAnEditMadeReadableIsTakenUp(t *testing.T) {
+	skipIfRoot(t)
+	path := filepath.Join(t.TempDir(), "rules.yaml")
+	writeFile(t, path, rulesAllowing("old.example"))
+	conf, holder, file, hook := testSetup(t, path)
+
+	writeFile(t, path, rulesAllowing("new.example"))
+	unreadableEdit(t, conf, holder, file, hook, file.lastMod.Add(time.Second))
+	// Tried again on the next poll, its being unreadable isn't logged again.
+	hook.Reset()
+	reloadIfChanged(conf, holder, file)
+	if len(hook.Entries) != 0 {
+		t.Fatalf("unexpected log entries on a file still unreadable: %+v", hook.Entries)
+	}
+
+	chmod(t, path, 0o644)
+	reloadIfChanged(conf, holder, file)
+	reloaded(t, hook)
+	if got := decide(t, holder, "new.example"); got != acl.Allow {
+		t.Fatalf("new.example once the file is readable: got %v, want Allow", got)
+	}
+}
+
+// What a refusal puts back is the config in effect, though the file changed as apply read it.
+func TestARefusalPutsBackTheConfigInEffect(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rules.yaml")
+	writeFile(t, path, rulesAllowing("old.example"))
+	conf, holder, file, _ := testSetup(t, path)
+
+	writeFile(t, path, rulesAllowing("a.example"))
+	setMtime(t, path, file.lastMod.Add(time.Second))
+	take := takeRules(conf, holder, file)
+	file.applyIfChanged(conf.Log, func(content []byte) error {
+		writeFile(t, path, rulesAllowing("b.example"))
+		return take(content)
+	})
+	if got := decide(t, holder, "a.example"); got != acl.Allow {
+		t.Fatalf("a.example, as the watcher read it: got %v, want Allow", got)
+	}
+
+	writeThroughOtherLink(t, path, filepath.Join(dir, "other-link.yaml"), rulesAllowing("c.example"),
+		file.lastMod.Add(time.Hour))
+	reloadIfChanged(conf, holder, file)
+	if got := readFile(t, path); got != rulesAllowing("a.example") {
+		t.Fatalf("the put-back file should allow a.example, the config in effect, got:\n%s", got)
+	}
+}
+
+// Each edit that can't be read is logged, though the previous one couldn't be read either: the user
+// is told the new one wasn't taken up.
+func TestASecondUnreadableEditIsLogged(t *testing.T) {
+	skipIfRoot(t)
+	path := filepath.Join(t.TempDir(), "rules.yaml")
+	writeFile(t, path, rulesAllowing("old.example"))
+	conf, holder, file, hook := testSetup(t, path)
+	mod := file.lastMod
+
+	unreadableEdit(t, conf, holder, file, hook, mod.Add(time.Second))
+
+	hook.Reset()
+	unreadableEdit(t, conf, holder, file, hook, mod.Add(2*time.Second))
+}
+
+// An edit that can't be read after a refused one is logged, though the refused change couldn't be
+// put back.
+func TestUnreadableAfterARefusalIsLogged(t *testing.T) {
+	skipIfRoot(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rules.yaml")
+	writeFile(t, path, rulesAllowing("old.example"))
+	conf, holder, file, hook := testSetup(t, path)
+	mod := file.lastMod
+
+	unreadableEdit(t, conf, holder, file, hook, mod.Add(time.Second))
+
+	// Refused, and not put back: its directory can't take the move aside.
+	chmod(t, path, 0o644)
+	other := filepath.Join(dir, "other-link.yaml")
+	writeThroughOtherLink(t, path, other, rulesAllowing("new.example"), mod.Add(2*time.Second))
+	chmod(t, dir, 0o555)
+	t.Cleanup(func() { chmod(t, dir, 0o755) })
+	hook.Reset()
+	reloadIfChanged(conf, holder, file)
+	if err := reloadFailure(t, hook); !strings.Contains(err.Error(), "could not move it aside") {
+		t.Fatalf("expected the refused file not to be moved aside, got %v", err)
+	}
+
+	chmod(t, dir, 0o755)
+	if err := os.Remove(other); err != nil {
+		t.Fatal(err)
+	}
+	hook.Reset()
+	unreadableEdit(t, conf, holder, file, hook, mod.Add(3*time.Second))
+}
+
 // A config file with another hard link, which the sandbox profile can't see by its path, may have
 // been written through it by a sandboxed command: its change is refused, the previous rules kept, and
 // it is moved aside for review, what was last taken up put back in its place with no other
@@ -268,15 +392,14 @@ func writeThroughOtherLink(t *testing.T, path, other, content string, mod time.T
 	setMtime(t, path, mod)
 }
 
-// As the proxy starts, a hard-linked config file is refused, whichever it is; a missing one is
-// left for its loading to report.
+// As the proxy starts, a hard-linked config file is refused, whichever it is.
 func TestStartRefusesAFileWithOtherLinks(t *testing.T) {
 	dir := t.TempDir()
 	rules := filepath.Join(dir, "rules.yaml")
 	allowlist := filepath.Join(dir, "allowlist")
 	writeFile(t, rules, rulesAllowing("old.example"))
 	writeFile(t, allowlist, "")
-	for path, kind := range map[string]configKind{rules: rulesKind, allowlist: allowlistKind, filepath.Join(dir, "missing"): rulesKind} {
+	for path, kind := range map[string]configKind{rules: rulesKind, allowlist: allowlistKind} {
 		if _, err := newConfigFile(path, kind); err != nil {
 			t.Fatalf("a config file with no other links: got %v, want no error", err)
 		}
@@ -287,6 +410,22 @@ func TestStartRefusesAFileWithOtherLinks(t *testing.T) {
 	_, err := newConfigFile(allowlist, allowlistKind)
 	if err == nil || !strings.Contains(err.Error(), allowlist) || !strings.Contains(err.Error(), "2 hard links") {
 		t.Fatalf("a hard-linked allowlist: got %v, want an error naming it and its hard links", err)
+	}
+}
+
+// As the proxy starts, a config file it can't read, missing or for its mode, is refused, the error
+// naming it: one taken up as empty would start a session on a config other than the user's, and,
+// should the file be fixed by a chmod, which changes no modification time, on it for good.
+func TestStartRefusesAFileItCantRead(t *testing.T) {
+	skipIfRoot(t)
+	dir := t.TempDir()
+	unreadable := filepath.Join(dir, "allowlist")
+	writeFile(t, unreadable, "owner/repo\n")
+	chmod(t, unreadable, 0)
+	for _, path := range []string{unreadable, filepath.Join(dir, "missing")} {
+		if _, err := newConfigFile(path, allowlistKind); err == nil || !strings.Contains(err.Error(), path) {
+			t.Fatalf("%s: got %v, want an error naming it", path, err)
+		}
 	}
 }
 
@@ -336,7 +475,7 @@ func TestUnreadableFileIsSurfacedOnce(t *testing.T) {
 
 	// First failing tick surfaces the error and sets warned; the mtime does not move.
 	reloadIfChanged(conf, holder, file)
-	if !file.warned {
+	if file.warned == nil {
 		t.Fatal("a non-ENOENT stat error should set warned")
 	}
 	if !file.lastMod.IsZero() {
@@ -347,7 +486,7 @@ func TestUnreadableFileIsSurfacedOnce(t *testing.T) {
 	// A persistent error does not re-log while warned stays set.
 	hook.Reset()
 	reloadIfChanged(conf, holder, file)
-	if !file.warned {
+	if file.warned == nil {
 		t.Fatal("warned should stay set while the stat keeps failing")
 	}
 	if len(hook.Entries) != 0 {
@@ -363,7 +502,7 @@ func TestUnreadableFileIsSurfacedOnce(t *testing.T) {
 	}
 	writeFile(t, path, rulesAllowing("ok.example"))
 	reloadIfChanged(conf, holder, file)
-	if file.warned {
+	if file.warned != nil {
 		t.Fatal("a healthy stat should clear warned")
 	}
 	if got := decide(t, holder, "ok.example"); got != acl.Allow {
@@ -452,9 +591,7 @@ default:
 			"    - mygithub.com\n    - github.com.evil.example\n", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "rules.yaml")
-			writeFile(t, path, tc.rules)
-			rules, err := loadRules(smokescreen.NewConfig(), path)
+			rules, err := parseRules(smokescreen.NewConfig(), []byte(tc.rules))
 			if err != nil {
 				t.Fatalf("load: %v", err)
 			}
@@ -466,5 +603,20 @@ default:
 				t.Fatalf("want a refusal naming %q, got %v", tc.want, err)
 			}
 		})
+	}
+}
+
+// The egress ACL file is taken out of smokescreen's args, in either flag form, for smokescreen not
+// to read it too.
+func TestTakeEgressACLPath(t *testing.T) {
+	for _, args := range [][]string{
+		{"--listen-ip", "127.0.0.1", "--egress-acl-file", "/rules.yaml", "--deny-range", "10.0.0.0/8"},
+		{"--listen-ip", "127.0.0.1", "--egress-acl-file=/rules.yaml", "--deny-range", "10.0.0.0/8"},
+	} {
+		path, rest := takeEgressACLPath(args)
+		want := []string{"--listen-ip", "127.0.0.1", "--deny-range", "10.0.0.0/8"}
+		if path != "/rules.yaml" || !slices.Equal(rest, want) {
+			t.Fatalf("%q: got %q, %q; want /rules.yaml, %q", args, path, rest, want)
+		}
 	}
 }

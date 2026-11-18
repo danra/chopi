@@ -68,15 +68,21 @@ func TestTakeEnvTakesTheSetOnesOut(t *testing.T) {
 	}
 }
 
+// The allowlist is rendered as the watcher read it, from a copy removed once rendered.
 func TestRelayConfigRendersWithItsEnv(t *testing.T) {
 	dir := t.TempDir()
 	cmd := filepath.Join(dir, "render")
-	writeFile(t, cmd, "#!/bin/sh\necho note >&2\nprintf '%s:%s' \"$1\" \"$CHOPI_TEST_TOKEN\"\n")
+	writeFile(t, cmd, "#!/bin/sh\necho note >&2\nprintf '%s:%s' \"$(cat \"$1\")\" \"$CHOPI_TEST_TOKEN\"\n")
 	os.Chmod(cmd, 0o755)
-	config, notes, err := relayConfig{cmd: cmd, allowlist: "/the/allowlist",
-		env: []string{"CHOPI_TEST_TOKEN=t"}}.render(context.Background())
-	if err != nil || string(config) != "/the/allowlist:t" || notes != "note" {
+	copies := t.TempDir()
+	t.Setenv("TMPDIR", copies)
+	config, notes, err := relayConfig{cmd: cmd, allowlistPath: "/the/allowlist",
+		env: []string{"CHOPI_TEST_TOKEN=t"}}.render(context.Background(), []byte("the allowlist"))
+	if err != nil || string(config) != "the allowlist:t" || notes != "note" {
 		t.Errorf("rendered %q, notes %q, err %v", config, notes, err)
+	}
+	if left, _ := os.ReadDir(copies); len(left) != 0 {
+		t.Errorf("copies left behind: %v", left)
 	}
 }
 
@@ -84,7 +90,7 @@ func TestRelayConfigSaysWhyItFailed(t *testing.T) {
 	cmd := filepath.Join(t.TempDir(), "render")
 	writeFile(t, cmd, "#!/bin/sh\necho partial\necho 'no token' >&2\nexit 1\n")
 	os.Chmod(cmd, 0o755)
-	config, notes, err := relayConfig{cmd: cmd, allowlist: "/a"}.render(context.Background())
+	config, notes, err := relayConfig{cmd: cmd, allowlistPath: "/a"}.render(context.Background(), nil)
 	if err == nil || !strings.Contains(err.Error(), "no token") || config != nil || notes != "" {
 		t.Errorf("rendered %q, notes %q, err %v: want no config, and why", config, notes, err)
 	}
@@ -95,7 +101,7 @@ func TestRelayConfigRenderStopsWithItsChildren(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	rendered := make(chan error, 1)
 	go func() {
-		_, _, err := relayConfig{cmd: cmd, allowlist: "/a"}.render(ctx)
+		_, _, err := relayConfig{cmd: cmd, allowlistPath: "/a"}.render(ctx, nil)
 		rendered <- err
 	}()
 	pid := awaitPid(t, pidFile)
@@ -116,9 +122,9 @@ func TestRelayConfigRenderStopsWithItsChildren(t *testing.T) {
 
 func TestStopAllStopsAReloadsRender(t *testing.T) {
 	cmd, pidFile := stuckRender(t)
-	s := newRelaySupervisor(nil, filepath.Join(t.TempDir(), "log"), relayConfig{cmd: cmd, allowlist: "/a"})
+	s := newRelaySupervisor(nil, filepath.Join(t.TempDir(), "log"), relayConfig{cmd: cmd, allowlistPath: "/a"})
 	reloaded := make(chan error, 1)
-	go func() { reloaded <- s.reload() }()
+	go func() { reloaded <- s.reload(nil) }()
 	pid := awaitPid(t, pidFile)
 	s.stopAll()
 	// Checked at once, not waited for: stopAll returns only once the render's group is gone.
@@ -129,7 +135,7 @@ func TestStopAllStopsAReloadsRender(t *testing.T) {
 	if err := <-reloaded; err == nil {
 		t.Error("a reload stopped as it rendered succeeded")
 	}
-	if err := s.reload(); err == nil {
+	if err := s.reload(nil); err == nil {
 		t.Error("a reload after stopAll succeeded")
 	}
 }
