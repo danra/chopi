@@ -31,6 +31,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"maps"
@@ -229,8 +230,8 @@ func mustConfigFile(path string, kind configKind) *configFile {
 	return file
 }
 
-// unreadable is take's error for a config file it can't stat, mod then zero, or can't read: mod
-// is then the modification time of the edit it can't read.
+// unreadable is take's error for a config file it can't stat, mod then zero, or can't read or
+// that isn't a regular file: mod is then the modification time of the edit it can't read.
 type unreadable struct {
 	mod time.Time
 	err error
@@ -243,10 +244,10 @@ func (u *unreadable) Unwrap() error { return u.err }
 // took an edit up: has apply take up its content, recorded as taken up (accepted) unless apply refuses it --
 // the content as read here, for what is taken up to be what a refusal puts back. It refuses a file
 // with other hard links (singleLink), moved aside, the config last taken up put back in its place
-// (putBack), and one it can't stat or read (*unreadable). One it can't read is tried again on
-// every call, until it can be: a chmod making it readable changes no modification time. The
-// modification time is taken before the file is read, for an edit made as it is read to be taken
-// up again.
+// (putBack), and one it can't stat or read, or that isn't a regular file (*unreadable). One it
+// can't read is tried again on every call, until it can be: a chmod making it readable changes no
+// modification time. The modification time is taken before the file is read, for an edit made as
+// it is read to be taken up again.
 func (f *configFile) take(apply func([]byte) error) (taken bool, err error) {
 	st, err := os.Stat(f.path)
 	if err != nil {
@@ -255,11 +256,24 @@ func (f *configFile) take(apply func([]byte) error) (taken bool, err error) {
 	if st.ModTime().Equal(f.lastMod) {
 		return false, nil
 	}
+	// The path can be replaced after Stat, so the refusals below check the file opened, which is
+	// opened without waiting for a writer, for a FIFO not to stall the proxy.
+	file, err := os.OpenFile(f.path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return false, &unreadable{mod: st.ModTime(), err: err}
+	}
+	defer file.Close()
+	if st, err = file.Stat(); err != nil {
+		return false, &unreadable{err: err}
+	}
+	if !st.Mode().IsRegular() {
+		return false, &unreadable{mod: st.ModTime(), err: fmt.Errorf("%s is not a regular file", f.path)}
+	}
 	if err := singleLink(f.path, st); err != nil {
 		f.lastMod = st.ModTime()
 		return false, f.putBack(st, err)
 	}
-	content, err := os.ReadFile(f.path)
+	content, err := io.ReadAll(file)
 	if err != nil {
 		return false, &unreadable{mod: st.ModTime(), err: err}
 	}
