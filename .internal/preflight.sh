@@ -108,28 +108,24 @@ preflight_config_placement() {
     fi
 }
 
-# Refuse a proxy config file (proxy_config_paths) with extra hard links: write_proxy_config_profile
-# denies changes by path, so the sandboxed command could write the live rules through another link.
-# The sandbox keeps the command from making one, but not one made outside it. One made once the
-# session is up is caught by the proxy, which moves the file aside as *.refused-* (see its putBack);
-# the proxy never reads those, so they're skipped here.
+# Check the config files for this session, defaults, and running sessions for extra hard links.
+# write_proxy_config_profile denies changes by path, so an extra link could expose a live file.
+# The proxy also checks the file it opens at startup and on reload. Config files no one uses are
+# left unchecked: one written through a link that is gone by the time a session picks it is missed.
 #
-# usage: preflight_proxy_config_links
+# usage: preflight_proxy_config_links FILE...
 preflight_proxy_config_links() {
-    arity 0
-    local path file paths existing=()
-    proxy_config_paths paths || return 1
-    for path in "${paths[@]}"; do
-        [ -e "$path" ] && existing+=("$path")
+    local path file files existing=()
+    proxy_config_files files "$@" || return 1
+    for file in "${files[@]}"; do
+        path="$(realpath "$file" 2>/dev/null)" && [ -f "$path" ] || continue
+        is_item_in_list "$path" ${existing[@]+"${existing[@]}"} || existing+=("$path")
     done
     [ "${#existing[@]}" -gt 0 ] || return 0
-    # Run to the end before any refusal, for find's status: a file it couldn't check (an unreadable
-    # dir) may be one with other hard links.
     local linked
-    if ! linked="$(find "${existing[@]}" -type f -links +1 ! -name '*.refused-*')"; then
+    if ! linked="$(find "${existing[@]}" -prune -type f -links +1 -print)"; then
         echo "error: could not check every proxy config file for other hard links, which the sandboxed" >&2
         echo "       command may write through (see find's error above)." >&2
-        echo "Make everything under ${existing[*]} readable to you." >&2
         return 1
     fi
     [ -n "$linked" ] || return 0

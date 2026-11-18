@@ -93,7 +93,6 @@ main() {
     # paths, and one with a symlink on the way can only be resolved once it exists.
     mkdir -p "$PROXY_CONFIG_DIR" \
         || { echo "chopi: could not create the proxy config dir '$PROXY_CONFIG_DIR'" >&2; return 1; }
-    preflight_proxy_config_links || return $?
 
     local CHOPI_SAFEHOUSE_FLAGS=()
     local CHOPI_EXTRA_ENV=()
@@ -109,6 +108,7 @@ main() {
     resolve_proxy_config CHOPI_PROXY_RULES "$DEFAULT_PROXY_RULES" proxy-rules.template.yaml || return 1
     resolve_proxy_config CHOPI_GITHUB_ALLOWLIST "$DEFAULT_GITHUB_ALLOWLIST" github-allowlist.template \
         || return 1
+    preflight_proxy_config_links "$CHOPI_PROXY_RULES" "$CHOPI_GITHUB_ALLOWLIST" || return $?
 
     if [ -n "$worktree_given" ]; then
         local wt_out_file

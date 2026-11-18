@@ -343,8 +343,8 @@ func (f *configFile) putBack(st fs.FileInfo, refusal error) error {
 
 // singleLink refuses a config file with more than one hard link:
 // the sandbox denies changes to it by path, so a sandboxed command may have written it through
-// another link. chopi refuses one before launch (preflight_proxy_config_links), and the proxy as it
-// starts (newConfigFile); this is for one made since.
+// another link. chopi refuses one on the files in use before launch (preflight_proxy_config_links),
+// and the proxy as it starts (newConfigFile); this is for one made since.
 func singleLink(path string, st fs.FileInfo) error {
 	if sys := st.Sys().(*syscall.Stat_t); sys.Nlink > 1 {
 		return fmt.Errorf("%s has %d hard links, which a sandboxed command may write through", path, sys.Nlink)

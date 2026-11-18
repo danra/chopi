@@ -632,20 +632,35 @@ running_session_configs() {
         | awk 'length && !seen[$0]++')
 }
 
+# Set array VAR to the proxy config files a proxy may read, each once: the FILEs given, the default
+# files, and those running sessions' proxies read (running_session_configs). Fails on a path with a
+# newline, VAR then untouched, as on any failure: never a partial list.
+#
+# usage: proxy_config_files VAR [FILE...]
+proxy_config_files() {
+    local _pcf_var="$1" _pcf_listed
+    shift
+    running_session_configs _pcf_listed || return 1
+    # Listed one per line, below.
+    reject_newline_path "$@" "$CHOPI_DIR" || return 1
+    readarray -t "$_pcf_var" < <(printf '%s\n' "$@" "$CHOPI_DIR/config/$DEFAULT_PROXY_RULES" \
+        "$CHOPI_DIR/config/$DEFAULT_GITHUB_ALLOWLIST" "${_pcf_listed[@]+"${_pcf_listed[@]}"}" \
+        | awk '!seen[$0]++')
+}
+
 # Set array VAR to every path deciding which proxy config a session's proxy reads, now or as a later
-# session starts (resolution_paths): PROXY_CONFIG_DIR's, where a custom one must be; the default
-# files', which may link elsewhere, through any number of links; and those of the files running
-# sessions' proxies read (running_session_configs), should a link have been repointed since one
-# started. Every session keeps its command from changing them all, as a safe write target must not
-# overlap them. On failure VAR is left untouched, never a partial list.
+# session starts (resolution_paths): PROXY_CONFIG_DIR's, where a custom one must be; and those of
+# the files proxies may read (proxy_config_files) -- the default files, which may link elsewhere,
+# through any number of links, and the running sessions', should a link have been repointed since
+# one started. Every session keeps its command from changing them all, as a safe write target must
+# not overlap them. On failure VAR is left untouched, never a partial list.
 #
 # usage: proxy_config_paths VAR
 proxy_config_paths() {
     arity 1
-    local _pcp_path _pcp_listed _pcp_all
-    running_session_configs _pcp_listed || return 1
-    _pcp_all="$(for _pcp_path in "$PROXY_CONFIG_DIR" "$CHOPI_DIR/config/$DEFAULT_PROXY_RULES" \
-        "$CHOPI_DIR/config/$DEFAULT_GITHUB_ALLOWLIST" "${_pcp_listed[@]+"${_pcp_listed[@]}"}"; do
+    local _pcp_path _pcp_files _pcp_all
+    proxy_config_files _pcp_files || return 1
+    _pcp_all="$(for _pcp_path in "$PROXY_CONFIG_DIR" "${_pcp_files[@]}"; do
         resolution_paths "$_pcp_path" || exit 1
     done)" || return 1
     # resolution_paths refuses newlines, so its lines split back into paths.
@@ -659,8 +674,9 @@ proxy_config_paths() {
 # deny, appended after every file grant, comes last among the matching rules and wins: nothing in
 # them can be written, removed, or have another put in its place. Their ancestors are pinned, so
 # none can be renamed away and replaced, nor made where missing. Reading is left as granted. Another
-# name for a config file, a hard link, which these rules can't see, chopi refuses before launch (see
-# preflight_proxy_config_links), and the proxy refuses a change to a file with one.
+# name for a config file, a hard link, which these rules can't see, chopi refuses before launch on
+# the files in use (see preflight_proxy_config_links), and the proxy refuses a change to a file
+# with one.
 #
 # usage: write_proxy_config_profile FILE
 write_proxy_config_profile() {
