@@ -86,6 +86,8 @@ launch_session_proxy() {
 # usage: prepare_session_proxy_dir RULES ALLOWLIST
 prepare_session_proxy_dir() {
     arity 2
+    # Listed one per line below, they can hold no newline.
+    reject_newline_path "$1" "$2" || return 1
     if ! { mkdir -p "$CHOPI_RUN_DIR" && make_private_dir "$PROXY_RUN_DIR"; }; then
         echo "chopi: cannot set up the proxy's run dir $PROXY_RUN_DIR" >&2
         return 1

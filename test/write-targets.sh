@@ -179,21 +179,26 @@ ln -s "$TMPDIR/real-config" "$TMPDIR/hop/dir-link"
 ln -s ../hop/dir-link/rules.yaml "$TMPDIR/linked-config/second-link.yaml"
 ln -sf "$TMPDIR/linked-config/second-link.yaml" "$TMPDIR/fake-chopi/config/$DEFAULT_PROXY_RULES"
 real_tmp="$(realpath "$TMPDIR")"
-config_paths="$(CHOPI_DIR="$TMPDIR/fake-chopi" PROXY_RUN_DIR="$TMPDIR/no-run" proxy_config_paths)"
-assert_contains "$config_paths" "$real_tmp/fake-chopi/config/$DEFAULT_PROXY_RULES" \
+CHOPI_DIR="$TMPDIR/fake-chopi" PROXY_RUN_DIR="$TMPDIR/no-run" proxy_config_paths paths
+config_paths="$(printf '%s\n' "${paths[@]}")"
+assert_has_line "$config_paths" "$real_tmp/fake-chopi/config/$DEFAULT_PROXY_RULES" \
     "  -> the proxy's config paths list a default file's link, in its real dir"
-assert_contains "$config_paths" "$real_tmp/linked-config/second-link.yaml" "  -> the link it points at"
-assert_contains "$config_paths" "$real_tmp/hop/dir-link" "  -> a linked dir on the way"
-assert_contains "$config_paths" "$real_tmp/real-config/rules.yaml" "  -> and the file they resolve to"
+assert_has_line "$config_paths" "$real_tmp/linked-config/second-link.yaml" "  -> the link it points at"
+assert_has_line "$config_paths" "$real_tmp/hop/dir-link" "  -> a linked dir on the way"
+assert_has_line "$config_paths" "$real_tmp/real-config/rules.yaml" "  -> and the file they resolve to"
 # Each running session's proxy dir lists the files it reads, as resolved when it started: should a
 # link have been repointed since, the file it still reads is protected too.
 mkdir -p "$TMPDIR/run/$PROXY_SESSION_DIR_PREFIX.a" "$TMPDIR/run/$PROXY_SESSION_DIR_PREFIX.b"
 printf '%s\n' "$real_tmp/linked-config/rules.yaml" > "$TMPDIR/run/$PROXY_SESSION_DIR_PREFIX.a/$PROXY_CONFIGS_FILE_NAME"
 printf '%s\n' "$real_tmp/real-config/allowlist" > "$TMPDIR/run/$PROXY_SESSION_DIR_PREFIX.b/$PROXY_CONFIGS_FILE_NAME"
-config_paths="$(CHOPI_DIR="$TMPDIR/fake-chopi" PROXY_RUN_DIR="$TMPDIR/run" proxy_config_paths)"
-assert_contains "$config_paths" "$real_tmp/linked-config/rules.yaml" \
+CHOPI_DIR="$TMPDIR/fake-chopi" PROXY_RUN_DIR="$TMPDIR/run" proxy_config_paths paths
+config_paths="$(printf '%s\n' "${paths[@]}")"
+assert_has_line "$config_paths" "$real_tmp/linked-config/rules.yaml" \
     "  -> as is a file a running session's proxy reads"
-assert_contains "$config_paths" "$real_tmp/real-config/allowlist" "  -> and one another session's reads"
+assert_has_line "$config_paths" "$real_tmp/real-config/allowlist" "  -> and one another session's reads"
+config=stale
+overlaps_proxy_config config "$work"
+assert_eq "$config" "" "  -> a path reaching none of them clears the variable naming the config reached"
 
 # Inside the workspace is allowed: the profile denies writing to the target to enforce review
 mkdir -p "$work/sub"

@@ -334,19 +334,23 @@ overlaps_proxy_run_dir() {
     overlapping_dirs "$(realpath_or_self "$1")" "$(realpath_or_self "$PROXY_RUN_DIR")"
 }
 
-# Does path $1 reach any proxy config (proxy_config_paths), in either direction? Printing the
-# config it reaches. The proxy hot-reloads it, so nothing that changes it unreviewed may reach it.
+# Does PATH reach any proxy config (proxy_config_paths), in either direction? Setting VAR to the
+# config it reaches, or to nothing; failing only if the config paths cannot be checked.
+# The proxy hot-reloads it, so nothing that changes it unreviewed may reach it.
+#
+# usage: overlaps_proxy_config VAR PATH
 overlaps_proxy_config() {
-    arity 1
-    local real config
-    real="$(realpath_or_self "$1")"
-    while IFS= read -r config; do
-        if overlapping_dirs "$real" "$config"; then
-            printf '%s' "$config"
+    arity 2
+    local _opc_real _opc_config _opc_paths
+    proxy_config_paths _opc_paths || return 1
+    _opc_real="$(realpath_or_self "$2")"
+    for _opc_config in "${_opc_paths[@]}"; do
+        if overlapping_dirs "$_opc_real" "$_opc_config"; then
+            printf -v "$1" '%s' "$_opc_config"
             return 0
         fi
-    done < <(proxy_config_paths)
-    return 1
+    done
+    printf -v "$1" '%s' ''
 }
 
 # Print the GitHub token the environment sets, as it is: GH_TOKEN, then GITHUB_TOKEN. A SET variable
@@ -483,10 +487,25 @@ write_proxy_run_dir_profile() {
     } >"$file"
 }
 
+# Fail on any PATH with a newline, which a list of paths one per line cannot hold.
+#
+# usage: reject_newline_path PATH...
+reject_newline_path() {
+    local path
+    for path in "$@"; do
+        if [[ "$path" == *$'\n'* ]]; then
+            printf 'chopi: paths must not contain a newline: %q\n' "$path" >&2
+            return 1
+        fi
+    done
+}
+
 # Print what decides which file path $1 names, one per line: every symlink met resolving it, each
-# where it really is -- in a dir with no symlink on its way -- then the real path it resolves to.
+# where it really is -- in a dir with no symlink on its way -- then the real path it resolves to, in
+# its case on disk (a case-insensitive volume takes any).
 # Repointing any of those links would have $1 name another file. Past a missing node, the rest is
 # appended unresolved. A symlink loop ends the walk, its links printed: $1 names no file then.
+# Fails on a newline in $1 or in any link's target, which the output could not hold.
 resolution_paths() {
     arity 1
     local todo="$1" cur="" node target hops=0
@@ -494,6 +513,7 @@ resolution_paths() {
         /*) ;;
         *)  todo="$PWD/$todo" ;;
     esac
+    reject_newline_path "$todo" || return 1
     while [ -n "$todo" ]; do
         todo="${todo#/}"
         node="${todo%%/*}"
@@ -505,7 +525,10 @@ resolution_paths() {
             "" | .) continue ;;
             ..)     cur="${cur%/*}"; continue ;;
         esac
-        if [ -L "$cur/$node" ] && target="$(readlink "$cur/$node")"; then
+        if [ -L "$cur/$node" ] && target="$(readlink -n "$cur/$node" && printf '.')"; then
+            # The marker keeps Bash from stripping trailing newlines in the target.
+            target="${target%.}"
+            reject_newline_path "$target" || return 1
             printf '%s\n' "$cur/$node"
             hops=$((hops + 1))
             [ "$hops" -le 40 ] || return 0
@@ -517,26 +540,45 @@ resolution_paths() {
             cur="$cur/$node"
         fi
     done
+    # The walk keeps the case as given; realpath gives the one on disk. With no symlink left on the
+    # way, it changes nothing else, so no newline appears.
+    [ ! -e "$cur" ] || cur="$(realpath_or_self "$cur")"
     printf '%s\n' "${cur:-/}"
 }
 
-# Print every path deciding which proxy config a session's proxy reads, now or as a later session
-# starts, one per line (resolution_paths): PROXY_CONFIG_DIR's, where a custom one must be; the
-# default files', which may link elsewhere, through any number of links; and those of the files each
-# running session's proxy reads, as listed in its dir (launch_session_proxy), should a link have been
+# Set VAR to where path $1 resolves: the last line of its resolution_paths. That is its real path
+# when it exists; past a missing node, the rest is appended unresolved.
+#
+# usage: resolved_path VAR PATH
+resolved_path() {
+    arity 2
+    local _rp_paths
+    _rp_paths="$(resolution_paths "$2")" || return 1
+    printf -v "$1" '%s' "${_rp_paths##*$'\n'}"
+}
+
+# Set array VAR to every path deciding which proxy config a session's proxy reads, now or as a later
+# session starts (resolution_paths): PROXY_CONFIG_DIR's, where a custom one must be; the default
+# files', which may link elsewhere, through any number of links; and those of the files each running
+# session's proxy reads, as listed in its dir (launch_session_proxy), should a link have been
 # repointed since it started. Every session keeps its command from changing them all, as a safe
-# write target must not overlap them.
+# write target must not overlap them. On failure VAR is left untouched, never a partial list.
+#
+# usage: proxy_config_paths VAR
 proxy_config_paths() {
-    arity 0
-    local path
-    # Sessions mostly list the same files, so each is resolved once.
-    {
-        printf '%s\n' "$PROXY_CONFIG_DIR" "$CHOPI_DIR/config/$DEFAULT_PROXY_RULES" \
-            "$CHOPI_DIR/config/$DEFAULT_GITHUB_ALLOWLIST"
-        cat "$PROXY_RUN_DIR/$PROXY_SESSION_DIR_PREFIX".*/"$PROXY_CONFIGS_FILE_NAME" 2>/dev/null
-    } | awk 'length && !seen[$0]++' | while IFS= read -r path; do
-        resolution_paths "$path"
-    done | awk '!seen[$0]++'
+    arity 1
+    local _pcp_path _pcp_fixed _pcp_listed _pcp_all
+    _pcp_fixed=("$PROXY_CONFIG_DIR" "$CHOPI_DIR/config/$DEFAULT_PROXY_RULES"
+        "$CHOPI_DIR/config/$DEFAULT_GITHUB_ALLOWLIST")
+    # Sessions mostly list the same files, so each is resolved once. The fixed paths stay out of
+    # awk: one holding a newline must reach resolution_paths whole, to be refused rather than split.
+    readarray -t _pcp_listed < <(awk 'length && !seen[$0]++' \
+        "$PROXY_RUN_DIR/$PROXY_SESSION_DIR_PREFIX".*/"$PROXY_CONFIGS_FILE_NAME" 2>/dev/null)
+    _pcp_all="$(for _pcp_path in "${_pcp_fixed[@]}" "${_pcp_listed[@]+"${_pcp_listed[@]}"}"; do
+        resolution_paths "$_pcp_path" || exit 1
+    done)" || return 1
+    # resolution_paths refuses newlines, so its lines split back into paths.
+    readarray -t "$1" < <(awk '!seen[$0]++' <<<"$_pcp_all")
 }
 
 # Write the Seatbelt profile denying the sandboxed command any change to the proxy's config to FILE
@@ -553,7 +595,7 @@ proxy_config_paths() {
 write_proxy_config_profile() {
     arity 1
     local file="$1" paths path
-    readarray -t paths < <(proxy_config_paths)
+    proxy_config_paths paths || return 1
     {
         echo ";; chopi: the proxy's config, which sets the sessions' outgoing limits, stays unchangeable."
         for path in "${paths[@]}"; do

@@ -63,7 +63,8 @@ preflight_initial() {
     # profile denies the command any change to it whatever the workspace (write_proxy_config_profile),
     # so CHOPI_ALLOW_SELF may downgrade this, for working on chopi, whose dir holds the default ones.
     local config
-    if config="$(overlaps_proxy_config "$workspace_dir")"; then
+    overlaps_proxy_config config "$workspace_dir" || return 1
+    if [ -n "$config" ]; then
         refuse_or_warn \
             "workspace '$workspace_dir' overlaps the proxy's config ('$config')" \
             "the sandboxed command would be granted its outgoing limits, and every other session's, to rewrite" \
@@ -116,10 +117,11 @@ preflight_config_placement() {
 # usage: preflight_proxy_config_links
 preflight_proxy_config_links() {
     arity 0
-    local path file existing=()
-    while IFS= read -r path; do
+    local path file paths existing=()
+    proxy_config_paths paths || return 1
+    for path in "${paths[@]}"; do
         [ -e "$path" ] && existing+=("$path")
-    done < <(proxy_config_paths)
+    done
     [ "${#existing[@]}" -gt 0 ] || return 0
     # Run to the end before any refusal, for find's status: a file it couldn't check (an unreadable
     # dir) may be one with other hard links.
@@ -152,7 +154,7 @@ replace it with a fresh copy, e.g.: cp '$file' '$file.tmp' && mv '$file.tmp' '$f
 resolve_proxy_config() {
     arity 3
     local var="$1" default="$CHOPI_DIR/config/$2" template="$CHOPI_DIR/config/templates/$3"
-    local path resolved
+    local path resolved config_dir
     path="${!var}"
     case "$path" in
         '') if [ ! -e "$default" ]; then
@@ -166,16 +168,17 @@ resolve_proxy_config() {
         *)  echo "chopi: $var must be an absolute path, got '$path'" >&2
             return 1 ;;
     esac
-    # Checked apart from realpath: GNU's, often first on PATH, resolves a path that doesn't exist.
+    # Checked first: resolved_path appends what follows a missing node unresolved.
     [ -f "$path" ] || { echo "chopi: no $var file at '$path'" >&2; return 1; }
-    resolved="$(realpath "$path" 2>/dev/null)" \
-        || { echo "chopi: cannot resolve $var path '$path'" >&2; return 1; }
-    if [ "$path" != "$default" ] \
-        && ! is_path_within "$resolved" "$(realpath_or_self "$PROXY_CONFIG_DIR")"; then
-        echo "chopi: $var must be in $PROXY_CONFIG_DIR, got '$path'" >&2
-        echo "Every session keeps its command from changing what is there; elsewhere, another session's" >&2
-        echo "could rewrite it, lifting this session's limits. Move it there, and point $var at it." >&2
-        return 1
+    resolved_path resolved "$path" || return 1
+    if [ "$path" != "$default" ]; then
+        resolved_path config_dir "$PROXY_CONFIG_DIR" || return 1
+        if ! is_path_within "$resolved" "$config_dir"; then
+            echo "chopi: $var must be in $PROXY_CONFIG_DIR, got '$path'" >&2
+            echo "Every session keeps its command from changing what is there; elsewhere, another session's" >&2
+            echo "could rewrite it, lifting this session's limits. Move it there, and point $var at it." >&2
+            return 1
+        fi
     fi
     printf -v "$var" '%s' "$resolved"
 }

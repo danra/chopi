@@ -136,7 +136,8 @@ validate_write_target() {
     # The proxy's config sets the sessions' outgoing limits, which it hot-reloads: an approved patch
     # must not be the way to lift them.
     local config
-    if config="$(overlaps_proxy_config "$path")"; then
+    overlaps_proxy_config config "$path" || return 1
+    if [ -n "$config" ]; then
         echo "$prog: safe write target overlaps the proxy's config $config: $path" >&2
         return 1
     fi
