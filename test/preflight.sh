@@ -313,6 +313,14 @@ ln -s "$rp/team" "$rp/link"
 ln -s "$rp/elsewhere/rules.yaml" "$rp/team/escaping.yaml"
 # The dir a configured file must be in, every session keeping its command from changing it.
 PROXY_CONFIG_DIR="$rp/link"
+# GNU realpath, often first on PATH, keeps a path's case as given, and resolves a missing one as
+# BSD's doesn't: a stand-in, for what is resolved not to depend on which one is.
+mkdir "$rp/gnu"
+cat > "$rp/gnu/realpath" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$1"
+EOF
+chmod +x "$rp/gnu/realpath"
 
 out="$( CHOPI_PROXY_RULES="$rp/link/rules.yaml"
         resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml && printf '%s' "$CHOPI_PROXY_RULES" )"
@@ -321,9 +329,21 @@ assert_eq "$out" "$rp/team/rules.yaml" "a configured path is resolved through it
 # A case-insensitive volume (macOS's default) takes a path in any case; the profile's rules match
 # the case on disk.
 if [ -e "$rp/TEAM/RULES.yaml" ]; then
-    out="$( PROXY_CONFIG_DIR="$rp/team"; CHOPI_PROXY_RULES="$rp/TEAM/RULES.yaml"
-            resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml && printf '%s' "$CHOPI_PROXY_RULES" )"
-    assert_eq "$out" "$rp/team/rules.yaml" "  -> and to its case on disk, where the volume ignores case"
+    for path_prefix in "" "$rp/gnu:"; do
+        out="$( PROXY_CONFIG_DIR="$rp/team"; CHOPI_PROXY_RULES="$rp/TEAM/RULES.yaml"
+                PATH="$path_prefix$PATH" resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml \
+                    && printf '%s' "$CHOPI_PROXY_RULES" )"
+        assert_eq "$out" "$rp/team/rules.yaml" \
+            "  -> and to its case on disk, where the volume ignores case, with realpath from PATH='$path_prefix'"
+    done
+    # Every path deciding the file goes in the profile, each in its case on disk: a link, by its own
+    # name and through its target's, and a dir before a missing node.
+    ln -s "$rp/TEAM" "$rp/upper-link"
+    assert_eq "$(resolution_paths "$rp/UPPER-LINK/ESCAPING.yaml")" \
+        "$rp/upper-link"$'\n'"$rp/team/escaping.yaml"$'\n'"$rp/elsewhere/rules.yaml" \
+        "  -> as is every link on the way, by its own name and through its target"
+    assert_eq "$(resolution_paths "$rp/TEAM/Missing/x")" "$rp/team/Missing/x" \
+        "  -> and the part before a missing node"
 else
     echo "case-sensitive volume -- skipping the case-insensitive path test"
 fi
@@ -376,13 +396,6 @@ for selected_rules in "$newline_rules" "$rp/team/newline-target.yaml"; do
     assert_contains "$out" "must not contain a newline" "  -> explaining the refusal"
 done
 
-# GNU realpath, often first on PATH, resolves a missing path as BSD's doesn't: stand one in.
-mkdir "$rp/gnu"
-cat > "$rp/gnu/realpath" <<'EOF'
-#!/bin/sh
-printf '%s\n' "$1"
-EOF
-chmod +x "$rp/gnu/realpath"
 # shellcheck disable=SC2034 # read by resolve_proxy_config, through its name
 out="$( CHOPI_GITHUB_ALLOWLIST="$rp/team/missing"; PATH="$rp/gnu:$PATH"
         resolve_proxy_config CHOPI_GITHUB_ALLOWLIST github-allowlist github-allowlist.template 2>&1 )"; st=$?
