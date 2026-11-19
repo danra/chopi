@@ -343,7 +343,7 @@ overlaps_proxy_config() {
     arity 2
     local _opc_real _opc_config _opc_paths
     proxy_config_paths _opc_paths || return 1
-    _opc_real="$(realpath_or_self "$2")"
+    resolved_path _opc_real "$2" || return 1
     for _opc_config in "${_opc_paths[@]}"; do
         if overlapping_dirs "$_opc_real" "$_opc_config"; then
             printf -v "$1" '%s' "$_opc_config"
@@ -500,9 +500,48 @@ reject_newline_path() {
     done
 }
 
+# Set VAR to NAME as DIR holds it on disk. A case-insensitive volume (macOS's default) finds a name in
+# any case, but Seatbelt matches a path in its case on disk: a rule in another case protects nothing.
+# NAME as given where DIR has no entry by it. Fails where no single entry spells it, which a name
+# differing in more than case (Unicode normalization, say) would need.
+# Globbing reads the names from DIR, and finds a symlink by its own, without following it.
+#
+# usage: disk_name VAR DIR NAME
+disk_name() {
+    arity 3
+    local _dn_dir="$2" _dn_name="$3" _dn_entry _dn_matches=() _dn_opt _dn_off=()
+    if [ ! -e "$_dn_dir/$_dn_name" ] && [ ! -L "$_dn_dir/$_dn_name" ]; then
+        printf -v "$1" '%s' "$_dn_name"
+        return 0
+    fi
+    # Set just for the lookup, then back, with no subshell: the walk looks up every node.
+    for _dn_opt in nocaseglob nocasematch dotglob nullglob; do
+        shopt -q "$_dn_opt" || _dn_off+=("$_dn_opt")
+    done
+    shopt -s nocaseglob nocasematch dotglob nullglob
+    # The ? makes a pattern of it; the quoted rest matches as is, in any case.
+    for _dn_entry in "$_dn_dir"/?"${_dn_name:1}"; do
+        _dn_entry="${_dn_entry##*/}"
+        # Exactly as given: the one, on a case-sensitive volume holding it in other cases too.
+        if [ "$_dn_entry" = "$_dn_name" ]; then
+            _dn_matches=("$_dn_name")
+            break
+        fi
+        [[ "$_dn_entry" == "$_dn_name" ]] && _dn_matches+=("$_dn_entry")
+    done
+    [ "${#_dn_off[@]}" -eq 0 ] || shopt -u "${_dn_off[@]}"
+    case "${#_dn_matches[@]}" in
+        1)  printf -v "$1" '%s' "${_dn_matches[0]}" ;;
+        0)  printf 'chopi: cannot tell how %q is spelled on disk\n' "$_dn_dir/$_dn_name" >&2
+            return 1 ;;
+        *)  printf 'chopi: %q names more than one entry, only in other cases\n' "$_dn_dir/$_dn_name" >&2
+            return 1 ;;
+    esac
+}
+
 # Print what decides which file path $1 names, one per line: every symlink met resolving it, each
-# where it really is -- in a dir with no symlink on its way -- then the real path it resolves to, in
-# its case on disk (a case-insensitive volume takes any).
+# where it really is -- in a dir with no symlink on its way -- then the real path it resolves to;
+# each in its case on disk (disk_name).
 # Repointing any of those links would have $1 name another file. Past a missing node, the rest is
 # appended unresolved. A symlink loop ends the walk, its links printed: $1 names no file then.
 # Fails on a newline in $1 or in any link's target, which the output could not hold.
@@ -525,6 +564,7 @@ resolution_paths() {
             "" | .) continue ;;
             ..)     cur="${cur%/*}"; continue ;;
         esac
+        disk_name node "$cur" "$node" || return 1
         if [ -L "$cur/$node" ] && target="$(readlink -n "$cur/$node" && printf '.')"; then
             # The marker keeps Bash from stripping trailing newlines in the target.
             target="${target%.}"
@@ -540,9 +580,6 @@ resolution_paths() {
             cur="$cur/$node"
         fi
     done
-    # The walk keeps the case as given; realpath gives the one on disk. With no symlink left on the
-    # way, it changes nothing else, so no newline appears.
-    [ ! -e "$cur" ] || cur="$(realpath_or_self "$cur")"
     printf '%s\n' "${cur:-/}"
 }
 
