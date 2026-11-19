@@ -504,32 +504,34 @@ reject_newline_path() {
 # any case, but Seatbelt matches a path in its case on disk: a rule in another case protects nothing.
 # NAME as given where DIR has no entry by it. Fails where no single entry spells it, which a name
 # differing in more than case (Unicode normalization, say) would need.
-# Globbing reads the names from DIR, and finds a symlink by its own, without following it.
+# find reads the names from DIR, and finds a symlink by its own, without following it. Not Bash's
+# globbing: on macOS, Bash at times dies of SIGBUS globbing in a subshell, which the walk runs in.
 #
 # usage: disk_name VAR DIR NAME
 disk_name() {
     arity 3
-    local _dn_dir="$2" _dn_name="$3" _dn_entry _dn_matches=() _dn_opt _dn_off=()
+    local _dn_dir="$2" _dn_name="$3" _dn_pattern _dn_entry _dn_matches=()
     if [ ! -e "$_dn_dir/$_dn_name" ] && [ ! -L "$_dn_dir/$_dn_name" ]; then
         printf -v "$1" '%s' "$_dn_name"
         return 0
     fi
-    # Set just for the lookup, then back, with no subshell: the walk looks up every node.
-    for _dn_opt in nocaseglob nocasematch dotglob nullglob; do
-        shopt -q "$_dn_opt" || _dn_off+=("$_dn_opt")
-    done
-    shopt -s nocaseglob nocasematch dotglob nullglob
-    # The ? makes a pattern of it; the quoted rest matches as is, in any case.
-    for _dn_entry in "$_dn_dir"/?"${_dn_name:1}"; do
+    # The name as a pattern matching only itself, in any case: its pattern characters escaped,
+    # the backslash first.
+    _dn_pattern="${_dn_name//\\/\\\\}"
+    _dn_pattern="${_dn_pattern//\*/\\*}"
+    _dn_pattern="${_dn_pattern//\?/\\?}"
+    _dn_pattern="${_dn_pattern//\[/\\[}"
+    # NUL-separated, as other names in DIR may hold a newline.
+    while IFS= read -r -d '' _dn_entry; do
         _dn_entry="${_dn_entry##*/}"
         # Exactly as given: the one, on a case-sensitive volume holding it in other cases too.
         if [ "$_dn_entry" = "$_dn_name" ]; then
             _dn_matches=("$_dn_name")
             break
         fi
-        [[ "$_dn_entry" == "$_dn_name" ]] && _dn_matches+=("$_dn_entry")
-    done
-    [ "${#_dn_off[@]}" -eq 0 ] || shopt -u "${_dn_off[@]}"
+        _dn_matches+=("$_dn_entry")
+    # Its stderr dropped: it complains of unreadable dirs it walks past, and a miss is told below.
+    done < <(find "${_dn_dir:-/}" -mindepth 1 -maxdepth 1 -iname "$_dn_pattern" -print0 2>/dev/null)
     case "${#_dn_matches[@]}" in
         1)  printf -v "$1" '%s' "${_dn_matches[0]}" ;;
         0)  printf 'chopi: cannot tell how %q is spelled on disk\n' "$_dn_dir/$_dn_name" >&2
