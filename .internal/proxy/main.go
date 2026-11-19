@@ -200,7 +200,8 @@ To run anyway, set %s=1.`, allowlist, template, path, path, gitHubExfiltrationOv
 // configFile is a config file the proxy watches, of kind, and what it last took up from it, to put
 // back should a change to it be refused (putBack). lastMod is the modification time last taken up,
 // for the next poll (take); warned, if the file's being unreadable was already logged, the
-// modification time of the edit it couldn't read -- zero if it couldn't stat the file.
+// modification time of the edit it couldn't read -- zero if it couldn't stat the file. While set,
+// take reads the file even if lastMod hasn't moved, as a chmod making it readable doesn't move it.
 type configFile struct {
 	path     string
 	kind     configKind
@@ -240,20 +241,19 @@ type unreadable struct {
 func (u *unreadable) Error() string { return u.err.Error() }
 func (u *unreadable) Unwrap() error { return u.err }
 
-// take takes up the config file if it changed since last taken up (lastMod), returning whether it
-// took an edit up: has apply take up its content, recorded as taken up (accepted) unless apply refuses it --
+// take takes up the config file if it changed since last taken up (lastMod) or if it was unreadable
+// (warned). It returns whether apply took up its content, recorded as accepted unless refused --
 // the content as read here, for what is taken up to be what a refusal puts back. It refuses a file
 // with other hard links (singleLink), moved aside, the config last taken up put back in its place
-// (putBack), and one it can't stat or read, or that isn't a regular file (*unreadable). One it
-// can't read is tried again on every call, until it can be: a chmod making it readable changes no
-// modification time. The modification time is taken before the file is read, for an edit made as
-// it is read to be taken up again.
+// (putBack), and one it can't stat or read, or that isn't a regular file (*unreadable). The
+// modification time is taken before the file is read, for an edit made as it is read to be taken
+// up again.
 func (f *configFile) take(apply func([]byte) error) (taken bool, err error) {
 	st, err := os.Stat(f.path)
 	if err != nil {
 		return false, &unreadable{err: err}
 	}
-	if st.ModTime().Equal(f.lastMod) {
+	if st.ModTime().Equal(f.lastMod) && f.warned == nil {
 		return false, nil
 	}
 	// The path can be replaced after Stat, so the refusals below check the file opened, which is

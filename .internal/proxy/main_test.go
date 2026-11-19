@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -231,6 +232,35 @@ func TestAnEditMadeReadableIsTakenUp(t *testing.T) {
 	reloaded(t, hook)
 	if got := decide(t, holder, "new.example"); got != acl.Allow {
 		t.Fatalf("new.example once the file is readable: got %v, want Allow", got)
+	}
+}
+
+func TestRestoringAccessToUnchangedRulesClearsWarning(t *testing.T) {
+	skipIfRoot(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rules.yaml")
+	writeFile(t, path, rulesAllowing("base.example"))
+	conf, holder, file, hook := testSetup(t, path)
+	t.Cleanup(func() { chmod(t, dir, 0o700) })
+
+	chmod(t, dir, 0)
+	reloadIfChanged(conf, holder, file)
+	if err := reloadFailure(t, hook); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("expected a permission error, got %v", err)
+	}
+
+	hook.Reset()
+	chmod(t, dir, 0o700)
+	reloadIfChanged(conf, holder, file)
+	reloaded(t, hook)
+	if got := decide(t, holder, "base.example"); got != acl.Allow {
+		t.Fatalf("base.example after restoring access: got %v, want Allow", got)
+	}
+
+	hook.Reset()
+	reloadIfChanged(conf, holder, file)
+	if len(hook.Entries) != 0 {
+		t.Fatalf("unexpected log entries after recovery: %+v", hook.Entries)
 	}
 }
 
