@@ -172,6 +172,41 @@ out="$(preflight_under "$cw/linked/config" CHOPI_ALLOW_SELF=1 CHOPI_RUN_DIR="$cw
 assert_contains "$out" "warning: workspace '$cw/linked/config' overlaps the proxy's config" \
     "CHOPI_ALLOW_SELF downgrades the proxy config overlap to a warning"
 
+newline_root="$(mktemp -d)"
+mkdir "$newline_root/config"$'\n'
+ln -s 'config'$'\n' "$newline_root/config"
+out="$(preflight_under "$cw/beside" CHOPI_ALLOW_SELF=1 CHOPI_RUN_DIR="$newline_root")"; st=$?
+assert_nonzero "$st" "preflight refuses a proxy config root linking to a directory ending in a newline"
+assert_contains "$out" "must not contain a newline" "  -> explaining the refusal even with CHOPI_ALLOW_SELF"
+
+mkdir "$newline_root/parent"$'\n'"dir"
+ln -s 'parent'$'\n''dir' "$newline_root/alias"
+out="$(preflight_under "$cw/beside" CHOPI_RUN_DIR="$newline_root/alias")"; st=$?
+assert_nonzero "$st" "preflight refuses a newline in the resolved root's ancestry"
+assert_contains "$out" "must not contain a newline" "  -> even when the config directory does not exist yet"
+
+mkdir "$newline_root/clean-config" "$newline_root/intermediate"
+ln -s clean-config "$newline_root/hop"$'\n'
+ln -s '../hop'$'\n' "$newline_root/intermediate/config"
+out="$(preflight_under "$cw/beside" CHOPI_RUN_DIR="$newline_root/intermediate")"; st=$?
+assert_nonzero "$st" "preflight refuses a newline in an intermediate symlink"
+assert_contains "$out" "must not contain a newline" "  -> even when the final path is clean"
+
+( PROXY_CONFIG_DIR="$newline_root/intermediate/config"
+  write_proxy_config_profile "$newline_root/rejected.sb" ) 2>/dev/null; st=$?
+assert_nonzero "$st" "profile generation propagates a path rejection"
+assert_absent "$newline_root/rejected.sb" "  -> without emitting a partial profile"
+
+# A newline in the root itself, not in any link: split, it would protect two made-up paths instead.
+out="$(preflight_under "$cw/beside" CHOPI_RUN_DIR="$newline_root/split"$'\n'"run")"; st=$?
+assert_nonzero "$st" "preflight refuses a proxy config root with a newline in its own name"
+assert_contains "$out" "must not contain a newline" "  -> rather than checking the halves as two paths"
+
+( CHOPI_DIR="$newline_root/split"$'\n'"chopi"
+  write_proxy_config_profile "$newline_root/split-chopi.sb" ) 2>/dev/null; st=$?
+assert_nonzero "$st" "profile generation refuses a newline in chopi's own dir, holding the default configs"
+assert_absent "$newline_root/split-chopi.sb" "  -> without emitting a profile for its halves"
+
 
 # ---------------------------------------------------------------------------
 echo "preflight_config_placement (custom --config must live outside the workspace)"
@@ -283,6 +318,16 @@ out="$( CHOPI_PROXY_RULES="$rp/link/rules.yaml"
         resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml && printf '%s' "$CHOPI_PROXY_RULES" )"
 assert_eq "$out" "$rp/team/rules.yaml" "a configured path is resolved through its symlinks"
 
+# A case-insensitive volume (macOS's default) takes a path in any case; the profile's rules match
+# the case on disk.
+if [ -e "$rp/TEAM/RULES.yaml" ]; then
+    out="$( PROXY_CONFIG_DIR="$rp/team"; CHOPI_PROXY_RULES="$rp/TEAM/RULES.yaml"
+            resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml && printf '%s' "$CHOPI_PROXY_RULES" )"
+    assert_eq "$out" "$rp/team/rules.yaml" "  -> and to its case on disk, where the volume ignores case"
+else
+    echo "case-sensitive volume -- skipping the case-insensitive path test"
+fi
+
 out="$( CHOPI_PROXY_RULES="$rp/elsewhere/rules.yaml"
         resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml 2>&1 )"; st=$?
 assert_nonzero "$st" "a configured path outside the config dir is refused"
@@ -291,6 +336,15 @@ assert_contains "$out" "another session's" "  -> saying why"
 out="$( CHOPI_PROXY_RULES="$rp/link/escaping.yaml"
         resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml 2>&1 )"; st=$?
 assert_nonzero "$st" "  -> as is one in it that links out of it"
+
+newline_config_dir="$rp/team"$'\n'
+mkdir "$newline_config_dir"
+ln -s "$newline_config_dir" "$rp/newline-config-link"
+out="$( PROXY_CONFIG_DIR="$rp/newline-config-link"
+        CHOPI_PROXY_RULES="$rp/team/rules.yaml"
+        resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml 2>&1 )"; st=$?
+assert_nonzero "$st" "a configured path in the sibling of a config dir ending in a newline is refused"
+assert_contains "$out" "must not contain a newline" "  -> rejecting the config dir's newline target"
 
 out="$( CHOPI_PROXY_RULES=""; CHOPI_DIR="$rp/chopi"
         ln -s "$rp/team/rules.yaml" "$rp/chopi/config/proxy-rules.yaml"
@@ -308,6 +362,19 @@ assert_contains "$out" "cp \"$rp/chopi/config/templates/proxy-rules.template.yam
 out="$( CHOPI_PROXY_RULES=rules.yaml; resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml 2>&1 )"; st=$?
 assert_nonzero "$st" "a relative path is refused"
 assert_contains "$out" "CHOPI_PROXY_RULES must be an absolute path" "  -> naming the setting"
+
+newline_rules="$rp/team/rules"$'\n'"backup.yaml"
+trailing_newline_rules="$rp/team/rules.yaml"$'\n'
+: >"$newline_rules"
+: >"$trailing_newline_rules"
+ln -s "$trailing_newline_rules" "$rp/team/newline-target.yaml"
+for selected_rules in "$newline_rules" "$rp/team/newline-target.yaml"; do
+    # shellcheck disable=SC2034 # read by resolve_proxy_config, through its name
+    out="$( CHOPI_PROXY_RULES="$selected_rules"
+            resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml 2>&1 )"; st=$?
+    assert_nonzero "$st" "a configured path with a newline in its name or target is refused"
+    assert_contains "$out" "must not contain a newline" "  -> explaining the refusal"
+done
 
 # GNU realpath, often first on PATH, resolves a missing path as BSD's doesn't: stand one in.
 mkdir "$rp/gnu"
