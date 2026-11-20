@@ -58,7 +58,7 @@ PROXY_CONFIG_DIR="${CHOPI_RUN_DIR%/}/config"
 DEFAULT_PROXY_RULES="proxy-rules.yaml"
 DEFAULT_GITHUB_ALLOWLIST="github-allowlist"
 # The file in each session's proxy dir listing the config files its proxy reads, for as long as it
-# runs (see proxy_config_paths).
+# runs (see running_session_configs).
 PROXY_CONFIGS_FILE_NAME="configs"
 # The files chopi-smokescreen makes in a session's proxy dir: the ports it reports once up, and the
 # API relay's socket. Its names for them, in .internal/proxy/main.go, must match.
@@ -596,24 +596,56 @@ resolved_path() {
     printf -v "$1" '%s' "${_rp_paths##*$'\n'}"
 }
 
+# Set array VAR to the config files running sessions' proxies read, as listed in their dirs
+# (launch_session_proxy), each once: sessions mostly list the same ones. A session's proxy may have
+# stopped reading one by the time it is used. A listing that isn't there names no file in use: its
+# session closed once listed, or is yet to write it. One that is there but can't be read fails it,
+# VAR untouched, rather than leave out the files it names -- as does a dir that can't be searched.
+#
+# usage: running_session_configs VAR
+running_session_configs() {
+    arity 1
+    local _rsc_dir _rsc_listing _rsc_listed _rsc_all=()
+    if [ -e "$PROXY_RUN_DIR" ] && ! { [ -r "$PROXY_RUN_DIR" ] && [ -x "$PROXY_RUN_DIR" ]; }; then
+        echo "error: could not list the running sessions in '$PROXY_RUN_DIR'," >&2
+        echo "       for the proxy config files they use" >&2
+        return 1
+    fi
+    while IFS= read -r -d '' _rsc_dir; do
+        _rsc_listing="$_rsc_dir/$PROXY_CONFIGS_FILE_NAME"
+        if ! readarray -t _rsc_listed 2>/dev/null <"$_rsc_listing"; then
+            if [ ! -e "$_rsc_dir" ] || { [ -x "$_rsc_dir" ] && [ ! -e "$_rsc_listing" ]; }; then
+                continue
+            fi
+            echo "error: could not read the proxy config files session '$_rsc_dir' uses," >&2
+            echo "       from '$_rsc_listing'" >&2
+            echo "Make it readable to you, or remove '$_rsc_dir' if its session is over." >&2
+            return 1
+        fi
+        _rsc_all+=("${_rsc_listed[@]+"${_rsc_listed[@]}"}")
+    # find, not a glob, as in disk_name. Its stderr dropped: a run dir that isn't there holds no
+    # session, and one that can't be listed was refused above.
+    done < <(find "$PROXY_RUN_DIR" -mindepth 1 -maxdepth 1 -name "$PROXY_SESSION_DIR_PREFIX.*" \
+        -print0 2>/dev/null)
+    # Listed one per line, the files hold no newline.
+    readarray -t "$1" < <(printf '%s\n' "${_rsc_all[@]+"${_rsc_all[@]}"}" \
+        | awk 'length && !seen[$0]++')
+}
+
 # Set array VAR to every path deciding which proxy config a session's proxy reads, now or as a later
 # session starts (resolution_paths): PROXY_CONFIG_DIR's, where a custom one must be; the default
-# files', which may link elsewhere, through any number of links; and those of the files each running
-# session's proxy reads, as listed in its dir (launch_session_proxy), should a link have been
-# repointed since it started. Every session keeps its command from changing them all, as a safe
-# write target must not overlap them. On failure VAR is left untouched, never a partial list.
+# files', which may link elsewhere, through any number of links; and those of the files running
+# sessions' proxies read (running_session_configs), should a link have been repointed since one
+# started. Every session keeps its command from changing them all, as a safe write target must not
+# overlap them. On failure VAR is left untouched, never a partial list.
 #
 # usage: proxy_config_paths VAR
 proxy_config_paths() {
     arity 1
-    local _pcp_path _pcp_fixed _pcp_listed _pcp_all
-    _pcp_fixed=("$PROXY_CONFIG_DIR" "$CHOPI_DIR/config/$DEFAULT_PROXY_RULES"
-        "$CHOPI_DIR/config/$DEFAULT_GITHUB_ALLOWLIST")
-    # Sessions mostly list the same files, so each is resolved once. The fixed paths stay out of
-    # awk: one holding a newline must reach resolution_paths whole, to be refused rather than split.
-    readarray -t _pcp_listed < <(awk 'length && !seen[$0]++' \
-        "$PROXY_RUN_DIR/$PROXY_SESSION_DIR_PREFIX".*/"$PROXY_CONFIGS_FILE_NAME" 2>/dev/null)
-    _pcp_all="$(for _pcp_path in "${_pcp_fixed[@]}" "${_pcp_listed[@]+"${_pcp_listed[@]}"}"; do
+    local _pcp_path _pcp_listed _pcp_all
+    running_session_configs _pcp_listed || return 1
+    _pcp_all="$(for _pcp_path in "$PROXY_CONFIG_DIR" "$CHOPI_DIR/config/$DEFAULT_PROXY_RULES" \
+        "$CHOPI_DIR/config/$DEFAULT_GITHUB_ALLOWLIST" "${_pcp_listed[@]+"${_pcp_listed[@]}"}"; do
         resolution_paths "$_pcp_path" || exit 1
     done)" || return 1
     # resolution_paths refuses newlines, so its lines split back into paths.
