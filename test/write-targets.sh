@@ -191,11 +191,51 @@ assert_has_line "$config_paths" "$real_tmp/real-config/rules.yaml" "  -> and the
 mkdir -p "$TMPDIR/run/$PROXY_SESSION_DIR_PREFIX.a" "$TMPDIR/run/$PROXY_SESSION_DIR_PREFIX.b"
 printf '%s\n' "$real_tmp/linked-config/rules.yaml" > "$TMPDIR/run/$PROXY_SESSION_DIR_PREFIX.a/$PROXY_CONFIGS_FILE_NAME"
 printf '%s\n' "$real_tmp/real-config/allowlist" > "$TMPDIR/run/$PROXY_SESSION_DIR_PREFIX.b/$PROXY_CONFIGS_FILE_NAME"
-CHOPI_DIR="$TMPDIR/fake-chopi" PROXY_RUN_DIR="$TMPDIR/run" proxy_config_paths paths
+# Run proxy_config_paths on the fixture's sessions, into paths.
+session_config_paths() {
+    CHOPI_DIR="$TMPDIR/fake-chopi" PROXY_RUN_DIR="$TMPDIR/run" proxy_config_paths paths
+}
+session_config_paths
 config_paths="$(printf '%s\n' "${paths[@]}")"
 assert_has_line "$config_paths" "$real_tmp/linked-config/rules.yaml" \
     "  -> as is a file a running session's proxy reads"
 assert_has_line "$config_paths" "$real_tmp/real-config/allowlist" "  -> and one another session's reads"
+# A session closing as the listings are read takes its listing with it: a dangling symlink stands in
+# for one. It names no file in use, and mustn't cut the others short.
+closed_dir="$TMPDIR/run/$PROXY_SESSION_DIR_PREFIX.0"
+mkdir "$closed_dir"
+ln -s "$TMPDIR/nowhere" "$closed_dir/$PROXY_CONFIGS_FILE_NAME"
+paths=()
+session_config_paths; st=$?
+config_paths="$(printf '%s\n' "${paths[@]+"${paths[@]}"}")"
+assert_zero "$st" "  -> a session closing as it is listed is passed over"
+assert_has_line "$config_paths" "$real_tmp/real-config/allowlist" "  -> hiding no other session's files"
+rm "$closed_dir/$PROXY_CONFIGS_FILE_NAME"
+session_config_paths; st=$?
+assert_zero "$st" "  -> as is one yet to list its files"
+# With PATH's mode 000, the listing fails, naming what it couldn't read; then PATH gets MODE back.
+#
+# usage: fails_unreadable PATH MODE DESCRIPTION EXPECTED_ERROR
+fails_unreadable() {
+    local out st
+    chmod 000 "$1"
+    out="$(session_config_paths 2>&1)"; st=$?
+    chmod "$2" "$1"
+    assert_nonzero "$st" "$3"
+    assert_contains "$out" "$4" "     naming it"
+}
+# One that can't be read may name a file in use, so it fails the listing rather than leave it out.
+if [ "$EUID" -ne 0 ]; then
+    printf '%s\n' "$real_tmp/real-config/allowlist" >"$closed_dir/$PROXY_CONFIGS_FILE_NAME"
+    fails_unreadable "$closed_dir/$PROXY_CONFIGS_FILE_NAME" 600 \
+        "  -> but a session listing that can't be read fails it" \
+        "could not read the proxy config files session '$closed_dir' uses"
+    fails_unreadable "$closed_dir" 700 "  -> as does a session dir that can't be searched" \
+        "could not read the proxy config files session '$closed_dir' uses"
+    fails_unreadable "$TMPDIR/run" 700 "  -> and a run dir whose sessions can't be listed" \
+        "could not list the running sessions in '$TMPDIR/run'"
+fi
+rm -r "$closed_dir"
 config=stale
 overlaps_proxy_config config "$work"
 assert_eq "$config" "" "  -> a path reaching none of them clears the variable naming the config reached"
