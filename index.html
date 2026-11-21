@@ -202,6 +202,11 @@
   .install pre .c { color: #5b6572; }
   .install pre .p { color: var(--accent); user-select: none; }
   .step + .step { margin-top: 48px; }
+  .step h3 { font-size: 1.1rem; margin: 32px 0 8px; scroll-margin-top: 80px; }
+  .step table { border-collapse: collapse; color: var(--text-dim); font-size: .92rem; margin-top: 8px; }
+  .step th { text-align: left; font-weight: 600; font-size: .8rem; color: var(--text-dim); }
+  .step th, .step td { padding: 6px 24px 6px 0; vertical-align: top; }
+  .step td:first-child { white-space: nowrap; }
   .step p { color: var(--text-dim); font-size: .92rem; margin-top: 8px; }
 
   /* Footer */
@@ -345,10 +350,18 @@
         <h2>Install</h2>
         <pre><span class="p">$</span> git clone https://github.com/danra/chopi
 <span class="p">$</span> cd chopi &amp;&amp; ./install.sh</pre>
-        <p>Then review the configuration: allowed hosts in
-        <code>config/proxy-rules.yaml</code>, pushable repos in
-        <code>config/github-allowlist</code>, and sandbox policy in
-        <code>config/sandbox.sh</code>.</p>
+
+        <h3 id="configure">Configure</h3>
+        <p>Optionally, adjust what the agent can access:</p>
+        <table>
+          <tr><th>File</th><th>Controls</th><th>Edits apply</th></tr>
+          <tr><td><code>config/proxy-rules.yaml</code></td>
+            <td>Hosts the agent may reach</td><td>Immediately</td></tr>
+          <tr><td><code>config/github-allowlist</code></td>
+            <td>Repos the agent may push to, or read when private</td><td>Immediately</td></tr>
+          <tr><td><code>config/sandbox.sh</code></td>
+            <td>Paths you grant and safe write targets</td><td>Next session</td></tr>
+        </table>
       </div>
 
       <div class="step">
