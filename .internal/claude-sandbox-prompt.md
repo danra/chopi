@@ -23,6 +23,10 @@ configuration paths below are relative to. Four things are confined:
   rebasing and cherry-picking all work in-session. Pushing to the current branch also works
   for allowlisted GitHub repos (see below).
 
+chopi's source and issue tracker are the GitHub repo `danra/chopi`. Before reporting a
+symptom as a chopi bug, or suggesting a feature for it, check whether it is already known:
+`gh api repos/danra/chopi/issues` lists the open issues.
+
 @@SAFE_WRITE_TARGETS@@
 
 ## The rule
