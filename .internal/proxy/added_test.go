@@ -577,3 +577,22 @@ func TestAddedGlobalDenyListWinsOverAllows(t *testing.T) {
 	wantGlobalDenied(t, holder, "base.example")
 	wantGlobalDenied(t, holder, "ws.example")
 }
+
+// A host glob smokescreen refuses in the added rules is refused naming the added file, once, and the
+// list it is on, for the user to know what to fix: smokescreen's own refusal of an empty one names
+// neither.
+func TestAddedRulesBadGlobsNameTheFileAndList(t *testing.T) {
+	for name, tc := range map[string]struct{ content, list string }{
+		"an empty allowed domain": {"allowed_domains: ['']\n", "allowed_domains"},
+		"an empty denied domain":  {"global_deny_list: ['']\n", "global_deny_list"},
+		"a match-all":             {"allowed_domains: ['*']\n", "allowed_domains"},
+		"a mid-domain glob":       {"global_deny_list: ['a.*.example']\n", "global_deny_list"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := loadRules(smokescreen.NewConfig(), "/rules.yaml", "/ws.yaml", []byte(rulesAllowing("base.example")), []byte(tc.content))
+			if err == nil || strings.Count(err.Error(), "/ws.yaml") != 1 || !strings.Contains(err.Error(), tc.list) {
+				t.Errorf("got %v, want a refusal naming /ws.yaml once, and %s", err, tc.list)
+			}
+		})
+	}
+}
