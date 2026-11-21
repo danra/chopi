@@ -82,9 +82,19 @@ func loadRules(conf *smokescreen.Config, basePath, addedPath string, baseContent
 	if err != nil {
 		return nil, nil, err
 	}
-	for _, glob := range slices.Concat(added.AllowedDomains, added.GlobalDenyList) {
-		if err := base.ValidateDomainGlob(addedPath, glob); err != nil {
-			return nil, nil, err
+	// A refusal names the file and the list, for the user to know what to fix: smokescreen's names
+	// the list, given as its service, but for that of an empty glob, which names nothing.
+	for list, globs := range map[string][]string{
+		"allowed_domains":  added.AllowedDomains,
+		"global_deny_list": added.GlobalDenyList,
+	} {
+		for _, glob := range globs {
+			if glob == "" {
+				return nil, nil, fmt.Errorf("%s: %s: a host cannot be empty", addedPath, list)
+			}
+			if err := base.ValidateDomainGlob(list, glob); err != nil {
+				return nil, nil, fmt.Errorf("%s: %w", addedPath, err)
+			}
 		}
 	}
 	// chopi's requests have no role, so smokescreen takes them to the default rule: without one, it
