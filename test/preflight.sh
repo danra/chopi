@@ -11,6 +11,8 @@
 #   * preflight_config_placement -- refusing a custom --config that lives inside the workspace.
 #   * resolve_proxy_config -- resolving the proxy's config to the real paths that
 #     write_proxy_config_profile keeps the sandboxed command from writing.
+#   * workspace_config_dir / resolve_workspace_config_dir -- which repo's own proxy config a
+#     session reads, and refusing one that leads out of the dir every session protects.
 #   * preflight_proxy_config_links -- refusing a proxy config file with other hard links, which the
 #     sandboxed command may write through.
 #   * rule / the Seatbelt-rule emitter -- its empty-PATH refusal keeps an
@@ -425,6 +427,8 @@ mkdir -p "$session_dir"
 printf '%s\n' "$hl/missing/rules.yaml" >"$session_dir/$PROXY_CONFIGS_FILE_NAME"
 out="$(links_check 2>&1)"; st=$?
 assert_zero "$st" "  -> as does a config file from a finished session that was removed"
+out="$(links_check "$hl/missing/rules.yaml" 2>&1)"; st=$?
+assert_zero "$st" "  -> as does an optional config file not made yet"
 
 ln "$hl/config/team/rules.yaml" "$hl/elsewhere/other-link.yaml"
 out="$(links_check "$hl/config/team/rules.yaml" 2>&1)"; st=$?
@@ -441,7 +445,7 @@ assert_contains "$out" "warning: the proxy's config file '$hl/config/team/rules.
 rm "$hl/elsewhere/other-link.yaml"
 
 ln "$hl/chopi/config/$DEFAULT_GITHUB_ALLOWLIST" "$hl/elsewhere/allowlist"
-out="$(links_check 2>&1)"; st=$?
+out="$(CHOPI_ALLOW_SELF='' links_check 2>&1)"; st=$?
 assert_nonzero "$st" "a default config file with other hard links is refused"
 assert_contains "$out" "'$hl/chopi/config/$DEFAULT_GITHUB_ALLOWLIST' has other hard links" "  -> naming it"
 rm "$hl/elsewhere/allowlist"
@@ -450,6 +454,29 @@ mkdir "$hl/config/unused"; chmod 000 "$hl/config/unused"
 out="$(links_check 2>&1)"; st=$?
 chmod 700 "$hl/config/unused"
 assert_zero "$st" "an unreadable unused config directory does not block startup"
+
+# A repo whose proxy config is unreadable should not prevent a different repo from starting.
+mkdir -p "$hl/config/workspaces/unrelated" "$hl/config/workspaces/current"
+current_rules="$hl/config/workspaces/current/$DEFAULT_PROXY_RULES"
+other_rules="$hl/config/workspaces/unrelated/$DEFAULT_PROXY_RULES"
+: >"$current_rules"
+: >"$other_rules"
+chmod 000 "$hl/config/workspaces/unrelated"
+out="$(links_check "$current_rules" 2>&1)"; st=$?
+chmod 700 "$hl/config/workspaces/unrelated"
+assert_zero "$st" "an unreadable unrelated workspace config does not block startup"
+
+ln "$other_rules" "$hl/elsewhere/workspace-rules"
+out="$(links_check "$current_rules" 2>&1)"; st=$?
+assert_zero "$st" "a hard-linked workspace config is ignored if no session uses it"
+out="$(links_check "$other_rules" 2>&1)"; st=$?
+assert_nonzero "$st" "a selected workspace config with other hard links is refused"
+printf '%s\n' "$other_rules" >"$session_dir/$PROXY_CONFIGS_FILE_NAME"
+out="$(links_check "$current_rules" 2>&1)"; st=$?
+assert_nonzero "$st" "a hard-linked config in use by another session is refused"
+assert_contains "$out" "'$other_rules' has other hard links" "  -> naming it"
+rm "$hl/elsewhere/workspace-rules"
+printf '%s\n' "$hl/missing/rules.yaml" >"$session_dir/$PROXY_CONFIGS_FILE_NAME"
 
 ln "$hl/config/team/rules.yaml" "$hl/elsewhere/other-link.yaml"
 out="$(links_check 2>&1)"; st=$?
@@ -502,6 +529,57 @@ assert_eq "$out" "" "  -> also under an off-path STOP"
 # probe it in a subshell.
 ( ancestry_rules 'allow file-read-metadata' /a rel/b ) >/dev/null 2>&1; st=$?
 assert_eq "$st" 2 "a relative START is a hard error (exit 2)"
+
+
+# ---------------------------------------------------------------------------
+echo "workspace_config_dir / resolve_workspace_config_dir (a repo's own proxy config)"
+# ---------------------------------------------------------------------------
+PROXY_CONFIG_DIR="$CHOPI_RUN_DIR/config"
+mkdir -p "$PROXY_CONFIG_DIR"
+ws_repo="$TMPDIR/my repo.v2"
+make_repo "$ws_repo"
+real_ws_repo="$(cd "$ws_repo" && pwd -P)"
+mangled="$(printf '%s' "$real_ws_repo" | tr -c 'A-Za-z0-9-' -)-$(path_id "$real_ws_repo/.git")"
+out="$(workspace_config_dir "$ws_repo")"
+assert_eq "$out" "$PROXY_CONFIG_DIR/workspaces/$mangled" \
+    "named for the repo's path, each character but a letter, digit or dash made a dash, then its git dir's id"
+assert_eq "$(workspace_config_dir "$ws_repo/")" "$out" "  -> however the path is given"
+git -C "$ws_repo" worktree add -q "$TMPDIR/linked" -b linked
+assert_eq "$(workspace_config_dir "$TMPDIR/linked")" "$out" "  -> shared by the repo's linked worktrees"
+other_repo="$TMPDIR/other"
+make_repo "$other_repo"
+assert_not_contains "$(workspace_config_dir "$other_repo")" "$mangled" "  -> but not by another repo"
+make_repo "$TMPDIR/acme/tools"
+make_repo "$TMPDIR/acme-tools"
+assert_not_eq "$(workspace_config_dir "$TMPDIR/acme/tools")" "$(workspace_config_dir "$TMPDIR/acme-tools")" \
+    "  -> nor by one whose path differs only in a character made a dash"
+make_repo "$TMPDIR/sep-a" --separate-git-dir "$TMPDIR/meta"
+make_repo "$TMPDIR/sep-b" --separate-git-dir "$TMPDIR/meta/.git"
+assert_not_eq "$(workspace_config_dir "$TMPDIR/sep-a")" "$(workspace_config_dir "$TMPDIR/sep-b")" \
+    "  -> nor by one whose git dir is the other's, but for a .git at its end"
+long_repo="$TMPDIR/$(printf 'a%.0s' {1..120})/$(printf 'b%.0s' {1..120})"
+make_repo "$long_repo"
+long_name="$(basename -- "$(workspace_config_dir "$long_repo")")"
+assert_eq "${#long_name}" $((WORKSPACE_NAME_MAX + 17)) \
+    "a long name is cut short, before its id, within a file name's 255 bytes"
+out="$(workspace_config_dir "$TMPDIR" 2>&1)"; st=$?
+assert_nonzero "$st" "outside a repo -> refused"
+assert_contains "$out" "cannot find the git repo" "  -> saying so"
+
+out="$(resolve_workspace_config_dir "$ws_repo")"; st=$?
+assert_zero "$st" "a workspace config dir that doesn't exist yet resolves"
+assert_eq "$out" "$(realpath "$CHOPI_RUN_DIR/config")/workspaces/$mangled" "  -> to its real path"
+mkdir -p "$TMPDIR/elsewhere"
+ln -s "$TMPDIR/elsewhere" "$CHOPI_RUN_DIR/config/workspaces"
+out="$(resolve_workspace_config_dir "$ws_repo" 2>&1)"; st=$?
+assert_nonzero "$st" "one whose way leads out of the config dir, by a link -> refused"
+assert_contains "$out" "leads out of" "  -> saying so"
+rm "$CHOPI_RUN_DIR/config/workspaces"
+mkdir -p "$CHOPI_RUN_DIR/config/workspaces"
+ln -s "$CHOPI_RUN_DIR/config/workspaces/target" "$CHOPI_RUN_DIR/config/workspaces/$mangled"
+out="$(resolve_workspace_config_dir "$ws_repo")"; st=$?
+assert_zero "$st" "a link staying in the config dir is followed"
+assert_eq "$out" "$(realpath "$CHOPI_RUN_DIR/config")/workspaces/target" "  -> to where it leads"
 
 
 # ---------------------------------------------------------------------------

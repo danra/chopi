@@ -9,7 +9,10 @@
 # to a .caddy.log beside it.
 #
 # usage: chopi-proxy.sh --dir DIR --log FILE --parent PID --rules FILE --github-allowlist FILE
-#                       [--verbose]
+#                       --add-rules FILE --add-github-allowlist FILE [--verbose]
+#
+# The --add-rules and --add-github-allowlist add to the base ones -- chopi's, a workspace's own (see
+# workspace_config_dir); either may be missing.
 
 set -euo pipefail
 # The GitHub token is chopi-smokescreen's alone, which exports it again (see run_smokescreen): kept
@@ -24,6 +27,8 @@ LOG=""
 PARENT_PID=""
 RULES=""
 GITHUB_ALLOWLIST=""
+ADD_RULES=""
+ADD_GITHUB_ALLOWLIST=""
 VERBOSE=false
 # The --dir, which chopi made for us, is ours to remove, however we exit: only once what we lead is
 # gone, as chopi-smokescreen and Caddy keep their temporaries, and the API relay's socket, in it.
@@ -36,6 +41,8 @@ while [ "$#" -gt 0 ]; do
         --dir)              PROXY_DIR="${2:-}" ;;
         --rules)            RULES="${2:-}" ;;
         --github-allowlist) GITHUB_ALLOWLIST="${2:-}" ;;
+        --add-rules)        ADD_RULES="${2:-}" ;;
+        --add-github-allowlist) ADD_GITHUB_ALLOWLIST="${2:-}" ;;
         --log)              LOG="${2:-}" ;;
         --parent)           PARENT_PID="${2:-}" ;;
         --verbose) VERBOSE=true; shift; continue ;;
@@ -48,8 +55,10 @@ done
 . "$SCRIPT_DIR/util.sh"
 
 if [ -z "$PROXY_DIR" ] || [ -z "$LOG" ] || [ -z "$PARENT_PID" ] \
-    || [ -z "$RULES" ] || [ -z "$GITHUB_ALLOWLIST" ]; then
-    echo "error: --dir, --log, --parent, --rules and --github-allowlist are required" >&2
+    || [ -z "$RULES" ] || [ -z "$GITHUB_ALLOWLIST" ] \
+    || [ -z "$ADD_RULES" ] || [ -z "$ADD_GITHUB_ALLOWLIST" ]; then
+    echo "error: --dir, --log, --parent, --rules, --github-allowlist, --add-rules and" \
+         "--add-github-allowlist are required" >&2
     exit 1
 fi
 # The relays' log sits beside ours, outliving the session as it does: named for chopi's sweep of
@@ -87,6 +96,8 @@ fi
 
 echo "[$SCRIPT_NAME] using proxy rules: $RULES"
 echo "[$SCRIPT_NAME] using GitHub allowlist: $GITHUB_ALLOWLIST"
+echo "[$SCRIPT_NAME] adding the proxy rules in, where present: $ADD_RULES"
+echo "[$SCRIPT_NAME] adding the GitHub allowlist in, where present: $ADD_GITHUB_ALLOWLIST"
 
 . "$CHOPI_DIR/.internal/classify-log.sh"
 for f in "$CONNECTION_FILTER" "$DENY_HOST_FILTER" "$KNOWN_DENY_FILTER" \
@@ -112,9 +123,14 @@ format_smokescreen_log() {
     # log says so where it ends, rather than just going quiet.
     trap 'report_formatter_failure $?' EXIT
     # The reload banners' groups (see notify_reload), worked out here, off the proxy's startup path:
-    # the allowlist's group is keyed by where the token comes from.
-    RULES_RELOAD_GROUP="$(reload_banner_group "$RULES" "")"
-    ALLOWLIST_RELOAD_GROUP="$(reload_banner_group "$GITHUB_ALLOWLIST" "$(gh_token_source)")"
+    # the base file's and the workspace's own, each keyed by the other file it is taken up with,
+    # and the allowlists' by where the token comes from too.
+    local token_source
+    token_source="$(gh_token_source)"
+    RULES_RELOAD_GROUP="$(reload_banner_group "$RULES" "$ADD_RULES")"
+    RULES_WS_RELOAD_GROUP="$(reload_banner_group "$ADD_RULES" "$RULES")"
+    ALLOWLIST_RELOAD_GROUP="$(reload_banner_group "$GITHUB_ALLOWLIST" "$ADD_GITHUB_ALLOWLIST" "$token_source")"
+    ALLOWLIST_WS_RELOAD_GROUP="$(reload_banner_group "$ADD_GITHUB_ALLOWLIST" "$GITHUB_ALLOWLIST" "$token_source")"
     classify_log "$SCRIPT_NAME" notify_deny notify_reload "$VERBOSE"
 }
 
@@ -134,23 +150,34 @@ notify_deny() {
 }
 
 # Each config file's reloads have a banner group of their own: a reload of one says nothing of the
-# other's last edit. A reload's banner replaces the file's last one: a failure stays up until the
-# user fixes it, and the fix's confirmation takes its place, briefly. With no terminal for the
-# proxy, the confirmation is the user's word that an edit took effect before they retry what it
+# other's last edit. It is shared by the sessions whose reloads of the file go alike, those reading
+# the same base and workspace files (reload_banner_group): a base edit shows once per workspace, so
+# one refused for what a workspace's file has shows in that workspace's sessions alone. A reload's banner replaces its group's last one: a failure stays up
+# until the user fixes it, and the fix's confirmation takes its place, briefly. With no terminal for
+# the proxy, the confirmation is the user's word that an edit took effect before they retry what it
 # allows -- or, by its absence, that the edit went to a file the session doesn't read.
 #
-# usage: notify_reload ok|failed rules|allowlist
+# The banner says what reloaded and names the file as the proxy's log LINE does.
+#
+# usage: notify_reload ok|failed rules|allowlist LINE
 notify_reload() {
-    arity 2
-    local file="$RULES" what='rules' group="$RULES_RELOAD_GROUP"
+    arity 3
+    local group="$RULES_RELOAD_GROUP" ws_group="$RULES_WS_RELOAD_GROUP"
+    local what name added
     if [ "$2" = allowlist ]; then
-        file="$GITHUB_ALLOWLIST" what='GitHub allowlist' group="$ALLOWLIST_RELOAD_GROUP"
+        group="$ALLOWLIST_RELOAD_GROUP" ws_group="$ALLOWLIST_WS_RELOAD_GROUP"
     fi
+    # A jq of its own, not a filter file: one edited as the proxy runs can't swallow the banner.
+    { IFS= read -r what && IFS= read -r name && IFS= read -r added; } \
+        < <(printf '%s\n' "$3" | jq -r '(.what // "proxy config"), (.name // "the proxy config"),
+                                        (.added == true)' 2>/dev/null) \
+        || { what='proxy config' name='the proxy config' added=false; }
+    [ "$added" = true ] && group="$ws_group"
     case "$1" in
         failed) notify "$group" "$LOG" "$what reload failed" \
-                    "Your edit to ${file##*/} did not take effect" "$NOTIFY_ALERT_SECS" ;;
+                    "Your edit to $name did not take effect" "$NOTIFY_ALERT_SECS" ;;
         ok)     notify "$group" "$LOG" "$what reloaded" \
-                    "Your edit to ${file##*/} took effect" "$NOTIFY_CONFIRM_SECS" ;;
+                    "Your edit to $name took effect" "$NOTIFY_CONFIRM_SECS" ;;
     esac
 }
 
@@ -190,7 +217,7 @@ formatter=$!
 status=0
 TMPDIR="$PROXY_DIR" lead_group run_smokescreen "$PROXY_DIR" "$PARENT_PID" "$RULES" \
     "$GITHUB_ALLOWLIST" "$CHOPI_DIR/.internal/github-relays-config.sh" "$CADDY_LOG" \
-    4>&2 2>&1 >&3 3>&- || status=$?
+    "$ADD_RULES" "$ADD_GITHUB_ALLOWLIST" 4>&2 2>&1 >&3 3>&- || status=$?
 exec 3>&-
 # Our end of the FIFO closed, the formatter ends once it reads the rest. A second stop signal while
 # it does stops us waiting.

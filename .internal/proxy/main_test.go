@@ -17,6 +17,9 @@ import (
 	acl "github.com/stripe/smokescreen/pkg/smokescreen/acl/v1"
 )
 
+// A minimal valid rules file with no default rule, allowing nothing.
+const rulesWithoutDefault = "version: v1\nservices: []\n"
+
 // A minimal valid rules file allowing exactly one host.
 func rulesAllowing(host string) string {
 	return fmt.Sprintf(`version: v1
@@ -34,6 +37,16 @@ func writeFile(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// realTempDir is t.TempDir(), its links resolved, as an added file's path is given (configFile.open).
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 func readFile(t *testing.T, path string) string {
@@ -76,32 +89,52 @@ func chmod(t *testing.T, path string, mode os.FileMode) {
 	}
 }
 
-// reloadIfChanged reloads the rules if f, the rules file, changed since last taken up, as its watch
-// does each tick.
-func reloadIfChanged(conf *smokescreen.Config, holder *swappableACL, f *configFile) {
-	f.applyIfChanged(conf.Log, takeRules(conf, holder, f))
+// rewrite writes content to f and has rules apply it.
+func rewrite(t *testing.T, rules *configFiles, f *configFile, log *logrus.Logger, content string) {
+	t.Helper()
+	writeFile(t, f.path, content)
+	rules.applyIfChanged(log, f)
 }
 
 // testSetup returns a config whose log entries are captured by the returned hook, a holder
-// loaded from the given rules file, and the file, as taken up.
-func testSetup(t *testing.T, path string) (*smokescreen.Config, *swappableACL, *configFile, *logrustest.Hook) {
+// loaded from the given rules file, and the file, the rules added to it missing.
+func testSetup(t *testing.T, path string) (*smokescreen.Config, *swappableACL, *configFiles, *configFile, *logrustest.Hook) {
+	t.Helper()
+	conf, holder, rules, hook := setupWith(t, path, missingAdded(t))
+	return conf, holder, rules, rules.base, hook
+}
+
+// setupWith is testSetup for the base rules file at base, and the one added to it at added,
+// returned as the proxy watches them.
+func setupWith(t *testing.T, base, added string) (*smokescreen.Config, *swappableACL, *configFiles, *logrustest.Hook) {
+	t.Helper()
+	conf, holder, rules, hook := untakenSetup(t, base, added)
+	if err := rules.takeUpAtStart(func(error) {}); err != nil {
+		t.Fatalf("initial take: %v", err)
+	}
+	return conf, holder, rules, hook
+}
+
+// missingAdded is the path of an added config file that is missing, at a real path, as chopi gives
+// one (configFile.open).
+func missingAdded(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(realTempDir(t), "ws.yaml")
+}
+
+// untakenSetup is setupWith but for taking up the rules, left to the test.
+func untakenSetup(t *testing.T, base, added string) (*smokescreen.Config, *swappableACL, *configFiles, *logrustest.Hook) {
 	t.Helper()
 	conf := smokescreen.NewConfig()
 	logger, hook := logrustest.NewNullLogger()
 	conf.Log = logger
-	file, err := newConfigFile(path, rulesKind)
+	holder := &swappableACL{}
+	rules, err := newConfigFiles(rulesKind, base, added)
 	if err != nil {
 		t.Fatalf("initial check: %v", err)
 	}
-	rules, err := parseRules(conf, file.accepted)
-	if err != nil {
-		t.Fatalf("initial load: %v", err)
-	}
-	holder := &swappableACL{}
-	if err := holder.take(rules, func(error) {}); err != nil {
-		t.Fatalf("initial take: %v", err)
-	}
-	return conf, holder, file, hook
+	rules.take = takeRules(conf, holder, rules.base.path, rules.added.path)
+	return conf, holder, rules, hook
 }
 
 // reloaded expects the last log entry to be a successful reload's.
@@ -135,10 +168,23 @@ func decide(t *testing.T, holder *swappableACL, host string) acl.DecisionResult 
 	return d.Result
 }
 
+// wantDecisions checks holder decides each host as wanted, when saying when, if anything.
+func wantDecisions(t *testing.T, holder *swappableACL, when string, want map[string]acl.DecisionResult) {
+	t.Helper()
+	if when != "" {
+		when = " " + when
+	}
+	for host, w := range want {
+		if got := decide(t, holder, host); got != w {
+			t.Errorf("%s%s: got %v, want %v", host, when, got, w)
+		}
+	}
+}
+
 func TestReloadSwapsRules(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rules.yaml")
 	writeFile(t, path, rulesAllowing("old.example"))
-	conf, holder, file, hook := testSetup(t, path)
+	conf, holder, rules, file, hook := testSetup(t, path)
 	lastMod := file.lastMod
 
 	if got := decide(t, holder, "old.example"); got != acl.Allow {
@@ -148,9 +194,7 @@ func TestReloadSwapsRules(t *testing.T) {
 		t.Fatalf("new.example before reload: got %v, want Deny", got)
 	}
 
-	writeFile(t, path, rulesAllowing("new.example"))
-	setMtime(t, path, lastMod.Add(time.Second))
-	reloadIfChanged(conf, holder, file)
+	rewrite(t, rules, file, conf.Log, rulesAllowing("new.example"))
 	newMod := file.lastMod
 	if !newMod.After(lastMod) {
 		t.Fatalf("mtime not advanced: %v -> %v", lastMod, newMod)
@@ -167,12 +211,9 @@ func TestReloadSwapsRules(t *testing.T) {
 func TestReloadFailureKeepsPreviousRules(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rules.yaml")
 	writeFile(t, path, rulesAllowing("old.example"))
-	conf, holder, file, hook := testSetup(t, path)
-	lastMod := file.lastMod
+	conf, holder, rules, file, hook := testSetup(t, path)
 
-	writeFile(t, path, "version: v9\n")
-	setMtime(t, path, lastMod.Add(time.Second))
-	reloadIfChanged(conf, holder, file)
+	rewrite(t, rules, file, conf.Log, "version: v9\n")
 	failedMod := file.lastMod
 	if got := decide(t, holder, "old.example"); got != acl.Allow {
 		t.Fatalf("old.example after failed reload: got %v, want Allow (previous rules kept)", got)
@@ -182,7 +223,7 @@ func TestReloadFailureKeepsPreviousRules(t *testing.T) {
 	// The failed mtime is recorded: the broken file is not re-tried (and re-logged)
 	// every tick, only when it changes again.
 	hook.Reset()
-	reloadIfChanged(conf, holder, file)
+	rules.applyIfChanged(conf.Log, file)
 	if !file.lastMod.Equal(failedMod) {
 		t.Fatalf("mtime moved without a file change: %v -> %v", failedMod, file.lastMod)
 	}
@@ -191,22 +232,19 @@ func TestReloadFailureKeepsPreviousRules(t *testing.T) {
 	}
 
 	// Fixing the file recovers.
-	writeFile(t, path, rulesAllowing("fixed.example"))
-	setMtime(t, path, failedMod.Add(time.Second))
-	reloadIfChanged(conf, holder, file)
+	rewrite(t, rules, file, conf.Log, rulesAllowing("fixed.example"))
 	if got := decide(t, holder, "fixed.example"); got != acl.Allow {
 		t.Fatalf("fixed.example after recovery: got %v, want Allow", got)
 	}
 }
 
-// unreadableEdit makes the rules file unreadable, as edited at mod, and checks the poll that sees
-// it logs a reload failure.
-func unreadableEdit(t *testing.T, conf *smokescreen.Config, holder *swappableACL, file *configFile,
-	hook *logrustest.Hook, mod time.Time) {
+// unreadableEdit makes the rules file unreadable, and checks the poll that sees it logs a reload
+// failure.
+func unreadableEdit(t *testing.T, log *logrus.Logger, rules *configFiles, file *configFile,
+	hook *logrustest.Hook) {
 	t.Helper()
 	chmod(t, file.path, 0)
-	setMtime(t, file.path, mod)
-	reloadIfChanged(conf, holder, file)
+	rules.applyIfChanged(log, file)
 	reloadFailure(t, hook)
 }
 
@@ -216,19 +254,19 @@ func TestAnEditMadeReadableIsTakenUp(t *testing.T) {
 	skipIfRoot(t)
 	path := filepath.Join(t.TempDir(), "rules.yaml")
 	writeFile(t, path, rulesAllowing("old.example"))
-	conf, holder, file, hook := testSetup(t, path)
+	conf, holder, rules, file, hook := testSetup(t, path)
 
 	writeFile(t, path, rulesAllowing("new.example"))
-	unreadableEdit(t, conf, holder, file, hook, file.lastMod.Add(time.Second))
+	unreadableEdit(t, conf.Log, rules, file, hook)
 	// Tried again on the next poll, its being unreadable isn't logged again.
 	hook.Reset()
-	reloadIfChanged(conf, holder, file)
+	rules.applyIfChanged(conf.Log, file)
 	if len(hook.Entries) != 0 {
 		t.Fatalf("unexpected log entries on a file still unreadable: %+v", hook.Entries)
 	}
 
 	chmod(t, path, 0o644)
-	reloadIfChanged(conf, holder, file)
+	rules.applyIfChanged(conf.Log, file)
 	reloaded(t, hook)
 	if got := decide(t, holder, "new.example"); got != acl.Allow {
 		t.Fatalf("new.example once the file is readable: got %v, want Allow", got)
@@ -240,25 +278,25 @@ func TestRestoringAccessToUnchangedRulesClearsWarning(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "rules.yaml")
 	writeFile(t, path, rulesAllowing("base.example"))
-	conf, holder, file, hook := testSetup(t, path)
+	conf, holder, rules, file, hook := testSetup(t, path)
 	t.Cleanup(func() { chmod(t, dir, 0o700) })
 
 	chmod(t, dir, 0)
-	reloadIfChanged(conf, holder, file)
+	rules.applyIfChanged(conf.Log, file)
 	if err := reloadFailure(t, hook); !errors.Is(err, os.ErrPermission) {
 		t.Fatalf("expected a permission error, got %v", err)
 	}
 
 	hook.Reset()
 	chmod(t, dir, 0o700)
-	reloadIfChanged(conf, holder, file)
+	rules.applyIfChanged(conf.Log, file)
 	reloaded(t, hook)
 	if got := decide(t, holder, "base.example"); got != acl.Allow {
 		t.Fatalf("base.example after restoring access: got %v, want Allow", got)
 	}
 
 	hook.Reset()
-	reloadIfChanged(conf, holder, file)
+	rules.applyIfChanged(conf.Log, file)
 	if len(hook.Entries) != 0 {
 		t.Fatalf("unexpected log entries after recovery: %+v", hook.Entries)
 	}
@@ -269,22 +307,22 @@ func TestARefusalPutsBackTheConfigInEffect(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "rules.yaml")
 	writeFile(t, path, rulesAllowing("old.example"))
-	conf, holder, file, _ := testSetup(t, path)
+	conf, holder, rules, file, _ := testSetup(t, path)
 
 	writeFile(t, path, rulesAllowing("a.example"))
-	setMtime(t, path, file.lastMod.Add(time.Second))
-	take := takeRules(conf, holder, file)
-	file.applyIfChanged(conf.Log, func(content []byte) error {
+	take := rules.take
+	rules.take = func(base, added []byte, warn func(error)) error {
 		writeFile(t, path, rulesAllowing("b.example"))
-		return take(content)
-	})
+		return take(base, added, warn)
+	}
+	rules.applyIfChanged(conf.Log, file)
+	rules.take = take
 	if got := decide(t, holder, "a.example"); got != acl.Allow {
 		t.Fatalf("a.example, as the watcher read it: got %v, want Allow", got)
 	}
 
-	writeThroughOtherLink(t, path, filepath.Join(dir, "other-link.yaml"), rulesAllowing("c.example"),
-		file.lastMod.Add(time.Hour))
-	reloadIfChanged(conf, holder, file)
+	writeThroughOtherLink(t, path, filepath.Join(dir, "other-link.yaml"), rulesAllowing("c.example"))
+	rules.applyIfChanged(conf.Log, file)
 	if got := readFile(t, path); got != rulesAllowing("a.example") {
 		t.Fatalf("the put-back file should allow a.example, the config in effect, got:\n%s", got)
 	}
@@ -296,13 +334,15 @@ func TestASecondUnreadableEditIsLogged(t *testing.T) {
 	skipIfRoot(t)
 	path := filepath.Join(t.TempDir(), "rules.yaml")
 	writeFile(t, path, rulesAllowing("old.example"))
-	conf, holder, file, hook := testSetup(t, path)
-	mod := file.lastMod
+	conf, _, rules, file, hook := testSetup(t, path)
 
-	unreadableEdit(t, conf, holder, file, hook, mod.Add(time.Second))
+	unreadableEdit(t, conf.Log, rules, file, hook)
 
+	// Edited again, with no poll seeing it readable in between.
+	chmod(t, path, 0o644)
+	writeFile(t, path, rulesAllowing("new.example"))
 	hook.Reset()
-	unreadableEdit(t, conf, holder, file, hook, mod.Add(2*time.Second))
+	unreadableEdit(t, conf.Log, rules, file, hook)
 }
 
 // An edit that can't be read after a refused one is logged, though the refused change couldn't be
@@ -312,19 +352,18 @@ func TestUnreadableAfterARefusalIsLogged(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "rules.yaml")
 	writeFile(t, path, rulesAllowing("old.example"))
-	conf, holder, file, hook := testSetup(t, path)
-	mod := file.lastMod
+	conf, _, rules, file, hook := testSetup(t, path)
 
-	unreadableEdit(t, conf, holder, file, hook, mod.Add(time.Second))
+	unreadableEdit(t, conf.Log, rules, file, hook)
 
 	// Refused, and not put back: its directory can't take the move aside.
 	chmod(t, path, 0o644)
 	other := filepath.Join(dir, "other-link.yaml")
-	writeThroughOtherLink(t, path, other, rulesAllowing("new.example"), mod.Add(2*time.Second))
+	writeThroughOtherLink(t, path, other, rulesAllowing("new.example"))
 	chmod(t, dir, 0o555)
 	t.Cleanup(func() { chmod(t, dir, 0o755) })
 	hook.Reset()
-	reloadIfChanged(conf, holder, file)
+	rules.applyIfChanged(conf.Log, file)
 	if err := reloadFailure(t, hook); !strings.Contains(err.Error(), "could not move it aside") {
 		t.Fatalf("expected the refused file not to be moved aside, got %v", err)
 	}
@@ -334,7 +373,7 @@ func TestUnreadableAfterARefusalIsLogged(t *testing.T) {
 		t.Fatal(err)
 	}
 	hook.Reset()
-	unreadableEdit(t, conf, holder, file, hook, mod.Add(3*time.Second))
+	unreadableEdit(t, conf.Log, rules, file, hook)
 }
 
 // A config file with another hard link, which the sandbox profile can't see by its path, may have
@@ -346,12 +385,11 @@ func TestReloadRefusesAFileWithOtherLinks(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "rules.yaml")
 	writeFile(t, path, rulesAllowing("old.example"))
-	conf, holder, file, hook := testSetup(t, path)
-	lastMod := file.lastMod
+	conf, holder, rules, file, hook := testSetup(t, path)
 
 	other := filepath.Join(dir, "other-link.yaml")
-	writeThroughOtherLink(t, path, other, rulesAllowing("new.example"), lastMod.Add(time.Second))
-	reloadIfChanged(conf, holder, file)
+	writeThroughOtherLink(t, path, other, rulesAllowing("new.example"))
+	rules.applyIfChanged(conf.Log, file)
 	refusedMod := file.lastMod
 	if got := decide(t, holder, "new.example"); got != acl.Deny {
 		t.Fatalf("new.example after a change through another link: got %v, want Deny", got)
@@ -390,55 +428,58 @@ func TestReloadRefusesAFileWithOtherLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	hook.Reset()
-	reloadIfChanged(conf, holder, file)
+	rules.applyIfChanged(conf.Log, file)
 	if !file.lastMod.Equal(refusedMod) {
 		t.Fatalf("mtime moved without a file change: %v -> %v", refusedMod, file.lastMod)
 	}
 	if len(hook.Entries) != 0 {
 		t.Fatalf("the put-back file should not be taken up again, got %+v", hook.Entries)
 	}
-	writeFile(t, path, rulesAllowing("fixed.example"))
-	setMtime(t, path, refusedMod.Add(time.Second))
-	reloadIfChanged(conf, holder, file)
+	rewrite(t, rules, file, conf.Log, rulesAllowing("fixed.example"))
 	if got := decide(t, holder, "fixed.example"); got != acl.Allow {
 		t.Fatalf("fixed.example after a change with no other links: got %v, want Allow", got)
 	}
 	// A later refusal puts back what was taken up last, not what the proxy started with.
-	fixedMod := file.lastMod
-	writeThroughOtherLink(t, path, other, rulesAllowing("new.example"), fixedMod.Add(time.Second))
-	reloadIfChanged(conf, holder, file)
+	writeThroughOtherLink(t, path, other, rulesAllowing("new.example"))
+	rules.applyIfChanged(conf.Log, file)
 	if got := readFile(t, path); got != rulesAllowing("fixed.example") {
 		t.Fatalf("the rules file should hold the rules last taken up, got:\n%s", got)
 	}
 }
 
-// writeThroughOtherLink links other to path, writes content through other, and sets path's mtime
-// to mod, for a reload to see the change.
-func writeThroughOtherLink(t *testing.T, path, other, content string, mod time.Time) {
+// writeThroughOtherLink links other to path and writes content through other.
+func writeThroughOtherLink(t *testing.T, path, other, content string) {
 	t.Helper()
 	if err := os.Link(path, other); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, other, content)
-	setMtime(t, path, mod)
 }
 
-// As the proxy starts, a hard-linked config file is refused, whichever it is.
+// As the proxy starts, a hard-linked config file is refused, whichever it is, as is a missing base
+// one; an added one may be missing.
 func TestStartRefusesAFileWithOtherLinks(t *testing.T) {
-	dir := t.TempDir()
+	dir := realTempDir(t)
 	rules := filepath.Join(dir, "rules.yaml")
 	allowlist := filepath.Join(dir, "allowlist")
 	writeFile(t, rules, rulesAllowing("old.example"))
 	writeFile(t, allowlist, "")
 	for path, kind := range map[string]configKind{rules: rulesKind, allowlist: allowlistKind} {
-		if _, err := newConfigFile(path, kind); err != nil {
+		if _, err := newConfigFile(path, kind, false); err != nil {
 			t.Fatalf("a config file with no other links: got %v, want no error", err)
 		}
+	}
+	missing := filepath.Join(dir, "missing")
+	if _, err := newConfigFile(missing, rulesKind, true); err != nil {
+		t.Fatalf("a missing added config file: got %v, want no error", err)
+	}
+	if _, err := newConfigFile(missing, rulesKind, false); err == nil {
+		t.Fatal("a missing base config file: got no error")
 	}
 	if err := os.Link(allowlist, filepath.Join(dir, "other-link")); err != nil {
 		t.Fatal(err)
 	}
-	_, err := newConfigFile(allowlist, allowlistKind)
+	_, err := newConfigFile(allowlist, allowlistKind, false)
 	if err == nil || !strings.Contains(err.Error(), allowlist) || !strings.Contains(err.Error(), "2 hard links") {
 		t.Fatalf("a hard-linked allowlist: got %v, want an error naming it and its hard links", err)
 	}
@@ -454,28 +495,29 @@ func TestStartRefusesAFileItCantRead(t *testing.T) {
 	writeFile(t, unreadable, "owner/repo\n")
 	chmod(t, unreadable, 0)
 	for _, path := range []string{unreadable, filepath.Join(dir, "missing")} {
-		if _, err := newConfigFile(path, allowlistKind); err == nil || !strings.Contains(err.Error(), path) {
+		if _, err := newConfigFile(path, allowlistKind, false); err == nil || !strings.Contains(err.Error(), path) {
 			t.Fatalf("%s: got %v, want an error naming it", path, err)
 		}
 	}
 }
 
 func TestConfigFIFOIsRefusedAndReloadRecovers(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "rules.yaml")
+	path := filepath.Join(realTempDir(t), "rules.yaml")
 	writeFile(t, path, rulesAllowing("old.example"))
-	conf, holder, file, hook := testSetup(t, path)
+	conf, holder, rules, file, hook := testSetup(t, path)
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
 	if err := syscall.Mkfifo(path, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	setMtime(t, path, file.lastMod.Add(time.Second))
 
-	if _, err := newConfigFile(path, rulesKind); err == nil || !strings.Contains(err.Error(), "not a regular file") {
-		t.Fatalf("starting with a FIFO: got %v, want a non-regular file error", err)
+	for _, added := range []bool{false, true} {
+		if _, err := newConfigFile(path, rulesKind, added); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("starting with a FIFO (added: %t): got %v, want a non-regular file error", added, err)
+		}
 	}
-	reloadIfChanged(conf, holder, file)
+	rules.applyIfChanged(conf.Log, file)
 	reloadFailure(t, hook)
 	if got := decide(t, holder, "old.example"); got != acl.Allow {
 		t.Fatalf("old.example after FIFO refusal: got %v, want Allow", got)
@@ -485,9 +527,8 @@ func TestConfigFIFOIsRefusedAndReloadRecovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, path, rulesAllowing("new.example"))
-	setMtime(t, path, file.lastMod.Add(2*time.Second))
 	hook.Reset()
-	reloadIfChanged(conf, holder, file)
+	rules.applyIfChanged(conf.Log, file)
 	reloaded(t, hook)
 	if got := decide(t, holder, "new.example"); got != acl.Allow {
 		t.Fatalf("new.example after replacing the FIFO: got %v, want Allow", got)
@@ -497,13 +538,13 @@ func TestConfigFIFOIsRefusedAndReloadRecovers(t *testing.T) {
 func TestMissingFileKeepsPreviousRules(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rules.yaml")
 	writeFile(t, path, rulesAllowing("old.example"))
-	conf, holder, file, hook := testSetup(t, path)
+	conf, holder, rules, file, hook := testSetup(t, path)
 	lastMod := file.lastMod
 
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	reloadIfChanged(conf, holder, file)
+	rules.applyIfChanged(conf.Log, file)
 	if !file.lastMod.Equal(lastMod) {
 		t.Fatalf("mtime moved on a missing file: %v -> %v", lastMod, file.lastMod)
 	}
@@ -515,9 +556,7 @@ func TestMissingFileKeepsPreviousRules(t *testing.T) {
 	}
 
 	// A recreated file reloads as usual.
-	writeFile(t, path, rulesAllowing("new.example"))
-	setMtime(t, path, lastMod.Add(time.Second))
-	reloadIfChanged(conf, holder, file)
+	rewrite(t, rules, file, conf.Log, rulesAllowing("new.example"))
 	if got := decide(t, holder, "new.example"); got != acl.Allow {
 		t.Fatalf("new.example after the file reappeared: got %v, want Allow", got)
 	}
@@ -537,28 +576,31 @@ func TestUnreadableFileIsSurfacedOnce(t *testing.T) {
 	conf.Log = logger
 	holder := &swappableACL{} // untouched: a stat error returns before any load or swap
 	file := &configFile{path: path, kind: rulesKind}
+	added := &configFile{path: missingAdded(t), kind: rulesKind, added: true}
+	rules := &configFiles{base: file, added: added}
+	rules.take = takeRules(conf, holder, rules.base.path, rules.added.path)
 
-	// First failing tick surfaces the error and sets warned; the mtime does not move.
-	reloadIfChanged(conf, holder, file)
-	if file.warned == nil {
-		t.Fatal("a non-ENOENT stat error should set warned")
+	// First failing tick surfaces the error and sets unreadable; the mtime does not move.
+	rules.applyIfChanged(conf.Log, file)
+	if file.unreadable == nil {
+		t.Fatal("a non-ENOENT stat error should set unreadable")
 	}
 	if !file.lastMod.IsZero() {
 		t.Fatalf("mtime should not advance on a stat error, got %v", file.lastMod)
 	}
 	reloadFailure(t, hook) // the stat error attached, so the rendered line can name it
 
-	// A persistent error does not re-log while warned stays set.
+	// A persistent error does not re-log while unreadable stays set.
 	hook.Reset()
-	reloadIfChanged(conf, holder, file)
-	if file.warned == nil {
-		t.Fatal("warned should stay set while the stat keeps failing")
+	rules.applyIfChanged(conf.Log, file)
+	if file.unreadable == nil {
+		t.Fatal("unreadable should stay set while the stat keeps failing")
 	}
 	if len(hook.Entries) != 0 {
 		t.Fatalf("a persistent stat error should not re-log every tick, got %+v", hook.Entries)
 	}
 
-	// Repairing the path reloads and clears warned.
+	// Repairing the path reloads and clears unreadable.
 	if err := os.Remove(notDir); err != nil {
 		t.Fatal(err)
 	}
@@ -566,28 +608,24 @@ func TestUnreadableFileIsSurfacedOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, path, rulesAllowing("ok.example"))
-	reloadIfChanged(conf, holder, file)
-	if file.warned != nil {
-		t.Fatal("a healthy stat should clear warned")
+	rules.applyIfChanged(conf.Log, file)
+	if file.unreadable != nil {
+		t.Fatal("a healthy stat should clear unreadable")
 	}
 	if got := decide(t, holder, "ok.example"); got != acl.Allow {
 		t.Fatalf("rules should reload after the path is repaired: got %v, want Allow", got)
 	}
 }
 
-// reloadTo sets up rules allowing old.example, then reloads them as the given rules, allowing
+// reloadTo sets up rules allowing old.example, then reloads them as to, allowing
 // GitHub's domains if allowGitHub.
-func reloadTo(t *testing.T, rules string, allowGitHub bool) (*swappableACL, *logrustest.Hook) {
+func reloadTo(t *testing.T, to string, allowGitHub bool) (*swappableACL, *logrustest.Hook) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "rules.yaml")
 	writeFile(t, path, rulesAllowing("old.example"))
-	conf, holder, file, hook := testSetup(t, path)
+	conf, holder, rules, file, hook := testSetup(t, path)
 	holder.allowGitHub = allowGitHub
-	lastMod := file.lastMod
-
-	writeFile(t, path, rules)
-	setMtime(t, path, lastMod.Add(time.Second))
-	reloadIfChanged(conf, holder, file)
+	rewrite(t, rules, file, conf.Log, to)
 	return holder, hook
 }
 
@@ -617,7 +655,7 @@ func TestReloadTakesUpRulesAllowingGitHubWithTheOverride(t *testing.T) {
 	}
 	reloaded(t, hook)
 	if !slices.ContainsFunc(hook.Entries, func(e logrus.Entry) bool {
-		return e.Level == logrus.WarnLevel && strings.Contains(e.Message, "allow github.com") &&
+		return e.Level == logrus.WarnLevel && strings.Contains(e.Message, "allows github.com") &&
 			strings.Contains(e.Message, gitHubExfiltrationOverride+" is set")
 	}) {
 		t.Fatalf("expected a warning that the rules allow github.com, naming the override, got %+v", hook.Entries)
@@ -648,7 +686,7 @@ default:
 `, "github.com, *.github.com"},
 		{"the upload host counts", rulesAllowing(`uploads.github.com`), "uploads.github.com"},
 		{"the gist host counts", rulesAllowing(`gist.github.com`), "gist.github.com"},
-		{"a subdomain glob counts, as one", rulesAllowing(`"*.github.com"`), "the rules allow *.github.com:"},
+		{"a subdomain glob counts, as one", rulesAllowing(`"*.github.com"`), "rules.yaml allows *.github.com:"},
 		{"a read-only subdomain named alone doesn't", rulesAllowing("codeload.github.com"), ""},
 		{"the global deny list wins over the global allow list", rulesAllowing("api.anthropic.com") +
 			"global_allow_list:\n  - github.com\nglobal_deny_list:\n  - github.com\n", ""},
@@ -656,16 +694,15 @@ default:
 			"    - mygithub.com\n    - github.com.evil.example\n", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rules, err := parseRules(smokescreen.NewConfig(), []byte(tc.rules))
+			_, refusals, err := loadRules(smokescreen.NewConfig(), "rules.yaml", "", []byte(tc.rules), nil)
 			if err != nil {
 				t.Fatalf("load: %v", err)
 			}
-			err = gitHubExfiltration(rules)
 			switch {
-			case tc.want == "" && err != nil:
-				t.Fatalf("want no refusal, got %v", err)
-			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
-				t.Fatalf("want a refusal naming %q, got %v", tc.want, err)
+			case tc.want == "" && len(refusals) != 0:
+				t.Fatalf("want no refusal, got %v", refusals)
+			case tc.want != "" && (len(refusals) != 1 || !strings.Contains(refusals[0].Error(), tc.want)):
+				t.Fatalf("want a refusal naming %q, got %v", tc.want, refusals)
 			}
 		})
 	}

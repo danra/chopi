@@ -349,6 +349,24 @@ chmod u+w "$other_rules"
 out="$(chopi_cfg "$base/config/rules-granted.sh" /bin/sh -c "$(config_tamper "$rules")" 2>&1)"
 assert_config_kept "$out" "$rules" "$(cat "$other_rules")" "another session reads, under the same grant"
 
+# The repo's own rules, in the config dir too, are as far out of its own session's reach, under the
+# same grant: it can't change them, nor make them where missing, to widen its own limits.
+ws_config="$(workspace_config_dir "$ws")"
+mkdir -p "$ws_config"
+printf 'allowed_domains: []\n' > "$ws_config/$DEFAULT_PROXY_RULES"
+out="$(chopi_cfg "$base/config/rules-granted.sh" /bin/sh -c \
+    "$(config_tamper "$ws_config/$DEFAULT_PROXY_RULES")" 2>&1)"
+assert_config_kept "$out" "$ws_config/$DEFAULT_PROXY_RULES" "allowed_domains: []" \
+    "the workspace's own, under the same grant"
+rm -rf "$ws_config"
+out="$(chopi_cfg "$base/config/rules-granted.sh" /bin/sh -c "
+    mkdir -p '$ws_config' 2>/dev/null
+    (echo 'allowed_domains: [evil.example]' > '$ws_config/$DEFAULT_PROXY_RULES') 2>/dev/null \
+        && echo MAKE_OK || echo MAKE_FAIL" 2>&1)"
+assert_contains "$out" "MAKE_FAIL" "a command can't make its workspace's own rules where missing"
+assert_absent "$ws_config/$DEFAULT_PROXY_RULES" "  -> leaving none"
+rm -rf "$ws_config"
+
 write_cfg "$base/config/rules-relative.sh" "CHOPI_PROXY_RULES=rules.yaml"
 out="$(chopi_cfg "$base/config/rules-relative.sh" /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
 assert_nonzero      "$rc"                              "chopi refuses relative proxy rules paths"
@@ -875,6 +893,9 @@ echo "rules and GitHub allowlist hot reload (edits take effect within a running 
 # within one session, stepped from here: the session runs each probe the test asks for in step
 # files -- a curl to a host, or a git ls-remote of a URL.
 steps="$ws/steps"; mkdir -p "$steps"
+# The workspace's own files, which the session's proxy is given, missing or not.
+ws_rules="$ws_config/$DEFAULT_PROXY_RULES"
+ws_allowlist="$ws_config/$DEFAULT_GITHUB_ALLOWLIST"
 # shellcheck disable=SC2016  # expands in the sandboxed shell, not here
 chopi_t /bin/sh -c '
     n=1
@@ -935,16 +956,17 @@ await_step() {
     code="timeout"
 }
 
-# The alerter args of the banner a reload of FILE puts up, as notify_reload words it: WHAT is
-# "rules" or "GitHub allowlist", TOKEN_SOURCE the banner group's (see reload_banner_group).
+# The alerter args of the banner a reload puts up, as notify_reload words it: of WHAT, the file
+# edited named NAME, in the banner group of config file FILE, with each KEY (see
+# reload_banner_group).
 #
-# usage: reload_banner ok|failed WHAT FILE TOKEN_SOURCE
+# usage: reload_banner ok|failed WHAT NAME FILE KEY...
 reload_banner() {
-    local name
-    name="$(basename -- "$3")"
+    local group name="$3"
+    group="$(reload_banner_group "${@:4}")"
     case "$1" in
-        ok)     echo "$2 reloaded --message Your edit to $name took effect --group $(reload_banner_group "$3" "$4") --timeout $NOTIFY_CONFIRM_SECS" ;;
-        failed) echo "$2 reload failed --message Your edit to $name did not take effect --group $(reload_banner_group "$3" "$4") --timeout $NOTIFY_ALERT_SECS" ;;
+        ok)     echo "$2 reloaded --message Your edit to $name took effect --group $group --timeout $NOTIFY_CONFIRM_SECS" ;;
+        failed) echo "$2 reload failed --message Your edit to $name did not take effect --group $group --timeout $NOTIFY_ALERT_SECS" ;;
     esac
 }
 
@@ -962,7 +984,7 @@ else
 fi
 # In the file's group, replacing any failure banner of its, and naming the file: the user's word
 # that the edit took effect, with no terminal for the proxy.
-rules_reloaded_banner="$(reload_banner ok rules "$rules" "")"
+rules_reloaded_banner="$(reload_banner ok rules "${rules##*/}" "$rules" "$ws_rules")"
 if wait_for "$alerter_log" "$rules_reloaded_banner"; then
     ok "  -> and notifies, briefly, that the edit took effect"
 else
@@ -984,7 +1006,7 @@ else
     bad "a broken rules edit did NOT log a failed reload"
 fi
 # In its own group, so the next DENY banner doesn't replace it before the user sees it.
-if wait_for "$alerter_log" "$(reload_banner failed rules "$rules" "")"; then
+if wait_for "$alerter_log" "$(reload_banner failed rules "${rules##*/}" "$rules" "$ws_rules")"; then
     ok "a broken rules edit notifies that the edit did not take effect"
 else
     bad "a broken rules edit did NOT notify"
@@ -1030,6 +1052,7 @@ relay_fetch() {
 }
 
 # (4) A broken allowlist edit is refused loudly, and the relays serving keep serving.
+allowlist_key="$(gh_token_source)"
 printf 'no-slash-here\n' > "$empty_github_allow"
 if wait_for "$reload_log" "GITHUB ALLOWLIST RELOAD FAILED"; then
     ok "a broken allowlist edit is logged loudly as a failed reload"
@@ -1037,7 +1060,8 @@ if wait_for "$reload_log" "GITHUB ALLOWLIST RELOAD FAILED"; then
 else
     bad "a broken allowlist edit did NOT log a failed reload"
 fi
-if wait_for "$alerter_log" "$(reload_banner failed 'GitHub allowlist' "$empty_github_allow" "$(gh_token_source)")"; then
+if wait_for "$alerter_log" "$(reload_banner failed 'GitHub allowlist' "${empty_github_allow##*/}" "$empty_github_allow" \
+    "$ws_allowlist" "$allowlist_key")"; then
     ok "a broken allowlist edit notifies that the edit did not take effect"
 else
     bad "a broken allowlist edit did NOT notify"
@@ -1051,12 +1075,38 @@ if wait_for "$reload_log" "GitHub allowlist reloaded"; then
 else
     bad "the proxy did NOT reload the relays after the allowlist was fixed"
 fi
-if wait_for "$alerter_log" "$(reload_banner ok 'GitHub allowlist' "$empty_github_allow" "$(gh_token_source)")"; then
+if wait_for "$alerter_log" "$(reload_banner ok 'GitHub allowlist' "${empty_github_allow##*/}" "$empty_github_allow" \
+    "$ws_allowlist" "$allowlist_key")"; then
     ok "the fixed allowlist's confirmation replaces the now-stale reload-failure notification"
 else
     bad "the fixed allowlist did NOT replace the reload-failure notification"
 fi
 relay_fetch "after an allowlist reload the session's relay serves, on the port it was confined to"
+
+# (6) The repo's own rules, made mid-session in its config dir, add to the base rules at once, and
+# their banner says whose they are. The session started with none.
+mkdir -p "$ws_config"
+printf 'allowed_domains:\n  - %s\n' "$DENIED_HOST" > "$ws_rules"
+if wait_for "$reload_log" "workspace rules reloaded"; then
+    ok "the proxy took up the workspace's own rules, made mid-session"
+else
+    bad "the proxy did NOT take up the workspace's own rules, made mid-session"
+fi
+if wait_for "$alerter_log" "$(reload_banner ok 'workspace rules' "${ws_config##*/}/$DEFAULT_PROXY_RULES" \
+    "$ws_rules" "$rules")"; then
+    ok "  -> and notifies, naming the workspace's dir"
+else
+    bad "  -> but did NOT notify, naming the workspace's dir"
+fi
+if curl -sS -o /dev/null --max-time 10 "https://$DENIED_HOST" 2>/dev/null; then
+    session_probe http_connect "$DENIED_HOST"
+    assert_eq "$code" "200"                        "the workspace's own rules allow their host"
+else
+    echo "  SKIP the workspace's host reachability (no connectivity to $DENIED_HOST)"
+fi
+session_probe http_connect "$OTHER_DENIED_HOST"
+assert_eq "$code" "407"                            "  -> and no other"
+rm -rf "$ws_config"
 
 rm -rf "$steps"
 wait "$reload_session"

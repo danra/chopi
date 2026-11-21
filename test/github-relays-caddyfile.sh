@@ -237,6 +237,18 @@ echo "-- invalid entries are rejected (fail closed, non-zero exit) --"
 render 'no-slash-here' >/dev/null 2>&1; assert_nonzero "$?" "entry without owner/repo rejected"
 render 'own er/repo'   >/dev/null 2>"$WORK/err"; assert_nonzero "$?" "entry with illegal char rejected"
 assert_contains "$(cat "$WORK/err")" 'using only A-Za-z0-9._-' "  -> naming the allowed characters"
+assert_contains "$(cat "$WORK/err")" "$WORK/allow: " "  -> and the file it is in"
+
+echo "-- several allowlists render their union --"
+printf 'acme/tool' > "$WORK/base"   # no newline at its end
+printf 'octocat/*\n' > "$WORK/added"
+union="$("$RENDER" "$WORK/base" "$WORK/added")"
+union_re="$(printf '%s\n' "$union" | grep -E '@allowed path_regexp ' | sed -E 's/.*path_regexp //')"
+assert_match "$union_re" '/acme/tool/git-receive-pack'     "the first file's entries allowed"
+assert_match "$union_re" '/octocat/any/git-receive-pack'   "  -> and the second's"
+printf 'no-slash-here\n' > "$WORK/added"
+"$RENDER" "$WORK/base" "$WORK/added" >/dev/null 2>"$WORK/err"; assert_nonzero "$?" "a broken second file rejected"
+assert_contains "$(cat "$WORK/err")" "$WORK/added: " "  -> naming it"
 
 echo "-- github-relays-config.sh: the config with its credentials, as chopi-smokescreen runs it --"
 CONFIG="$CHOPI_DIR/.internal/github-relays-config.sh"

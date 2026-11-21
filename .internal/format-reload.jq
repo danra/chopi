@@ -10,6 +10,9 @@
 #              -- loud like a DENY: the user's edit did NOT take effect, and the proxy
 #              keeps enforcing the previous rules.
 #
+# Each says what reloaded as the entry's "what" says -- e.g. "workspace rules reloaded", for a
+# workspace's own -- or, for an entry without one, as its message says.
+#
 # The msg strings matched here are emitted by .internal/proxy/main.go (its *Reloaded and
 # *ReloadFailed constants), and classify_log (.internal/classify-log.sh) matches them on the raw line to fire its
 # reload hook; keep all three in sync.
@@ -20,9 +23,10 @@
 include "util";
 
 # Render the reload entry given as input, of WHAT, and of its failure, which keeps the previous KEPT.
-def reloaded($what): "[" + $script + "] " + $what + " reloaded  @ " + field(.time);
+def what($what): .what // $what;
+def reloaded($what): "[" + $script + "] " + what($what) + " reloaded  @ " + field(.time);
 def failed($what; $kept):
-  "[" + $script + "] " + ($what | ascii_upcase) + " RELOAD FAILED"
+  "[" + $script + "] " + (what($what) | ascii_upcase) + " RELOAD FAILED"
   + " (previous " + $kept + " kept)  " + field(.error) + "  @ " + field(.time);
 
 (try fromjson catch null) as $entry

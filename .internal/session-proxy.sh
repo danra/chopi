@@ -29,16 +29,17 @@ SESSION_GH_SOCK=""
 
 # Start the session's proxy, with RULES and ALLOWLIST as its configuration, and its log verbose when
 # VERBOSE is non-empty. Returns as soon as it is launched, for chopi to go on with its own setup as
-# the proxy starts; await_session_proxy waits for it.
+# the proxy starts; await_session_proxy waits for it. ADD_RULES and ADD_ALLOWLIST add to RULES and
+# ALLOWLIST; either may be missing.
 #
 # USER_TMPDIR is the TMPDIR chopi was started with, before it took a temp dir of its own; empty for
 # none. The proxy runs with it, not with chopi's, which goes with the session: an editor its banner
 # opens can outlive the session, and so must the TMPDIR it's given.
 #
-# usage: launch_session_proxy RULES ALLOWLIST VERBOSE USER_TMPDIR
+# usage: launch_session_proxy RULES ALLOWLIST VERBOSE USER_TMPDIR ADD_RULES ADD_ALLOWLIST
 launch_session_proxy() {
-    arity 4
-    local rules="$1" allowlist="$2" verbose="$3" user_tmpdir="$4"
+    arity 6
+    local rules="$1" allowlist="$2" verbose="$3" user_tmpdir="$4" add_rules="$5" add_allowlist="$6"
 
     if ! mkdir -p "$CHOPI_PROXY_LOG_DIR" 2>/dev/null; then
         echo "chopi: cannot create the proxy log dir $CHOPI_PROXY_LOG_DIR" >&2
@@ -60,10 +61,11 @@ launch_session_proxy() {
     # The proxy puts the relays' log beside its own, as a .caddy.log, which the sweep above covers
     # too.
     local flags=(--log "$SESSION_PROXY_LOG" --parent "$$" --rules "$rules"
-                 --github-allowlist "$allowlist")
+                 --github-allowlist "$allowlist" --add-rules "$add_rules"
+                 --add-github-allowlist "$add_allowlist")
     [ -n "$verbose" ] && flags+=(--verbose)
 
-    prepare_session_proxy_dir "$rules" "$allowlist" || return 1
+    prepare_session_proxy_dir "$rules" "$allowlist" "$add_rules" "$add_allowlist" || return 1
 
     # Job control puts the proxy in a process group of its own, out of reach of the terminal's
     # signals: a Ctrl-C meant for the sandboxed command must not stop the proxy under it. chopi
@@ -79,15 +81,14 @@ launch_session_proxy() {
 # Make the proxy's dir of its own, for its temporaries, the API relay's socket, and the ports the
 # proxy reports: in the run dir, out of the sandbox's reach (see PROXY_RUN_DIR), which is ours
 # alone, as the socket serves GitHub with the user's credential. The proxy removes it as it exits,
-# so what it says as it starts goes in chopi's own temp dir, to read once it is gone. Lists RULES
-# and ALLOWLIST in it as the config files the proxy reads. Sets SESSION_PROXY_DIR and
+# so what it says as it starts goes in chopi's own temp dir, to read once it is gone. Lists each
+# FILE in it as a config file the proxy reads ("" for none). Sets SESSION_PROXY_DIR and
 # SESSION_PROXY_ERR, for the proxy to be started with.
 #
-# usage: prepare_session_proxy_dir RULES ALLOWLIST
+# usage: prepare_session_proxy_dir FILE...
 prepare_session_proxy_dir() {
-    arity 2
     # Listed one per line below, they can hold no newline.
-    reject_newline_path "$1" "$2" || return 1
+    reject_newline_path "$@" || return 1
     if ! { mkdir -p "$CHOPI_RUN_DIR" && make_private_dir "$PROXY_RUN_DIR"; }; then
         echo "chopi: cannot set up the proxy's run dir $PROXY_RUN_DIR" >&2
         return 1
@@ -96,7 +97,7 @@ prepare_session_proxy_dir() {
         || { echo "chopi: could not create a temp dir for the proxy" >&2; return 1; }
     # For every later session to keep its command from changing the files this proxy reads, whatever
     # their links point at by the time it starts (see proxy_config_paths).
-    printf '%s\n' "$1" "$2" >"$SESSION_PROXY_DIR/$PROXY_CONFIGS_FILE_NAME" \
+    printf '%s\n' "$@" >"$SESSION_PROXY_DIR/$PROXY_CONFIGS_FILE_NAME" \
         || { echo "chopi: could not list the proxy's config files in $SESSION_PROXY_DIR" >&2; return 1; }
     SESSION_PROXY_ERR="$TMPDIR/proxy-startup.err"
 }

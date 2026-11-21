@@ -2,11 +2,11 @@
 #
 # github-relays-caddyfile.sh -- emit the Caddy config for chopi's GitHub relays.
 #
-#   github-relays-caddyfile.sh <allowlist-file>   # prints a Caddyfile to stdout
+#   github-relays-caddyfile.sh <allowlist-file>...   # prints a Caddyfile to stdout
 #
-# Compiles the GitHub repo allowlist into a path regex and assembles the Caddyfile from the
-# github-relay-*.caddy (git) and github-api-relay-*.caddy (API) fragments next to this script:
-# two loopback reverse-proxy listeners,
+# Compiles the GitHub repo allowlists -- their union -- into a path regex and assembles the
+# Caddyfile from the github-relay-*.caddy (git) and github-api-relay-*.caddy (API) fragments next to
+# this script: two loopback reverse-proxy listeners,
 #
 #   fd/{$CHOPI_GIT_FD} (TCP)        git-smart-HTTP -> github.com
 #   fd/{$CHOPI_GH_FD} (unix socket) gh REST API    -> api.github.com / uploads.github.com
@@ -37,47 +37,48 @@ _render_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 unset _render_dir
 
 main() {
-    if [ "$#" -ne 1 ]; then
-        echo "github-relays-caddyfile.sh: usage: github-relays-caddyfile.sh <allowlist-file>" >&2
+    if [ "$#" -eq 0 ]; then
+        echo "github-relays-caddyfile.sh: usage: github-relays-caddyfile.sh <allowlist-file>..." >&2
         exit 2
     fi
-    local allowlist="$1"
-    if [ ! -f "$allowlist" ]; then
-        echo "github-relays-caddyfile.sh: allowlist file not found: $allowlist" >&2
-        exit 2
-    fi
+    local allowlist
+    for allowlist in "$@"; do
+        if [ ! -f "$allowlist" ]; then
+            echo "github-relays-caddyfile.sh: allowlist file not found: $allowlist" >&2
+            exit 2
+        fi
+    done
 
     local allowlist_regex
-    allowlist_regex="$(build_allowlist_regex "$allowlist")"
+    allowlist_regex="$(build_allowlist_regex "$@")"
     emit_caddyfile "$allowlist_regex"
 }
 
-# build_allowlist_regex -- read the allowlist file and print an regex alternation of its entries,
-# e.g. "soundradix/[^/]+|acme/tool(\.git)?". Empty output means an empty allowlist.
+# build_allowlist_regex ALLOWLIST... -- read the allowlist files and print an regex alternation of
+# their entries, e.g. "soundradix/[^/]+|acme/tool(\.git)?". Empty output means empty allowlists.
 build_allowlist_regex() {
-    arity 1
-    local allowlist="$1"
-
     local entries_regexes=()
-    local line entry owner repo esc_owner esc_repo entry_regex
-    while IFS= read -r line || [ -n "$line" ]; do
-        strip_comment_and_trim_into entry "$line"
-        [ -z "$entry" ] && continue
-        if ! is_allowlist_entry "$entry"; then
-            echo "github-relays-caddyfile.sh: allowlist entry needs owner/repo or owner/*, using only A-Za-z0-9._-: '$entry'" >&2
-            exit 2
-        fi
-        owner="${entry%%/*}"
-        repo="${entry#*/}"
-        esc_owner="${owner//./\\.}"
-        if [ "$repo" = "*" ]; then
-            entry_regex="$esc_owner/[^/]+"
-        else
-            esc_repo="${repo//./\\.}"
-            entry_regex="$esc_owner/$esc_repo(\\.git)?"
-        fi
-        entries_regexes+=("$entry_regex")
-    done < "$allowlist"
+    local allowlist line entry owner repo esc_owner esc_repo entry_regex
+    for allowlist in "$@"; do
+        while IFS= read -r line || [ -n "$line" ]; do
+            strip_comment_and_trim_into entry "$line"
+            [ -z "$entry" ] && continue
+            if ! is_allowlist_entry "$entry"; then
+                echo "github-relays-caddyfile.sh: $allowlist: allowlist entry needs owner/repo or owner/*, using only A-Za-z0-9._-: '$entry'" >&2
+                exit 2
+            fi
+            owner="${entry%%/*}"
+            repo="${entry#*/}"
+            esc_owner="${owner//./\\.}"
+            if [ "$repo" = "*" ]; then
+                entry_regex="$esc_owner/[^/]+"
+            else
+                esc_repo="${repo//./\\.}"
+                entry_regex="$esc_owner/$esc_repo(\\.git)?"
+            fi
+            entries_regexes+=("$entry_regex")
+        done < "$allowlist"
+    done
 
     if [ "${#entries_regexes[@]}" -eq 0 ]; then
         return 0

@@ -54,9 +54,13 @@ PROXY_RUN_DIR="${CHOPI_RUN_DIR%/}/run"
 # Where a custom proxy config -- the sandbox config's CHOPI_PROXY_RULES, CHOPI_GITHUB_ALLOWLIST --
 # must be (see proxy_config_paths).
 PROXY_CONFIG_DIR="${CHOPI_RUN_DIR%/}/config"
-# The default proxy config files' names, under $CHOPI_DIR/config (see proxy_config_paths).
+# The default proxy config files' names, under $CHOPI_DIR/config (see proxy_config_paths), and of a
+# workspace's own, in its dir (see workspace_config_dir).
 DEFAULT_PROXY_RULES="proxy-rules.yaml"
 DEFAULT_GITHUB_ALLOWLIST="github-allowlist"
+# The longest readable part of the name of a workspace's own config dir, before its id
+# (workspace_config_dir).
+WORKSPACE_NAME_MAX=200
 # The file in each session's proxy dir listing the config files its proxy reads, for as long as it
 # runs (see running_session_configs).
 PROXY_CONFIGS_FILE_NAME="configs"
@@ -585,6 +589,39 @@ resolution_paths() {
     printf '%s\n' "${cur:-/}"
 }
 
+# Print the id of canonical path $1, to name a dir for it: 16 hex digits of its digest.
+path_id() {
+    arity 1
+    local digest
+    digest="$(printf '%s' "$1" | shasum)" \
+        || { echo "chopi: cannot digest the path '$1'" >&2; return 1; }
+    printf '%s' "${digest:0:16}"
+}
+
+# Print the dir of the own proxy config of the workspace at DIR, adding to the base config for its
+# sessions alone: in PROXY_CONFIG_DIR's workspaces/, which every session keeps its command from
+# changing. One per repo, its worktrees sharing it, named for the repo's git common dir -- for the
+# usual .git, its main worktree's path: readable, for the user to tell whose it is, with each
+# character but a letter, digit or dash made a dash, as Claude Code names its project dirs, and cut
+# at WORKSPACE_NAME_MAX characters; then the id (path_id) of the git common dir itself, .git and
+# all, so that two repos whose names come out the same don't share one, each granted what the other
+# was. All within the 255 bytes a file name may have.
+#
+# usage: workspace_config_dir DIR
+workspace_config_dir() {
+    arity 1
+    local common id name
+    if ! common="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+        || ! common="$(realpath "$common")"; then
+        echo "chopi: cannot find the git repo of '$1'" >&2
+        return 1
+    fi
+    id="$(path_id "$common")" || return 1
+    name="${common%/.git}"
+    name="${name//[^A-Za-z0-9-]/-}"
+    printf '%s/workspaces/%s-%s' "${PROXY_CONFIG_DIR%/}" "${name:0:WORKSPACE_NAME_MAX}" "$id"
+}
+
 # Set VAR to where path $1 resolves: the last line of its resolution_paths. That is its real path
 # when it exists; past a missing node, the rest is appended unresolved.
 #
@@ -633,8 +670,9 @@ running_session_configs() {
 }
 
 # Set array VAR to the proxy config files a proxy may read, each once: the FILEs given, the default
-# files, and those running sessions' proxies read (running_session_configs). Fails on a path with a
-# newline, VAR then untouched, as on any failure: never a partial list.
+# files, and those running sessions' proxies read (running_session_configs). A file may be missing:
+# a workspace may have no file there yet. Fails on a path with a newline, VAR then untouched, as on
+# any failure: never a partial list.
 #
 # usage: proxy_config_files VAR [FILE...]
 proxy_config_files() {
@@ -649,8 +687,9 @@ proxy_config_files() {
 }
 
 # Set array VAR to every path deciding which proxy config a session's proxy reads, now or as a later
-# session starts (resolution_paths): PROXY_CONFIG_DIR's, where a custom one must be; and those of
-# the files proxies may read (proxy_config_files) -- the default files, which may link elsewhere,
+# session starts (resolution_paths): PROXY_CONFIG_DIR's, where a custom one must be, as is a repo's
+# own (workspace_config_dir) -- the whole dir, so a file made there later is covered too; and those
+# of the files proxies may read (proxy_config_files) -- the default files, which may link elsewhere,
 # through any number of links, and the running sessions', should a link have been repointed since
 # one started. Every session keeps its command from changing them all, as a safe write target must
 # not overlap them. On failure VAR is left untouched, never a partial list.
@@ -714,15 +753,14 @@ write_proxy_network_profile() {
 # allowlist: one per file, shared by the proxy of every session reading it. They all reload the same
 # edit, so a broken one shows a single banner, rather than one per session, and the next good one's
 # confirmation replaces it, whichever session's proxy reloads it first. That holds only among
-# sessions whose reloads of FILE can't differ: a non-empty KEY sets apart those that can -- the
-# allowlist's render depends on where the session takes its GitHub token from (gh_token_source).
+# sessions whose reloads of FILE can't differ: each KEY sets apart those that can -- the file FILE
+# is taken up with, base or added; for the allowlist, where the session takes its GitHub token from
+# (gh_token_source), which its render depends on.
 #
-# usage: reload_banner_group FILE KEY
+# usage: reload_banner_group FILE KEY...
 reload_banner_group() {
-    arity 2
     local hash
-    hash="$(md5 -q -s "$1${2:+
-$2}")"
+    hash="$(printf '%s\n' "$@" | md5 -q)"
     printf 'chopi-proxy-reload-%s' "${hash:0:12}"
 }
 
@@ -757,16 +795,20 @@ is_github_relay_reroute_effective() {
     return 0
 }
 
-# run_chopi_smokescreen DIR PARENT RULES ALLOWLIST RENDER RELAY_LOG -- run a session's proxy and
-# its GitHub relays, on the rules file RULES, with Caddy's config the output of RENDER run on
-# ALLOWLIST, again on each edit to it, and Caddy's output in RELAY_LOG; the API relay on DIR/gh.sock,
-# and the ports reported in DIR/ports; stopping once process PARENT exits. It execs, for its PID to
-# be the proxy's: run it in the background.
+# run_chopi_smokescreen DIR PARENT RULES ALLOWLIST RENDER RELAY_LOG ADD_RULES ADD_ALLOWLIST -- run a
+# session's proxy and its GitHub relays, on the rules file RULES, with Caddy's config the output of
+# RENDER run on ALLOWLIST, again on each edit to it, and Caddy's output in RELAY_LOG; the API relay
+# on DIR/gh.sock, and the ports reported in DIR/ports; stopping once process PARENT exits. ADD_RULES
+# and ADD_ALLOWLIST add to RULES and ALLOWLIST; either may be missing. It execs, for its PID to be the
+# proxy's: run it in the background.
 run_chopi_smokescreen() {
-    arity 6
+    arity 8
     local dir="$1" parent="$2" rules="$3" allowlist="$4" render="$5" relay_log="$6"
+    local add_rules="$7" add_allowlist="$8"
     exec "$SMOKESCREEN_BIN" --dir "$dir" --parent "$parent" --relay-log "$relay_log" \
-        --github-allowlist "$allowlist" --relay-config "$render" -- \
+        --github-allowlist "$allowlist" --add-rules "$add_rules" \
+        --add-github-allowlist "$add_allowlist" \
+        --relay-config "$render" -- \
         --config-file "$CHOPI_DIR/.internal/smokescreen-config.yaml" \
         --egress-acl-file "$rules"
 }
