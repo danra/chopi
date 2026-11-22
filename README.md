@@ -51,6 +51,7 @@ session has its files' paths in `$CHOPI_WORKSPACE_PROXY_RULES` and
 
 ```
 ~/.chopi/config/workspaces/-Users-me-dev-myapp-1a2b3c4d5e6f7a8b/
+    sandbox.sh           # the repo's own sandbox config, see below
     proxy-rules.yaml     # allowed_domains: [pypi.org], and/or global_deny_list
     github-allowlist     # owner/repo or owner/*, one per line, as the base allowlist
 ```
@@ -88,6 +89,24 @@ settings can be reviewed later):
   of the sandbox. See [Safe write targets](#safe-write-targets) below.
 
 Edits to `config/sandbox.sh` take effect on any following `chopi` invocations.
+
+`config/sandbox.sh` applies to every project. To grant a path, or set an env var or git config, for a
+single project, put it in that repo's own `sandbox.sh` instead, in the repo's own config dir (see
+above), which adds to the base config for its sessions alone. `chopi --config-paths` prints its
+path, and a session has it in `$CHOPI_WORKSPACE_SANDBOX_CONFIG`. It's bash, like the base config, and
+may only add to `CHOPI_SAFEHOUSE_FLAGS`, `CHOPI_EXTRA_ENV` and `CHOPI_GIT_CONFIG`.
+It's sourced in a bash of its own, with those arrays empty, so assigning one adds to it just as
+appending does. E.g.:
+
+```bash
+CHOPI_SAFEHOUSE_FLAGS=(--add-dirs-ro "$HOME/data/myapp")
+CHOPI_EXTRA_ENV=(MYAPP_DATA="$HOME/data/myapp")
+```
+
+Setting any other `CHOPI_` variable (safe write targets, the proxy config, worktree setup) is
+refused, as is a failing command; those stay in the base config. Like that one, it takes effect as a
+session starts, not mid-session. A mistake in it, or a symlink or a file with other hard links,
+keeps a session from starting.
 
 Both configuration files are created once on install and then **never overwritten**, so any
 edits persist on reinstalls. When updating Chopi, you can examine the templates under

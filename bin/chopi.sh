@@ -24,8 +24,8 @@ usage="usage: chopi [--config FILE] [--verbose] [--worktree NAME] <executable> [
   --verbose        enable verbose output showing chopi's sandbox setup
   --worktree NAME  create (or reuse) a git worktree named NAME under the repo's
                    .worktrees/ directory and run the command isolated to it
-  --config-paths   print the proxy config files a session in this repo reads,
-                   for every project and for this repo alone, and exit"
+  --config-paths   print the config files a session in this repo reads, for
+                   every project and for this repo alone, and exit"
 
 # Every chopi run gets its own private subfolder under TMPDIR (or /tmp), exported into TMPDIR.
 # chopi's mktemp calls all resolve "$TMPDIR", and safehouse forwards TMPDIR to the sandboxed
@@ -65,20 +65,33 @@ trap 'chopi_on_signal INT'  INT
 trap 'chopi_on_signal TERM' TERM
 trap 'chopi_on_signal HUP'  HUP
 
-# Print the proxy config files a session at DIR reads: the base ones, set by the sandbox config, and
-# the repo's own, noting those not there yet -- in a dir the user can't guess, named for the repo.
+# Set the caller's ws_config_dir to the repo's own config dir for a session at DIR, and its
+# ws_sandbox, ws_rules and ws_allowlist to the config files in it.
 #
-# usage: print_config_paths DIR
-print_config_paths() {
+# usage: local ws_config_dir ws_sandbox ws_rules ws_allowlist; set_workspace_config_paths DIR
+set_workspace_config_paths() {
     arity 1
-    local ws_config_dir
     ws_config_dir="$(resolve_workspace_config_dir "$1")" || return 1
-    local ws_rules="$ws_config_dir/$DEFAULT_PROXY_RULES"
-    local ws_allowlist="$ws_config_dir/$DEFAULT_GITHUB_ALLOWLIST"
+    ws_sandbox="$ws_config_dir/$WORKSPACE_SANDBOX_CONFIG"
+    ws_rules="$ws_config_dir/$DEFAULT_PROXY_RULES"
+    ws_allowlist="$ws_config_dir/$DEFAULT_GITHUB_ALLOWLIST"
+}
+
+# Print the config files a session at DIR reads: the base ones -- the sandbox config CONFIG, and the
+# proxy's, which it sets -- and the repo's own, noting those not there yet -- in a dir the user
+# can't guess, named for the repo.
+#
+# usage: print_config_paths DIR CONFIG
+print_config_paths() {
+    arity 2
+    local ws_config_dir ws_sandbox ws_rules ws_allowlist
+    set_workspace_config_paths "$1" || return 1
     echo "For every project:"
+    echo "  sandbox:          $(realpath "$2")"
     echo "  proxy rules:      $CHOPI_PROXY_RULES"
     echo "  GitHub allowlist: $CHOPI_GITHUB_ALLOWLIST"
     echo "For this repo alone, adding to those:"
+    echo "  sandbox:          $ws_sandbox$(missing_note "$ws_sandbox")"
     echo "  proxy rules:      $ws_rules$(missing_note "$ws_rules")"
     echo "  GitHub allowlist: $ws_allowlist$(missing_note "$ws_allowlist")"
 }
@@ -136,7 +149,7 @@ main() {
         || return 1
 
     if [ -n "$config_paths" ]; then
-        print_config_paths "$(pwd -P)"
+        print_config_paths "$(pwd -P)" "$config"
         return
     fi
 
@@ -170,13 +183,12 @@ main() {
         preflight_config_placement "$config" "$run_dir" || return $?
     fi
 
-    # The repo's own proxy config, adding to the base config for its sessions alone; either file may
-    # be missing, and be made mid-session.
-    local ws_config_dir ws_rules ws_allowlist
-    ws_config_dir="$(resolve_workspace_config_dir "$run_dir")" \
+    # The repo's own config, adding to the base config for its sessions alone. Each file may be
+    # missing; the proxy's may be made mid-session, while the sandbox's takes effect as a session
+    # starts, as the base one does.
+    local ws_config_dir ws_sandbox ws_rules ws_allowlist
+    { set_workspace_config_paths "$run_dir" && load_workspace_sandbox_config "$ws_sandbox"; } \
         || { echo "chopi: refusing to run" >&2; return 1; }
-    ws_rules="$ws_config_dir/$DEFAULT_PROXY_RULES"
-    ws_allowlist="$ws_config_dir/$DEFAULT_GITHUB_ALLOWLIST"
     preflight_proxy_config_links "$CHOPI_PROXY_RULES" "$CHOPI_GITHUB_ALLOWLIST" \
         "$ws_rules" "$ws_allowlist" || return $?
 
@@ -201,6 +213,9 @@ main() {
         queue_env=(CHOPI_PATCH_QUEUE="$queue_dir" CHOPI_SAFE_WRITE_TARGETS="$targets")
     fi
 
+    if [ -e "$ws_sandbox" ]; then
+        echo "chopi: sandbox: the base config, plus this repo's own in $ws_config_dir" >&2
+    fi
     if [ -e "$ws_rules" ] || [ -e "$ws_allowlist" ]; then
         echo "chopi: network: the base config, plus this repo's own in $ws_config_dir" >&2
     fi
@@ -336,6 +351,7 @@ main() {
         CHOPI_DIR="$CHOPI_DIR" \
         CHOPI_GITHUB_RELAY_PORT="$SESSION_RELAY_PORT" \
         CHOPI_PROXY_LOG="$SESSION_PROXY_LOG" \
+        CHOPI_WORKSPACE_SANDBOX_CONFIG="$ws_sandbox" \
         CHOPI_WORKSPACE_PROXY_RULES="$ws_rules" \
         CHOPI_WORKSPACE_GITHUB_ALLOWLIST="$ws_allowlist" \
         HTTP_PROXY="$proxy"  HTTPS_PROXY="$proxy" \
