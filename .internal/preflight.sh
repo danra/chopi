@@ -240,7 +240,7 @@ resolve_workspace_config_dir() {
 }
 
 # The sandbox config arrays a workspace's own sandbox config may add to.
-WORKSPACE_SANDBOX_ARRAYS=(CHOPI_SAFEHOUSE_FLAGS CHOPI_EXTRA_ENV CHOPI_GIT_CONFIG)
+WORKSPACE_SANDBOX_ARRAYS=(CHOPI_SAFEHOUSE_FLAGS CHOPI_EXTRA_ENV CHOPI_GIT_CONFIG CHOPI_LOOPBACK_PORTS)
 
 # Add what the workspace's own sandbox config FILE adds to the sandbox config arrays
 # (WORKSPACE_SANDBOX_ARRAYS), for its sessions alone, as workspace-sandbox-loader.sh reports it. A

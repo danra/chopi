@@ -761,6 +761,135 @@ write_proxy_network_profile() {
     } >"$file"
 }
 
+# The range chopi assigns a repo's named loopback ports from (assign_loopback_ports): below macOS's
+# ephemeral range (49152-65535), where the system picks ports for outgoing connections, and above
+# the usual fixed ports of dev servers.
+LOOPBACK_PORT_MIN=20000
+LOOPBACK_PORT_MAX=29999
+# The file in a repo's own config dir recording its named loopback ports, a "NAME PORT" line each.
+LOOPBACK_PORTS_FILE_NAME="ports"
+
+# Fail, naming the first offender, unless every NAME is a loopback port name: a lowercase letter,
+# then up to 31 lowercase letters, digits and underscores, as the variable CHOPI_PORT_<NAME>
+# (loopback_port_var) takes it.
+#
+# usage: validate_loopback_port_names NAME...
+validate_loopback_port_names() {
+    local name
+    for name in "$@"; do
+        if ! [[ "$name" =~ ^[a-z][a-z0-9_]{0,31}$ ]]; then
+            echo "chopi: CHOPI_LOOPBACK_PORTS has '$name', which is not a port name:" \
+                "a lowercase letter, then lowercase letters, digits or underscores" >&2
+            return 1
+        fi
+    done
+}
+
+# Print the variable telling the sandboxed command the port named NAME: CHOPI_PORT_<NAME>, uppercase.
+#
+# usage: loopback_port_var NAME
+loopback_port_var() {
+    arity 1
+    printf 'CHOPI_PORT_%s' "$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"
+}
+
+# Print the port recorded for NAME in the ports FILE, if any. A line that isn't "NAME PORT" with
+# PORT in the assigned range is ignored, as is any but the first for NAME.
+#
+# usage: recorded_loopback_port FILE NAME
+recorded_loopback_port() {
+    arity 2
+    [ -f "$1" ] || return 0
+    local name port
+    while read -r name port; do
+        if [ "$name" = "$2" ] && [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] \
+            && [ "$port" -ge "$LOOPBACK_PORT_MIN" ] && [ "$port" -le "$LOOPBACK_PORT_MAX" ]; then
+            printf '%s' "$port"
+            return 0
+        fi
+    done <"$1"
+}
+
+# Print "NAME PORT" for each NAME, the port of that name of the repo whose own config dir is WS_DIR:
+# the one recorded in its ports file, or else a new one, recorded there for its later sessions. A
+# new port is picked at random from the assigned range, among those no repo has recorded, so each
+# repo's sessions reach only their own. Whether something else listens on it isn't checked: a port
+# found taken can be reassigned by deleting its line. Assigning holds a lock in PROXY_CONFIG_DIR,
+# so sessions starting together don't pick the same port.
+#
+# usage: assign_loopback_ports WS_DIR NAME...
+assign_loopback_ports() {
+    local ws_dir="$1" file lock name port tries others
+    shift
+    [ "$#" -gt 0 ] || return 0
+    file="$ws_dir/$LOOPBACK_PORTS_FILE_NAME"
+    lock="${PROXY_CONFIG_DIR%/}/$LOOPBACK_PORTS_FILE_NAME.lock"
+    mkdir -p "$ws_dir" \
+        || { echo "chopi: could not create the repo's own config dir '$ws_dir'" >&2; return 1; }
+    tries=0
+    until mkdir "$lock" 2>/dev/null; do
+        tries=$((tries + 1))
+        if [ "$tries" -ge 50 ]; then
+            echo "chopi: could not lock '$lock' to assign loopback ports." >&2
+            echo "If no chopi is starting, it's left from one that crashed: remove it." >&2
+            return 1
+        fi
+        sleep 0.1
+    done
+    (
+        trap 'rmdir "$lock"' EXIT
+        for name in "$@"; do
+            port="$(recorded_loopback_port "$file" "$name")"
+            if [ -z "$port" ]; then
+                others="$(cat "${PROXY_CONFIG_DIR%/}"/workspaces/*/"$LOOPBACK_PORTS_FILE_NAME" \
+                    2>/dev/null | awk '{print " " $2 " "}' | tr -d '\n')"
+                tries=0
+                while :; do
+                    port=$((LOOPBACK_PORT_MIN + RANDOM % (LOOPBACK_PORT_MAX - LOOPBACK_PORT_MIN + 1)))
+                    case "$others" in *" $port "*) ;; *) break ;; esac
+                    tries=$((tries + 1))
+                    if [ "$tries" -ge 1000 ]; then
+                        echo "chopi: found no unassigned loopback port for '$name'" >&2
+                        exit 1
+                    fi
+                done
+                printf '%s %s\n' "$name" "$port" >>"$file" \
+                    || { echo "chopi: could not record loopback port '$name' in '$file'" >&2; exit 1; }
+            fi
+            printf '%s %s\n' "$name" "$port"
+        done
+    )
+}
+
+# Write to FILE the Seatbelt rules opening loopback ports to the sandboxed command, each SPEC
+# "connect:PORT", to connect to it, or "serve:PORT", to also listen on it and accept connections
+# to it, as a server the browser or an agent talks to does. Like the proxy's, these rules follow
+# network.sb, which denies the rest. Seatbelt can't keep a listener to loopback: it checks binding
+# and listening before any connection, by the local address alone, and "localhost:PORT" also
+# matches binding all interfaces (0.0.0.0), which the network can reach. Rules on the peer's
+# address never match, as no peer exists yet when they're checked.
+#
+# usage: write_loopback_ports_profile FILE SPEC...
+write_loopback_ports_profile() {
+    local file="$1" spec port
+    shift
+    {
+        echo ";; chopi: open the repo's loopback ports (network.sb denies the rest)."
+        for spec in "$@"; do
+            port="${spec#*:}"
+            case "$spec" in
+                serve:*)
+                    rule 'allow network-bind'    'local ip' "localhost:$port"
+                    rule 'allow network-inbound' 'local ip' "localhost:$port"
+                    ;;
+                connect:*) ;;
+                *) printf 'BUG: write_loopback_ports_profile got SPEC %s\n' "$spec" >&2; exit 2 ;;
+            esac
+            rule 'allow network-outbound' 'remote ip' "localhost:$port"
+        done
+    } >"$file"
+}
+
 # The macOS banner group of the proxy's reloads of config file FILE, the rules or the GitHub
 # allowlist: one per file, shared by the proxy of every session reading it. They all reload the same
 # edit, so a broken one shows a single banner, rather than one per session, and the next good one's

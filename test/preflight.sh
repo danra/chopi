@@ -619,6 +619,7 @@ reset_arrays() {
     CHOPI_SAFEHOUSE_FLAGS=(--enable xcode)
     CHOPI_EXTRA_ENV=(A=1)
     CHOPI_GIT_CONFIG=(gc.auto=0)
+    CHOPI_LOOPBACK_PORTS=(web)
 }
 
 reset_arrays
@@ -643,6 +644,12 @@ assert_eq "${#CHOPI_EXTRA_ENV[@]}" 3 "  -> an empty item kept"
 assert_eq "${CHOPI_EXTRA_ENV[1]}" $'MULTI=a\nb' "  -> and one with a newline"
 assert_eq "${CHOPI_GIT_CONFIG[*]}" "gc.auto=0" "  -> an array it leaves alone unchanged"
 assert_contains "$out" "chatter on stdout" "  -> the file's own output passed on"
+
+printf 'CHOPI_LOOPBACK_PORTS=(marimo)\n' >"$ws_sb"
+reset_arrays
+load_workspace_sandbox_config "$ws_sb"; st=$?
+assert_zero "$st" "a file naming a loopback port loads"
+assert_eq "${CHOPI_LOOPBACK_PORTS[*]}" "web marimo" "  -> adding it to the base config's ports"
 
 printf 'CHOPI_PROXY_RULES=/elsewhere\nCHOPI_SAFE_WRITE_TARGETS=(x)\n' >"$ws_sb"
 reset_arrays

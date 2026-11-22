@@ -94,6 +94,18 @@ CHOPI_GIT_CONFIG=(
     # protocol.file.allow=always
 )
 
+# Loopback ports, by name, e.g. for a dev server you open in your browser, or that an agent talks
+# to. chopi gives each name its own port for this repo, the same for all its sessions, and tells the
+# sandboxed command it as CHOPI_PORT_<NAME>, e.g. CHOPI_PORT_MARIMO. Every session may connect to
+# the repo's ports; only one started with `chopi --serve NAME` may listen on that one, e.g.:
+#   chopi --serve marimo sh -c 'marimo edit --port "$CHOPI_PORT_MARIMO" nb.py'
+# The sandbox can't keep a listener to loopback: one on all interfaces (0.0.0.0) is reachable from
+# your network, so a --serve session's code can expose the port there. A page served from the
+# sandbox runs its scripts in your browser, outside the sandbox and its proxy.
+CHOPI_LOOPBACK_PORTS=(
+    # marimo
+)
+
 # Setup commands for `chopi --worktree NAME`, run just before the sandboxed command starts.
 # They run UNSANDBOXED, each in the worktree as the working directory, with the worktree
 # name exported as CHOPI_WORKTREE_NAME. They run on every invocation -- including a reused

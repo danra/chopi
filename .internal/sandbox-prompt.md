@@ -10,13 +10,15 @@ configuration paths below are relative to. Four things are confined:
   the safe write targets listed just below. This is deliberate: it keeps a session from
   picking up context outside its assigned task.
 - **Network.** The only reachable addresses are two loopback proxies, plus a loopback unix
-  socket `gh` is preconfigured with for the GitHub REST API. Everything else is blocked at
-  the kernel level, so a request that ignores the proxies gets no network at all rather
-  than a direct connection. Git traffic to GitHub never touches the proxy allowlist: chopi
-  injects URL rewriting that sends every github.com git URL to its loopback relay, so
-  `git clone`/`fetch`/`push` work for any tool that runs git, fresh clones by build tools
-  included. Only non-git HTTPS (curl, a build tool's own downloader) is subject to the
-  allowlist.
+  socket `gh` is preconfigured with for the GitHub REST API, and the repo's named loopback
+  ports, if any: each is in `$CHOPI_PORT_<NAME>`, and you may connect to it, but listen on it
+  only if `$CHOPI_SERVE` names it, and then on `127.0.0.1` only, never all interfaces: the sandbox
+  can't stop a listener on `0.0.0.0` from being reachable from the user's network. Everything else is blocked at the kernel level, so a request
+  that ignores the proxies gets no network at all rather than a direct connection. Git
+  traffic to GitHub never touches the proxy allowlist: chopi injects URL rewriting that sends
+  every github.com git URL to its loopback relay, so `git clone`/`fetch`/`push` work for any
+  tool that runs git, fresh clones by build tools included. Only non-git HTTPS (curl, a build
+  tool's own downloader) is subject to the allowlist.
 - **Git internals.** `.git` is readable, and git's data paths (objects, refs, index, rebase
   state) are writable, but `config`, `hooks`, and the rest are read-only, so nothing you
   write can later execute unsandboxed during a git operation. Committing, amending,
@@ -74,6 +76,7 @@ format, one `owner/repo` or `owner/*` per line.
 | `EPERM` writing under `.git/` (`git config`, `git remote add`, `git worktree add`, `git submodule update`, hook installers like husky) | Git hardening | These cannot be made to work in-session. Ask the user to run the command **outside** the sandbox. For `--worktree` runs, recurring setup belongs in `CHOPI_WORKTREE_SETUP`. |
 | Another worktree of the same repo, or another repo, is unreadable | Worktree isolation | Intended. Do not ask for it to be lifted unless the task genuinely spans worktrees, in which case the user should run a session at the other worktree. |
 | `Received HTTP code 407 from proxy after CONNECT`, a refused connection to a host, or a generic HTTP 4xx/5xx inside a tool that embeds curl (CMake `file(DOWNLOAD)`, pip, installers) | The host is not on the proxy allowlist | User adds it to `allowed_domains` in this repo's own rules (see above), or, for every project, in `config/proxy-rules.yaml` (or the rules file `CHOPI_PROXY_RULES` names in their sandbox config). **Hot-reloads:** no restart, retry once they confirm. Denials also appear as notifications and in the session's proxy log, neither of which you can see, so quote the host. When the error doesn't name it (a tool hiding the URL, a redirect to a CDN), say the denied host is in the log, and give its path: `$CHOPI_PROXY_LOG`, which you cannot read. |
+| `EPERM` / `Operation not permitted` listening on a port (`bind`), or connecting to a loopback port other than the proxies | Only the repo's named ports (`$CHOPI_PORT_<NAME>`) are open; listening on one only in a session started with `chopi --serve NAME` (`$CHOPI_SERVE` names those) | For a port of its own, the user adds a name to `CHOPI_LOOPBACK_PORTS` in this repo's own sandbox config (see below); a fixed port number can't be granted. To serve on it, the server runs in a session started with `chopi --serve NAME`, e.g. one the user starts in their own terminal, as `chopi --serve marimo sh -c 'marimo edit --port "$CHOPI_PORT_MARIMO" nb.py'`. Listen on `127.0.0.1` and the given port, never port 0 or all interfaces: a listener on `0.0.0.0` is reachable from the user's network, which the sandbox can't prevent. Connect only to a server running in a chopi session: one outside it may run what you send unsandboxed. **Needs a new chopi session.** |
 | A network call hangs or fails with no proxy error | Something bypassed the proxy environment variables | Use a client that honors `HTTP_PROXY`/`HTTPS_PROXY`. Nothing can be granted for this. |
 | `chopi: push denied, repo is not in chopi's config/github-allowlist` | The repo is not allowlisted for push | User adds `owner/repo` (or `owner/*`) to this repo's own allowlist (see above), or, for every project, to `config/github-allowlist`. **Hot-reloads:** no restart, retry once they confirm. |
 | `chopi: repo not found, or private and missing from ...` | Private repo fetch, same allowlist | Same as above. Public repo fetch needs no entry. |
@@ -137,10 +140,10 @@ what the trade is; don't hand over both and leave the choice open.
 
 chopi's own config is deliberately ineligible as a target.
 
-`CHOPI_SAFEHOUSE_FLAGS` (like `CHOPI_EXTRA_ENV` and `CHOPI_GIT_CONFIG`) is set at two levels:
-in `config/sandbox.sh`, for every project, or in this repo's own sandbox config, which adds to
-it for this repo's sessions alone. Recommend this repo's own unless every project needs the
-grant. Its path is `$CHOPI_WORKSPACE_SANDBOX_CONFIG` (quote the full path from your
+`CHOPI_SAFEHOUSE_FLAGS` (like `CHOPI_EXTRA_ENV`, `CHOPI_GIT_CONFIG` and `CHOPI_LOOPBACK_PORTS`)
+is set at two levels: in `config/sandbox.sh`, for every project, or in this repo's own sandbox
+config, which adds to it for this repo's sessions alone. Recommend this repo's own unless every
+project needs the grant. Its path is `$CHOPI_WORKSPACE_SANDBOX_CONFIG` (quote the full path from your
 environment); it may not exist yet, for the user to create. It is a bash file that only adds
 to those arrays, e.g. `CHOPI_SAFEHOUSE_FLAGS=(--add-dirs-ro "$HOME/data")`;
 `CHOPI_SAFE_WRITE_TARGETS` can be set only in `config/sandbox.sh`.

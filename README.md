@@ -87,6 +87,26 @@ settings can be reviewed later):
 - `CHOPI_SAFE_WRITE_TARGETS`: paths you'd like to allow writing to from inside the sandbox, but
   which can't be simply trusted to be written by an agent in auto mode, requiring review outside
   of the sandbox. See [Safe write targets](#safe-write-targets) below.
+- `CHOPI_LOOPBACK_PORTS`: names of loopback ports, e.g. for a dev server you open in your
+  browser, or that an agent talks to. Otherwise the sandbox can't listen at all, and connects only
+  to its proxies. `chopi` gives each name a port of its own for the repo, picked once and recorded
+  in the repo's own config dir (see above), so all the repo's sessions share it, and no other repo
+  has it; delete its line in the `ports` file there to have a new one picked. The sandboxed
+  command gets it as `CHOPI_PORT_<NAME>`, e.g. `CHOPI_PORT_MARIMO`. Every session of the repo may
+  connect to its ports, but only one started with `--serve NAME` may listen on that one, so an
+  agent's session can't take the place of the server you open:
+
+  ```bash
+  chopi --serve marimo sh -c 'marimo edit --port "$CHOPI_PORT_MARIMO" nb.py'
+  ```
+
+  The sandbox can't keep a `--serve` session's listener to loopback: Seatbelt checks listening
+  before any connection arrives, and its `localhost` filter also matches a listener on all
+  interfaces (`0.0.0.0`), which is reachable from your network. Servers that default to
+  `127.0.0.1`, as marimo does, stay local, but code running in a `--serve` session, e.g. in a
+  notebook, can expose the port to your network. Keep the server inside the sandbox: one outside
+  it that runs code would run the sandboxed command's code unsandboxed. And a page served from the
+  sandbox runs its scripts in your browser, outside the sandbox and its proxy.
 
 Edits to `config/sandbox.sh` take effect on any following `chopi` invocations.
 
@@ -94,7 +114,8 @@ Edits to `config/sandbox.sh` take effect on any following `chopi` invocations.
 single project, put it in that repo's own `sandbox.sh` instead, in the repo's own config dir (see
 above), which adds to the base config for its sessions alone. `chopi --config-paths` prints its
 path, and a session has it in `$CHOPI_WORKSPACE_SANDBOX_CONFIG`. It's bash, like the base config, and
-may only add to `CHOPI_SAFEHOUSE_FLAGS`, `CHOPI_EXTRA_ENV` and `CHOPI_GIT_CONFIG`.
+may only add to `CHOPI_SAFEHOUSE_FLAGS`, `CHOPI_EXTRA_ENV`, `CHOPI_GIT_CONFIG` and
+`CHOPI_LOOPBACK_PORTS`.
 It's sourced in a bash of its own, with those arrays empty, so assigning one adds to it just as
 appending does. E.g.:
 

@@ -17,7 +17,8 @@ SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 . "$SCRIPT_DIR/../.internal/preflight.sh"
 . "$SCRIPT_DIR/../.internal/session-proxy.sh"
 
-usage="usage: chopi [--config FILE] [--verbose] [--worktree NAME] <executable> [args...]
+usage="usage: chopi [--config FILE] [--verbose] [--worktree NAME] [--serve NAME]...
+             <executable> [args...]
        chopi [--config FILE] --config-paths
 
   --config FILE    use FILE as the sandbox config instead of the default
@@ -25,6 +26,9 @@ usage="usage: chopi [--config FILE] [--verbose] [--worktree NAME] <executable> [
   --verbose        enable verbose output showing chopi's sandbox setup
   --worktree NAME  create (or reuse) a git worktree named NAME under the repo's
                    .worktrees/ directory and run the command isolated to it
+  --serve NAME     let the command listen on the repo's loopback port NAME, one
+                   of CHOPI_LOOPBACK_PORTS, which every session may connect to;
+                   repeatable
   --config-paths   print the config files a session in this repo reads, for
                    every project and for this repo alone, and exit"
 
@@ -95,6 +99,8 @@ print_config_paths() {
     echo "  sandbox:          $ws_sandbox$(missing_note "$ws_sandbox")"
     echo "  proxy rules:      $ws_rules$(missing_note "$ws_rules")"
     echo "  GitHub allowlist: $ws_allowlist$(missing_note "$ws_allowlist")"
+    echo "  loopback ports:   $ws_config_dir/$LOOPBACK_PORTS_FILE_NAME$(missing_note \
+        "$ws_config_dir/$LOOPBACK_PORTS_FILE_NAME")"
 }
 
 main() {
@@ -105,6 +111,7 @@ main() {
     local worktree_dir=""
     local worktree_given=""
     local config_paths=""
+    local serve_names=()
 
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -116,6 +123,9 @@ main() {
             --worktree)
                 if [ "$#" -lt 2 ]; then echo "chopi: --worktree requires a name" >&2; return 1; fi
                 worktree_name="$2"; worktree_given=1; shift 2 ;;
+            --serve)
+                if [ "$#" -lt 2 ]; then echo "chopi: --serve requires a port name" >&2; return 1; fi
+                serve_names+=("$2"); shift 2 ;;
             --config-paths) config_paths=1; shift ;;
             --)         shift; break ;;
             -*)         echo "chopi: unknown option: $1" >&2; echo "$usage" >&2; return 1 ;;
@@ -137,6 +147,7 @@ main() {
     local CHOPI_SAFEHOUSE_FLAGS=()
     local CHOPI_EXTRA_ENV=()
     local CHOPI_GIT_CONFIG=()
+    local CHOPI_LOOPBACK_PORTS=()
     # shellcheck disable=SC2034 # consumed by validate_write_targets
     local CHOPI_SAFE_WRITE_TARGETS=()
     local CHOPI_PROXY_RULES=""
@@ -190,6 +201,16 @@ main() {
     local ws_config_dir ws_sandbox ws_rules ws_allowlist
     { set_workspace_config_paths "$run_dir" && load_workspace_sandbox_config "$ws_sandbox"; } \
         || { echo "chopi: refusing to run" >&2; return 1; }
+    validate_loopback_port_names "${CHOPI_LOOPBACK_PORTS[@]+"${CHOPI_LOOPBACK_PORTS[@]}"}" \
+        || { echo "chopi: refusing to run" >&2; return 1; }
+    local serve_name
+    for serve_name in "${serve_names[@]+"${serve_names[@]}"}"; do
+        if ! is_item_in_list "$serve_name" "${CHOPI_LOOPBACK_PORTS[@]+"${CHOPI_LOOPBACK_PORTS[@]}"}"; then
+            echo "chopi: --serve $serve_name: not a port name in CHOPI_LOOPBACK_PORTS" >&2
+            echo "chopi: refusing to run" >&2
+            return 1
+        fi
+    done
     preflight_proxy_config_links "$CHOPI_PROXY_RULES" "$CHOPI_GITHUB_ALLOWLIST" \
         "$ws_rules" "$ws_allowlist" || return $?
 
@@ -219,6 +240,27 @@ main() {
     fi
     if [ -e "$ws_rules" ] || [ -e "$ws_allowlist" ]; then
         echo "chopi: network: the base config, plus this repo's own in $ws_config_dir" >&2
+    fi
+
+    # The repo's loopback ports, each of a name the config gives: every session may connect to
+    # them, and those --serve names also listen on them.
+    local loopback_specs=() loopback_env=() loopback_note=() port_name port
+    if [ "${#CHOPI_LOOPBACK_PORTS[@]}" -gt 0 ]; then
+        local ports_out
+        ports_out="$(assign_loopback_ports "$ws_config_dir" "${CHOPI_LOOPBACK_PORTS[@]}")" \
+            || { echo "chopi: refusing to run" >&2; return 1; }
+        while read -r port_name port; do
+            if is_item_in_list "$port_name" "${serve_names[@]+"${serve_names[@]}"}"; then
+                loopback_specs+=("serve:$port")
+                loopback_note+=("$port_name=$port (serving)")
+            else
+                loopback_specs+=("connect:$port")
+                loopback_note+=("$port_name=$port")
+            fi
+            loopback_env+=("$(loopback_port_var "$port_name")=$port")
+        done <<<"$ports_out"
+        loopback_env+=(CHOPI_SERVE="${serve_names[*]+"${serve_names[*]}"}")
+        echo "chopi: ports: ${loopback_note[*]}" >&2
     fi
 
     local context_flags=()
@@ -318,6 +360,15 @@ main() {
     proxy_net_profile="$(new_profile proxy-net write_proxy_network_profile \
         "$SESSION_PROXY_PORT" "$SESSION_RELAY_PORT" "$SESSION_GH_SOCK")" || return 1
 
+    # And to the repo's loopback ports, if any.
+    local loopback_flags=()
+    if [ "${#loopback_specs[@]}" -gt 0 ]; then
+        local loopback_profile
+        loopback_profile="$(new_profile loopback-ports write_loopback_ports_profile \
+            "${loopback_specs[@]}")" || return 1
+        loopback_flags=(--append-profile "$loopback_profile")
+    fi
+
     local proxy="http://127.0.0.1:$SESSION_PROXY_PORT"
 
     if [ -n "$worktree_dir" ]; then
@@ -343,9 +394,11 @@ main() {
         --append-profile "$proxy_config_profile" \
         --append-profile "$CHOPI_DIR/.internal/network.sb" \
         --append-profile "$proxy_net_profile" \
+        "${loopback_flags[@]+"${loopback_flags[@]}"}" \
         -- \
         "${CHOPI_EXTRA_ENV[@]+"${CHOPI_EXTRA_ENV[@]}"}" \
         "${queue_env[@]+"${queue_env[@]}"}" \
+        "${loopback_env[@]+"${loopback_env[@]}"}" \
         CHOPI_DIR="$CHOPI_DIR" \
         CHOPI_GITHUB_RELAY_PORT="$SESSION_RELAY_PORT" \
         CHOPI_PROXY_LOG="$SESSION_PROXY_LOG" \

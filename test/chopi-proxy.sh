@@ -406,6 +406,75 @@ assert_eq "$net_rules" '(allow network-outbound (remote ip "localhost:24760"))
 (allow network-outbound (literal "'"$(realpath "$gh_sock")"'"))' \
     "the session profile opens exactly the session's two ports and its API relay socket"
 
+write_loopback_ports_profile "$TMPDIR/loopback.sb" serve:24001 connect:24002
+loopback_rules="$(grep -v '^;' "$TMPDIR/loopback.sb")"
+assert_eq "$loopback_rules" '(allow network-bind (local ip "localhost:24001"))
+(allow network-inbound (local ip "localhost:24001"))
+(allow network-outbound (remote ip "localhost:24001"))
+(allow network-outbound (remote ip "localhost:24002"))' \
+    "the loopback ports profile: a served port listens, accepts and connects; another only connects"
+
+for name in marimo a dev_server2 abcdefghijklmnopqrstuvwxyz012345; do
+    validate_loopback_port_names "$name" 2>/dev/null; st=$?
+    assert_zero "$st" "loopback port name '$name' -> accepted"
+done
+for name in "" 2718 Marimo my-app "a b" _x abcdefghijklmnopqrstuvwxyz0123456; do
+    out="$(validate_loopback_port_names marimo "$name" 2>&1)"; st=$?
+    assert_nonzero "$st" "loopback port name '$name' -> refused"
+    assert_contains "$out" "'$name'" "  -> naming it"
+done
+assert_eq "$(loopback_port_var dev_server2)" "CHOPI_PORT_DEV_SERVER2" "a port name's variable is uppercase"
+
+
+# ---------------------------------------------------------------------------
+echo "assign_loopback_ports (a repo's named loopback ports)"
+# ---------------------------------------------------------------------------
+ports_cfg="$TMPDIR/ports-config"
+ws_a="$ports_cfg/workspaces/repo-a"
+ws_b="$ports_cfg/workspaces/repo-b"
+in_range() { [ "$1" -ge "$LOOPBACK_PORT_MIN" ] && [ "$1" -le "$LOOPBACK_PORT_MAX" ]; }
+
+out="$(PROXY_CONFIG_DIR="$ports_cfg" assign_loopback_ports "$ws_a" marimo web)"; st=$?
+assert_zero "$st" "assigning a repo's first ports succeeds, making its config dir"
+read -r n1 p1 <<<"$(sed -n 1p <<<"$out")"
+read -r n2 p2 <<<"$(sed -n 2p <<<"$out")"
+assert_eq "$n1 $n2" "marimo web" "  -> a line per name, in order"
+in_range "$p1" && in_range "$p2"; assert_zero "$?" "  -> each port in the assigned range"
+assert_eq "$(cat "$ws_a/ports")" "$out" "  -> recorded in the repo's ports file"
+assert_eq "$([ -e "$ports_cfg/ports.lock" ] && echo held)" "" "  -> and the lock released"
+
+out2="$(PROXY_CONFIG_DIR="$ports_cfg" assign_loopback_ports "$ws_a" web marimo)"
+assert_eq "$out2" "web $p2
+marimo $p1" "a later session gets the same ports"
+assert_eq "$(wc -l <"$ws_a/ports" | tr -d ' ')" "2" "  -> recording nothing new"
+
+# Another repo's ports never repeat repo-a's: shrink the range to three ports, two of them taken.
+out_b="$(PROXY_CONFIG_DIR="$ports_cfg" LOOPBACK_PORT_MIN="$p1" LOOPBACK_PORT_MAX="$p1" \
+    assign_loopback_ports "$ws_b" marimo 2>&1)"; st=$?
+assert_nonzero "$st" "with every port in range taken by another repo -> refused"
+assert_contains "$out_b" "no unassigned loopback port for 'marimo'" "  -> saying so"
+assert_eq "$([ -e "$ports_cfg/ports.lock" ] && echo held)" "" "  -> the lock released even so"
+lo=$(( p1 < p2 ? p1 : p2 )); hi=$(( p1 < p2 ? p2 : p1 ))
+for _ in 1 2 3 4 5; do
+    out_b="$(PROXY_CONFIG_DIR="$ports_cfg" LOOPBACK_PORT_MIN="$lo" LOOPBACK_PORT_MAX="$hi" \
+        assign_loopback_ports "$ws_b" "x$_")"
+    read -r _ pb <<<"$out_b"
+    if [ "$pb" = "$p1" ] || [ "$pb" = "$p2" ]; then break; fi
+done
+assert_eq "$([ "$pb" != "$p1" ] && [ "$pb" != "$p2" ] && echo distinct)" "distinct" \
+    "another repo's new ports avoid every port recorded for another"
+
+printf 'marimo 80\nmarimo abc\nweb %s\n' "$p2" >"$ws_b/ports"
+out_b="$(PROXY_CONFIG_DIR="$ports_cfg" assign_loopback_ports "$ws_b" marimo)"
+read -r _ pb <<<"$out_b"
+in_range "$pb"; assert_zero "$?" "a recorded port out of range, or not a number, is ignored and reassigned"
+
+mkdir "$ports_cfg/ports.lock"
+out="$(PROXY_CONFIG_DIR="$ports_cfg" assign_loopback_ports "$ws_a" marimo 2>&1)"; st=$?
+assert_nonzero "$st" "a lock never released -> refused, after waiting"
+assert_contains "$out" "left from one that crashed: remove it" "  -> telling what to do"
+rmdir "$ports_cfg/ports.lock"
+
 
 # ---------------------------------------------------------------------------
 echo "the proxy's run dir is out of the sandbox's reach, whatever else is granted"
