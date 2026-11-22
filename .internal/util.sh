@@ -622,6 +622,14 @@ workspace_config_dir() {
     printf '%s/workspaces/%s-%s' "${PROXY_CONFIG_DIR%/}" "${name:0:WORKSPACE_NAME_MAX}" "$id"
 }
 
+# Print " (not created yet)" for a config file PATH that isn't there, for a line naming it.
+#
+# usage: missing_note PATH
+missing_note() {
+    arity 1
+    [ -e "$1" ] || printf ' (not created yet)'
+}
+
 # Set VAR to where path $1 resolves: the last line of its resolution_paths. That is its real path
 # when it exists; past a missing node, the rest is appended unresolved.
 #

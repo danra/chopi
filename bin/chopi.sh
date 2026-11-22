@@ -17,12 +17,15 @@ SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 . "$SCRIPT_DIR/../.internal/session-proxy.sh"
 
 usage="usage: chopi [--config FILE] [--verbose] [--worktree NAME] <executable> [args...]
+       chopi [--config FILE] --config-paths
 
   --config FILE    use FILE as the sandbox config instead of the default
                    config/sandbox.sh
   --verbose        enable verbose output showing chopi's sandbox setup
   --worktree NAME  create (or reuse) a git worktree named NAME under the repo's
-                   .worktrees/ directory and run the command isolated to it"
+                   .worktrees/ directory and run the command isolated to it
+  --config-paths   print the proxy config files a session in this repo reads,
+                   for every project and for this repo alone, and exit"
 
 # Every chopi run gets its own private subfolder under TMPDIR (or /tmp), exported into TMPDIR.
 # chopi's mktemp calls all resolve "$TMPDIR", and safehouse forwards TMPDIR to the sandboxed
@@ -62,6 +65,24 @@ trap 'chopi_on_signal INT'  INT
 trap 'chopi_on_signal TERM' TERM
 trap 'chopi_on_signal HUP'  HUP
 
+# Print the proxy config files a session at DIR reads: the base ones, set by the sandbox config, and
+# the repo's own, noting those not there yet -- in a dir the user can't guess, named for the repo.
+#
+# usage: print_config_paths DIR
+print_config_paths() {
+    arity 1
+    local ws_config_dir
+    ws_config_dir="$(resolve_workspace_config_dir "$1")" || return 1
+    local ws_rules="$ws_config_dir/$DEFAULT_PROXY_RULES"
+    local ws_allowlist="$ws_config_dir/$DEFAULT_GITHUB_ALLOWLIST"
+    echo "For every project:"
+    echo "  proxy rules:      $CHOPI_PROXY_RULES"
+    echo "  GitHub allowlist: $CHOPI_GITHUB_ALLOWLIST"
+    echo "For this repo alone, adding to those:"
+    echo "  proxy rules:      $ws_rules$(missing_note "$ws_rules")"
+    echo "  GitHub allowlist: $ws_allowlist$(missing_note "$ws_allowlist")"
+}
+
 main() {
     local config="$CHOPI_DIR/config/sandbox.sh"
     local config_given=""
@@ -69,6 +90,7 @@ main() {
     local worktree_name=""
     local worktree_dir=""
     local worktree_given=""
+    local config_paths=""
 
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -80,13 +102,17 @@ main() {
             --worktree)
                 if [ "$#" -lt 2 ]; then echo "chopi: --worktree requires a name" >&2; return 1; fi
                 worktree_name="$2"; worktree_given=1; shift 2 ;;
+            --config-paths) config_paths=1; shift ;;
             --)         shift; break ;;
             -*)         echo "chopi: unknown option: $1" >&2; echo "$usage" >&2; return 1 ;;
             *)          break ;;
         esac
     done
 
-    if [ "$#" -eq 0 ]; then echo "$usage" >&2; return 1; fi
+    if [ -n "$config_paths" ] && [ "$#" -gt 0 ]; then
+        echo "chopi: --config-paths runs no command, got '$1'" >&2; return 1
+    fi
+    if [ -z "$config_paths" ] && [ "$#" -eq 0 ]; then echo "$usage" >&2; return 1; fi
 
     preflight_initial || return $?
     # Made where missing, for every session to deny writes to its real path: Seatbelt matches real
@@ -108,6 +134,11 @@ main() {
     resolve_proxy_config CHOPI_PROXY_RULES "$DEFAULT_PROXY_RULES" proxy-rules.template.yaml || return 1
     resolve_proxy_config CHOPI_GITHUB_ALLOWLIST "$DEFAULT_GITHUB_ALLOWLIST" github-allowlist.template \
         || return 1
+
+    if [ -n "$config_paths" ]; then
+        print_config_paths "$(pwd -P)"
+        return
+    fi
 
     if [ -n "$worktree_given" ]; then
         local wt_out_file

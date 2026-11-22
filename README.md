@@ -46,8 +46,8 @@ that repo's own config instead, which adds to them for its sessions alone. It li
 digit or dash made a dash (as Claude Code names its project dirs; a very long one is cut short),
 then a digest of the path, telling apart repos whose paths would otherwise name the same dir. A
 session has its files' paths in `$CHOPI_WORKSPACE_PROXY_RULES` and
-`$CHOPI_WORKSPACE_GITHUB_ALLOWLIST`, which Claude is told to quote when suggesting one. E.g. for
-`~/dev/myapp`:
+`$CHOPI_WORKSPACE_GITHUB_ALLOWLIST`, which Claude is told to quote when suggesting one, and
+`chopi --config-paths`, run anywhere in the repo, prints them. E.g. for `~/dev/myapp`:
 
 ```
 ~/.chopi/config/workspaces/-Users-me-dev-myapp-1a2b3c4d5e6f7a8b/
