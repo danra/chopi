@@ -14,7 +14,7 @@
 #   * workspace_config_dir / resolve_workspace_config_dir -- which repo's own proxy config a
 #     session reads, and refusing one that leads out of the dir every session protects.
 #   * preflight_proxy_config_links -- refusing a proxy config file with other hard links, which the
-#     sandboxed command may write through.
+#     sandboxed command may write through, whether a session uses it or not.
 #   * rule / the Seatbelt-rule emitter -- its empty-PATH refusal keeps an
 #     accidentally-empty variable from becoming a silently misapplied rule.
 #   * ancestry_rules -- where its walk up a path's ancestry starts and stops.
@@ -408,13 +408,15 @@ assert_contains "$out" "no CHOPI_GITHUB_ALLOWLIST file at '$rp/team/missing'" " 
 # ---------------------------------------------------------------------------
 echo "preflight_proxy_config_links (refusing a proxy config with other hard links)"
 # ---------------------------------------------------------------------------
-# Check the files the proxy can use before entering the sandbox.
+# Check the files the proxy can use, and every file in PROXY_CONFIG_DIR, before entering the
+# sandbox.
 hl="$(mktemp -d)"; hl="$(realpath "$hl")"
 mkdir -p "$hl/chopi/config" "$hl/config/team" "$hl/elsewhere"
 echo 'allow: []' >"$hl/chopi/config/$DEFAULT_PROXY_RULES"
 : >"$hl/chopi/config/$DEFAULT_GITHUB_ALLOWLIST"
 echo 'allow: []' >"$hl/config/team/rules.yaml"
 unset CHOPI_ALLOW_SELF
+PROXY_CONFIG_DIR="$hl/config"
 # links_check FILE... -- preflight_proxy_config_links on the configs in $hl
 links_check() {
     CHOPI_DIR="$hl/chopi" PROXY_RUN_DIR="$hl/run" preflight_proxy_config_links "$@"
@@ -431,18 +433,22 @@ out="$(links_check "$hl/missing/rules.yaml" 2>&1)"; st=$?
 assert_zero "$st" "  -> as does an optional config file not made yet"
 
 ln "$hl/config/team/rules.yaml" "$hl/elsewhere/other-link.yaml"
-out="$(links_check "$hl/config/team/rules.yaml" 2>&1)"; st=$?
-assert_nonzero "$st" "a selected custom config file with other hard links is refused"
+out="$(links_check 2>&1)"; st=$?
+assert_nonzero "$st" "a custom config file with other hard links is refused, even if no session uses it"
 assert_contains "$out" "the proxy's config file '$hl/config/team/rules.yaml' has other hard links" "  -> naming it"
 assert_contains "$out" "Review what is in it, as it may have been written through another hard link" \
     "  -> asking for it to be reviewed"
 assert_contains "$out" "cp '$hl/config/team/rules.yaml' '$hl/config/team/rules.yaml.tmp' && mv '$hl/config/team/rules.yaml.tmp' '$hl/config/team/rules.yaml'" \
     "  -> and saying how to replace it with a fresh copy"
 
-out="$(CHOPI_ALLOW_SELF=1 links_check "$hl/config/team/rules.yaml" 2>&1)"; st=$?
+out="$(CHOPI_ALLOW_SELF=1 links_check 2>&1)"; st=$?
 assert_zero "$st" "CHOPI_ALLOW_SELF downgrades the refusal"
 assert_contains "$out" "warning: the proxy's config file '$hl/config/team/rules.yaml' has other hard links" "  -> to a warning"
-rm "$hl/elsewhere/other-link.yaml"
+ln -s "$hl/config" "$hl/config-link"
+out="$(PROXY_CONFIG_DIR="$hl/config-link" links_check 2>&1)"; st=$?
+assert_nonzero "$st" "a hard-linked config is refused when PROXY_CONFIG_DIR is a symlink"
+assert_contains "$out" "'$hl/config-link/team/rules.yaml' has other hard links" "  -> naming it"
+rm "$hl/config-link" "$hl/elsewhere/other-link.yaml"
 
 ln "$hl/chopi/config/$DEFAULT_GITHUB_ALLOWLIST" "$hl/elsewhere/allowlist"
 out="$(CHOPI_ALLOW_SELF='' links_check 2>&1)"; st=$?
@@ -454,6 +460,17 @@ mkdir "$hl/config/unused"; chmod 000 "$hl/config/unused"
 out="$(links_check 2>&1)"; st=$?
 chmod 700 "$hl/config/unused"
 assert_zero "$st" "an unreadable unused config directory does not block startup"
+if [ "$EUID" -ne 0 ]; then
+    # Search without read: find can't list it, yet a session can open a config in it by name.
+    mkdir "$hl/config/listless"; chmod 300 "$hl/config/listless"
+    out="$(links_check 2>&1)"; st=$?
+    assert_nonzero "$st" "a config directory that can be searched but not listed is refused"
+    assert_contains "$out" "'$hl/config/listless' can be searched but not listed" "  -> naming it"
+    out="$(CHOPI_ALLOW_SELF=1 links_check 2>&1)"; st=$?
+    assert_contains "$out" "warning: the proxy config directory '$hl/config/listless'" \
+        "  -> CHOPI_ALLOW_SELF downgrades it to a warning"
+    rmdir "$hl/config/listless"
+fi
 
 # A repo whose proxy config is unreadable should not prevent a different repo from starting.
 mkdir -p "$hl/config/workspaces/unrelated" "$hl/config/workspaces/current"
@@ -468,23 +485,20 @@ assert_zero "$st" "an unreadable unrelated workspace config does not block start
 
 ln "$other_rules" "$hl/elsewhere/workspace-rules"
 out="$(links_check "$current_rules" 2>&1)"; st=$?
-assert_zero "$st" "a hard-linked workspace config is ignored if no session uses it"
-out="$(links_check "$other_rules" 2>&1)"; st=$?
-assert_nonzero "$st" "a selected workspace config with other hard links is refused"
-printf '%s\n' "$other_rules" >"$session_dir/$PROXY_CONFIGS_FILE_NAME"
-out="$(links_check "$current_rules" 2>&1)"; st=$?
-assert_nonzero "$st" "a hard-linked config in use by another session is refused"
+assert_nonzero "$st" "a hard-linked workspace config is refused even if no session uses it"
 assert_contains "$out" "'$other_rules' has other hard links" "  -> naming it"
 rm "$hl/elsewhere/workspace-rules"
-printf '%s\n' "$hl/missing/rules.yaml" >"$session_dir/$PROXY_CONFIGS_FILE_NAME"
 
-ln "$hl/config/team/rules.yaml" "$hl/elsewhere/other-link.yaml"
-out="$(links_check 2>&1)"; st=$?
-assert_zero "$st" "a hard-linked custom config is ignored if no session uses it"
-printf '%s\n' "$hl/config/team/rules.yaml" >"$session_dir/$PROXY_CONFIGS_FILE_NAME"
+# A session may list a file outside PROXY_CONFIG_DIR, which the scan misses: a default's target,
+# say, since repointed.
+mkdir "$hl/repointed"; echo 'allow: []' >"$hl/repointed/rules.yaml"
+ln "$hl/repointed/rules.yaml" "$hl/elsewhere/repointed-link.yaml"
+printf '%s\n' "$hl/repointed/rules.yaml" >"$session_dir/$PROXY_CONFIGS_FILE_NAME"
 out="$(links_check 2>&1)"; st=$?
 assert_nonzero "$st" "a hard-linked config in use by another session is refused"
-assert_contains "$out" "'$hl/config/team/rules.yaml' has other hard links" "  -> naming it"
+assert_contains "$out" "'$hl/repointed/rules.yaml' has other hard links" "  -> naming it"
+rm "$hl/elsewhere/repointed-link.yaml"
+printf '%s\n' "$hl/config/team/rules.yaml" >"$session_dir/$PROXY_CONFIGS_FILE_NAME"
 
 if [ "$EUID" -ne 0 ]; then
     chmod 000 "$hl/config/team"
