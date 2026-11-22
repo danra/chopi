@@ -115,7 +115,7 @@ preflight_config_placement() {
 #
 # usage: preflight_proxy_config_links FILE...
 preflight_proxy_config_links() {
-    local file info files linked=()
+    local file files linked=()
     # -H: PROXY_CONFIG_DIR may be a symlink. find can't descend into a dir it can't read. One it
     # can't search either is passed over, as no session can open a config in it. One it can search
     # but not list is refused: a session can still open a config in it by name, but its files can't
@@ -133,22 +133,34 @@ preflight_proxy_config_links() {
     done < <(find -H "$PROXY_CONFIG_DIR" \( -type d -o -type f -links +1 \) -print0 2>/dev/null)
     proxy_config_files files "$@" "${linked[@]+"${linked[@]}"}" || return 1
     for file in "${files[@]}"; do
-        # stat follows symlinks and distinguishes missing files from files we can't inspect.
-        # Pin the locale so we can recognize the error for a file that has gone away.
-        if ! info="$(LC_ALL=C /usr/bin/stat -L -f '%HT:%l' "$file" 2>&1)"; then
-            [[ "$info" == *': No such file or directory' ]] && continue
-            echo "error: could not check proxy config file '$file' for other hard links" >&2
-            echo "$info" >&2
-            return 1
-        fi
-        [[ "$info" == 'Regular File:'* && "${info#*:}" -gt 1 ]] || continue
-        refuse_or_warn \
-            "the proxy's config file '$file' has other hard links, which the sandboxed command may write through" \
+        check_config_file_links "$file" "the proxy's config file" \
             "the sandboxed command could lift its own outgoing limits, and every other session's" \
-            "Review what is in it, as it may have been written through another hard link, then
-replace it with a fresh copy, e.g.: cp '$file' '$file.tmp' && mv '$file.tmp' '$file'" \
             || return 1
     done
+}
+
+# Refuse (or under CHOPI_ALLOW_SELF, warn of) the config FILE, named as WHAT, being a regular file,
+# following a symlink, with other hard links, which the sandboxed command may write through, to do
+# CONSEQUENCE. A missing FILE passes; one stat can't inspect fails. Pins the locale to recognize
+# the error for a file that is missing.
+#
+# usage: check_config_file_links FILE WHAT CONSEQUENCE
+check_config_file_links() {
+    arity 3
+    local info
+    if ! info="$(LC_ALL=C /usr/bin/stat -L -f '%HT:%l' "$1" 2>&1)"; then
+        [[ "$info" == *': No such file or directory' ]] && return 0
+        echo "error: could not check $2 '$1' for other hard links" >&2
+        echo "$info" >&2
+        return 1
+    fi
+    if [[ "$info" == 'Regular File:'* && "${info#*:}" -gt 1 ]]; then
+        refuse_or_warn \
+            "$2 '$1' has other hard links, which the sandboxed command may write through" \
+            "$3" \
+            "Review what is in it, as it may have been written through another hard link, then
+replace it with a fresh copy, e.g.: cp '$1' '$1.tmp' && mv '$1.tmp' '$1'" || return 1
+    fi
 }
 
 # Succeed if the real path RESOLVED is in PROXY_CONFIG_DIR, where every session keeps its command

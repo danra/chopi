@@ -505,7 +505,7 @@ if [ "$EUID" -ne 0 ]; then
     out="$(CHOPI_ALLOW_SELF=1 links_check 2>&1)"; st=$?
     chmod 700 "$hl/config/team"
     assert_nonzero "$st" "a registered config whose directory can't be searched blocks startup"
-    assert_contains "$out" "could not check proxy config file '$hl/config/team/rules.yaml'" \
+    assert_contains "$out" "could not check the proxy's config file '$hl/config/team/rules.yaml'" \
         "  -> naming the file that couldn't be checked"
 fi
 
