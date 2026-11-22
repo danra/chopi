@@ -721,9 +721,8 @@ proxy_config_paths() {
 # deny, appended after every file grant, comes last among the matching rules and wins: nothing in
 # them can be written, removed, or have another put in its place. Their ancestors are pinned, so
 # none can be renamed away and replaced, nor made where missing. Reading is left as granted. Another
-# name for a config file, a hard link, which these rules can't see, chopi refuses before launch on
-# the files in use (see preflight_proxy_config_links), and the proxy refuses a change to a file
-# with one.
+# name for a config file, a hard link, which these rules can't see, chopi refuses before launch (see
+# preflight_proxy_config_links), and the proxy refuses a change to a file with one.
 #
 # usage: write_proxy_config_profile FILE
 write_proxy_config_profile() {

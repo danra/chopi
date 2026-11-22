@@ -108,15 +108,30 @@ preflight_config_placement() {
     fi
 }
 
-# Check the config files for this session, defaults, and running sessions for extra hard links.
-# write_proxy_config_profile denies changes by path, so an extra link could expose a live file.
-# The proxy also checks the file it opens at startup and on reload. Config files no one uses are
-# left unchecked: one written through a link that is gone by the time a session picks it is missed.
+# Check every file in PROXY_CONFIG_DIR, used or not, and the files in use by this session, the
+# defaults, and running sessions for extra hard links, which write_proxy_config_profile's deny by
+# path can't see. A session can't make a link, so one it writes through predates it, and its own
+# check refuses. The proxy also checks the file it opens at startup and on reload.
 #
 # usage: preflight_proxy_config_links FILE...
 preflight_proxy_config_links() {
-    local file info files
-    proxy_config_files files "$@" || return 1
+    local file info files linked=()
+    # -H: PROXY_CONFIG_DIR may be a symlink. find can't descend into a dir it can't read. One it
+    # can't search either is passed over, as no session can open a config in it. One it can search
+    # but not list is refused: a session can still open a config in it by name, but its files can't
+    # be checked.
+    while IFS= read -r -d '' file; do
+        if [ ! -d "$file" ]; then
+            linked+=("$file")
+        elif [ -x "$file" ] && [ ! -r "$file" ]; then
+            refuse_or_warn \
+                "the proxy config directory '$file' can be searched but not listed, so its files can't be checked for other hard links" \
+                "the sandboxed command may have written a config in it through one" \
+                "Make it readable, e.g.: chmod u+r '$file', or unsearchable if no config in it is used." \
+                || return 1
+        fi
+    done < <(find -H "$PROXY_CONFIG_DIR" \( -type d -o -type f -links +1 \) -print0 2>/dev/null)
+    proxy_config_files files "$@" "${linked[@]+"${linked[@]}"}" || return 1
     for file in "${files[@]}"; do
         # stat follows symlinks and distinguishes missing files from files we can't inspect.
         # Pin the locale so we can recognize the error for a file that has gone away.

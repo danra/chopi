@@ -251,9 +251,9 @@ To run the proxy against a different rules file or GitHub allowlist, set `CHOPI_
 `~/.chopi/config`. Every session denies its sandboxed command any change to that directory, and to
 the default files, or to the dirs above them, whatever the session itself reads -- even under a
 grant covering them -- as a command that could rewrite rules or an allowlist could lift its own
-limits, or another session's. A config file with other hard links is refused, as writing through
-one would escape the deny (`CHOPI_ALLOW_SELF=1` downgrades this to a warning, as for `--config`
-below).
+limits, or another session's. A config file there with other hard links refuses every session,
+whichever repo's it is and whether any session uses it, as writing through one would escape the
+deny (`CHOPI_ALLOW_SELF=1` downgrades this to a warning, as for `--config` below).
 
 To use a different sandbox config for a single run, pass `chopi --config FILE`. The file 
 must define the same `CHOPI_SAFEHOUSE_FLAGS` / `CHOPI_EXTRA_ENV` arrays as `config/sandbox.sh`
