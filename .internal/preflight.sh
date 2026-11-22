@@ -111,7 +111,9 @@ preflight_config_placement() {
 # Check every file in PROXY_CONFIG_DIR, used or not, and the files in use by this session, the
 # defaults, and running sessions for extra hard links, which write_proxy_config_profile's deny by
 # path can't see. A session can't make a link, so one it writes through predates it, and its own
-# check refuses. The proxy also checks the file it opens at startup and on reload.
+# check refuses. The proxy also checks the file it opens at startup and on reload. A repo's own
+# sandbox config there is checked too: written through a link, it could widen that repo's next
+# sessions.
 #
 # usage: preflight_proxy_config_links FILE...
 preflight_proxy_config_links() {
@@ -133,9 +135,15 @@ preflight_proxy_config_links() {
     done < <(find -H "$PROXY_CONFIG_DIR" \( -type d -o -type f -links +1 \) -print0 2>/dev/null)
     proxy_config_files files "$@" "${linked[@]+"${linked[@]}"}" || return 1
     for file in "${files[@]}"; do
-        check_config_file_links "$file" "the proxy's config file" \
-            "the sandboxed command could lift its own outgoing limits, and every other session's" \
-            || return 1
+        if [[ "$file" == "$PROXY_CONFIG_DIR"/workspaces/*/"$WORKSPACE_SANDBOX_CONFIG" ]]; then
+            check_config_file_links "$file" "a repo's own sandbox config" \
+                "the sandboxed command could widen the sandbox of that repo's next sessions" \
+                || return 1
+        else
+            check_config_file_links "$file" "the proxy's config file" \
+                "the sandboxed command could lift its own outgoing limits, and every other session's" \
+                || return 1
+        fi
     done
 }
 
@@ -214,9 +222,9 @@ resolve_proxy_config() {
     printf -v "$var" '%s' "$resolved"
 }
 
-# Print the real path of the own proxy config dir of the workspace at RUN_DIR (workspace_config_dir),
-# whether or not it exists: chopi hands the proxy the files in it, and the proxy reads them all
-# session, as they appear. Resolved through any symlinks on the way, it must still be in
+# Print the real path of the own config dir of the workspace at RUN_DIR (workspace_config_dir),
+# whether or not it exists: chopi hands the proxy the proxy config files in it, and the proxy reads
+# them all session, as they appear. Resolved through any symlinks on the way, it must still be in
 # PROXY_CONFIG_DIR, where every session keeps its command from changing it.
 #
 # usage: resolve_workspace_config_dir RUN_DIR
@@ -226,7 +234,51 @@ resolve_workspace_config_dir() {
     dir="$(workspace_config_dir "$1")" || return 1
     resolved_path resolved "$dir" || return 1
     require_in_proxy_config_dir "$resolved" \
-        "chopi: the workspace's proxy config dir '$dir' leads out of $PROXY_CONFIG_DIR, to '$resolved'." \
+        "chopi: the repo's own config dir '$dir' leads out of $PROXY_CONFIG_DIR, to '$resolved'." \
         "Replace the link on the way with a dir." || return 1
     printf '%s' "$resolved"
+}
+
+# The sandbox config arrays a workspace's own sandbox config may add to.
+WORKSPACE_SANDBOX_ARRAYS=(CHOPI_SAFEHOUSE_FLAGS CHOPI_EXTRA_ENV CHOPI_GIT_CONFIG)
+
+# Add what the workspace's own sandbox config FILE adds to the sandbox config arrays
+# (WORKSPACE_SANDBOX_ARRAYS), for its sessions alone, as workspace-sandbox-loader.sh reports it. A
+# missing FILE adds nothing. Like the repo's own proxy config files beside it, it is in
+# PROXY_CONFIG_DIR, where every session keeps its command from changing it; so a symlink, which may
+# lead to where a command can, is refused, as is a file with other hard links, which a command may have written through
+# (CHOPI_ALLOW_SELF downgrading that to a warning, as for the proxy config).
+#
+# usage: load_workspace_sandbox_config FILE
+load_workspace_sandbox_config() {
+    arity 1
+    local file="$1" what="this repo's own sandbox config" out name item
+    local loader="$CHOPI_DIR/.internal/workspace-sandbox-loader.sh"
+    if [ -L "$file" ]; then
+        echo "error: $what '$file' is a symlink, which may lead to where a sandboxed command" >&2
+        echo "can change it. Replace it with the file it leads to." >&2
+        return 1
+    fi
+    [ -e "$file" ] || return 0
+    if [ ! -f "$file" ]; then
+        echo "error: $what '$file' is not a regular file" >&2
+        return 1
+    fi
+    check_config_file_links "$file" "$what" \
+        "the sandboxed command could widen its own sandbox, for the repo's next sessions" \
+        || return 1
+    # A file, not a pipe, so the loader is known to have succeeded before any item is added.
+    out="$(mktemp "$TMPDIR/chopi-ws-sandbox.XXXXXX")" \
+        || { echo "error: could not create a temp file for loading $what" >&2; return 1; }
+    if ! "$BASH" "$loader" "$file" "${WORKSPACE_SANDBOX_ARRAYS[@]}" >"$out"; then
+        echo "error: could not load $what '$file'" >&2
+        return 1
+    fi
+    # shellcheck disable=SC2034  # item is added by eval
+    while IFS= read -r -d '' name && IFS= read -r -d '' item; do
+        if ! is_item_in_list "$name" "${WORKSPACE_SANDBOX_ARRAYS[@]}"; then
+            echo "error: garbled output loading '$file'" >&2; return 1
+        fi
+        eval "$name+=(\"\$item\")"
+    done <"$out"
 }

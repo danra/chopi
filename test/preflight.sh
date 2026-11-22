@@ -13,6 +13,8 @@
 #     write_proxy_config_profile keeps the sandboxed command from writing.
 #   * workspace_config_dir / resolve_workspace_config_dir -- which repo's own proxy config a
 #     session reads, and refusing one that leads out of the dir every session protects.
+#   * load_workspace_sandbox_config -- a repo's own sandbox config only adding to the base arrays,
+#     and refusing a file a sandboxed command may have written.
 #   * preflight_proxy_config_links -- refusing a proxy config file with other hard links, which the
 #     sandboxed command may write through, whether a session uses it or not.
 #   * rule / the Seatbelt-rule emitter -- its empty-PATH refusal keeps an
@@ -489,6 +491,16 @@ assert_nonzero "$st" "a hard-linked workspace config is refused even if no sessi
 assert_contains "$out" "'$other_rules' has other hard links" "  -> naming it"
 rm "$hl/elsewhere/workspace-rules"
 
+other_sandbox="$hl/config/workspaces/unrelated/$WORKSPACE_SANDBOX_CONFIG"
+: >"$other_sandbox"
+ln "$other_sandbox" "$hl/elsewhere/workspace-sandbox"
+out="$(links_check "$current_rules" 2>&1)"; st=$?
+assert_nonzero "$st" "another repo's hard-linked sandbox config is refused too"
+assert_contains "$out" "a repo's own sandbox config '$other_sandbox' has other hard links" \
+    "  -> naming it as one"
+assert_contains "$out" "could widen the sandbox of that repo's next sessions" "  -> and what is at stake"
+rm "$hl/elsewhere/workspace-sandbox"
+
 # A session may list a file outside PROXY_CONFIG_DIR, which the scan misses: a default's target,
 # say, since repointed.
 mkdir "$hl/repointed"; echo 'allow: []' >"$hl/repointed/rules.yaml"
@@ -594,6 +606,89 @@ ln -s "$CHOPI_RUN_DIR/config/workspaces/target" "$CHOPI_RUN_DIR/config/workspace
 out="$(resolve_workspace_config_dir "$ws_repo")"; st=$?
 assert_zero "$st" "a link staying in the config dir is followed"
 assert_eq "$out" "$(realpath "$CHOPI_RUN_DIR/config")/workspaces/target" "  -> to where it leads"
+
+
+# ---------------------------------------------------------------------------
+echo "load_workspace_sandbox_config (a repo's own sandbox config)"
+# ---------------------------------------------------------------------------
+ws_sb_dir="$TMPDIR/ws-sandbox"
+mkdir -p "$ws_sb_dir"
+ws_sb="$ws_sb_dir/sandbox.sh"
+
+reset_arrays() {
+    CHOPI_SAFEHOUSE_FLAGS=(--enable xcode)
+    CHOPI_EXTRA_ENV=(A=1)
+    CHOPI_GIT_CONFIG=(gc.auto=0)
+}
+
+reset_arrays
+load_workspace_sandbox_config "$ws_sb"; st=$?
+assert_zero "$st" "a missing file is fine"
+assert_eq "${CHOPI_SAFEHOUSE_FLAGS[*]} | ${CHOPI_EXTRA_ENV[*]} | ${CHOPI_GIT_CONFIG[*]}" \
+    "--enable xcode | A=1 | gc.auto=0" "  -> adding nothing"
+
+cat >"$ws_sb" <<'SB'
+echo "chatter on stdout"
+CHOPI_SAFEHOUSE_FLAGS=(--add-dirs-ro "/data/with space")
+CHOPI_EXTRA_ENV+=("MULTI=a
+b" "")
+SB
+load_workspace_sandbox_config "$ws_sb" 2>"$TMPDIR/ws-sb.err"; st=$?
+out="$(<"$TMPDIR/ws-sb.err")"
+assert_zero "$st" "a file adding to the arrays loads"
+assert_eq "${#CHOPI_SAFEHOUSE_FLAGS[@]}" 4 "  -> assigning an array adds to it, as appending does"
+assert_eq "${CHOPI_SAFEHOUSE_FLAGS[0]}|${CHOPI_SAFEHOUSE_FLAGS[3]}" "--enable|/data/with space" \
+    "  -> after the base config's items, each kept whole"
+assert_eq "${#CHOPI_EXTRA_ENV[@]}" 3 "  -> an empty item kept"
+assert_eq "${CHOPI_EXTRA_ENV[1]}" $'MULTI=a\nb' "  -> and one with a newline"
+assert_eq "${CHOPI_GIT_CONFIG[*]}" "gc.auto=0" "  -> an array it leaves alone unchanged"
+assert_contains "$out" "chatter on stdout" "  -> the file's own output passed on"
+
+printf 'CHOPI_PROXY_RULES=/elsewhere\nCHOPI_SAFE_WRITE_TARGETS=(x)\n' >"$ws_sb"
+reset_arrays
+out="$(load_workspace_sandbox_config "$ws_sb" 2>&1)"; st=$?
+assert_nonzero "$st" "a file setting another CHOPI_ variable -> refused"
+assert_contains "$out" "may only add to" "  -> saying so"
+assert_contains "$out" "CHOPI_PROXY_RULES" "  -> naming it"
+assert_contains "$out" "CHOPI_SAFE_WRITE_TARGETS" "  -> each of them"
+
+printf 'unset CHOPI_EXTRA_ENV\n' >"$ws_sb"
+reset_arrays
+out="$(load_workspace_sandbox_config "$ws_sb" 2>&1)"; st=$?
+assert_nonzero "$st" "a file unsetting an array -> refused"
+assert_contains "$out" "CHOPI_EXTRA_ENV not an array" "  -> saying so"
+
+printf 'false\nCHOPI_EXTRA_ENV=(LATE=1)\n' >"$ws_sb"
+reset_arrays
+out="$(load_workspace_sandbox_config "$ws_sb" 2>&1; st=$?
+    echo "added: ${CHOPI_EXTRA_ENV[*]}"; exit "$st")"; st=$?
+assert_nonzero "$st" "a file with a failing command -> refused"
+assert_contains "$out" "could not load" "  -> saying so"
+assert_eq "${out##*$'\n'}" "added: A=1" "  -> adding nothing"
+
+printf 'CHOPI_EXTRA_ENV=(LINKED=1)\n' >"$TMPDIR/ws-sb-target"
+rm "$ws_sb"
+ln -s "$TMPDIR/ws-sb-target" "$ws_sb"
+out="$(load_workspace_sandbox_config "$ws_sb" 2>&1)"; st=$?
+assert_nonzero "$st" "a symlink -> refused"
+assert_contains "$out" "is a symlink" "  -> saying so"
+rm "$ws_sb"
+
+ln "$TMPDIR/ws-sb-target" "$ws_sb"
+out="$(load_workspace_sandbox_config "$ws_sb" 2>&1)"; st=$?
+assert_nonzero "$st" "a file with other hard links -> refused"
+assert_contains "$out" "other hard links" "  -> saying so"
+out="$(CHOPI_ALLOW_SELF=1 load_workspace_sandbox_config "$ws_sb" 2>&1; st=$?
+    echo "${CHOPI_EXTRA_ENV[*]}"; exit "$st")"; st=$?
+assert_zero "$st" "  -> a warning under CHOPI_ALLOW_SELF"
+assert_contains "$out" "A=1 LINKED=1" "  -> then loaded"
+rm "$ws_sb"
+
+mkdir "$ws_sb"
+out="$(load_workspace_sandbox_config "$ws_sb" 2>&1)"; st=$?
+assert_nonzero "$st" "a dir -> refused"
+assert_contains "$out" "not a regular file" "  -> saying so"
+rmdir "$ws_sb"
 
 
 # ---------------------------------------------------------------------------

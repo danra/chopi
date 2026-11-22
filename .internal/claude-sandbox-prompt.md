@@ -68,7 +68,7 @@ format, one `owner/repo` or `owner/*` per line.
 
 | Symptom | Cause | Fix, and when it takes effect |
 |---|---|---|
-| `Operation not permitted` / `EPERM` **reading** a path outside the workspace | Filesystem policy | User adds `--add-dirs-ro PATH` to `CHOPI_SAFEHOUSE_FLAGS` in `config/sandbox.sh`. **Needs a new chopi session:** the policy is fixed when the session launches. |
+| `Operation not permitted` / `EPERM` **reading** a path outside the workspace | Filesystem policy | User adds `--add-dirs-ro PATH` to `CHOPI_SAFEHOUSE_FLAGS`, in this repo's own sandbox config (see below), or, for every project, in `config/sandbox.sh`. **Needs a new chopi session:** the policy is fixed when the session launches. |
 | `EPERM` writing to a **safe write target** (`$CHOPI_SAFE_WRITE_TARGETS` names them) | Read-only by design; changes there are reviewed first | Queue a patch, see below. **Takes effect when the user approves it**, which they are offered when the session ends. |
 | `EPERM` **writing** a path outside the workspace and outside every safe write target | Filesystem policy | First `realpath` the path: a read-only file can be a symlink into a safe write target, which makes this the row above -- queue a patch, no grant needed. Otherwise, two grants to choose between, and the choice is yours to recommend: see "Changing a file outside the workspace" below. **Both need a new chopi session.** |
 | `EPERM` writing under `.git/` (`git config`, `git remote add`, `git worktree add`, `git submodule update`, hook installers like husky) | Git hardening | These cannot be made to work in-session. Ask the user to run the command **outside** the sandbox. For `--worktree` runs, recurring setup belongs in `CHOPI_WORKTREE_SETUP`. |
@@ -135,6 +135,14 @@ for a safe write target, and expect to keep proposing rather than writing. Recom
 what the trade is; don't hand over both and leave the choice open.
 
 chopi's own config is deliberately ineligible as a target.
+
+`CHOPI_SAFEHOUSE_FLAGS` (like `CHOPI_EXTRA_ENV` and `CHOPI_GIT_CONFIG`) is set at two levels:
+in `config/sandbox.sh`, for every project, or in this repo's own sandbox config, which adds to
+it for this repo's sessions alone. Recommend this repo's own unless every project needs the
+grant. Its path is `$CHOPI_WORKSPACE_SANDBOX_CONFIG` (quote the full path from your
+environment); it may not exist yet, for the user to create. It is a bash file that only adds
+to those arrays, e.g. `CHOPI_SAFEHOUSE_FLAGS=(--add-dirs-ro "$HOME/data")`;
+`CHOPI_SAFE_WRITE_TARGETS` can be set only in `config/sandbox.sh`.
 
 ### Queueing a change to a safe write target
 

@@ -58,6 +58,9 @@ PROXY_CONFIG_DIR="${CHOPI_RUN_DIR%/}/config"
 # workspace's own, in its dir (see workspace_config_dir).
 DEFAULT_PROXY_RULES="proxy-rules.yaml"
 DEFAULT_GITHUB_ALLOWLIST="github-allowlist"
+# The name of a workspace's own sandbox config, in its dir, adding to the base sandbox config
+# (see load_workspace_sandbox_config).
+WORKSPACE_SANDBOX_CONFIG="sandbox.sh"
 # The longest readable part of the name of a workspace's own config dir, before its id
 # (workspace_config_dir).
 WORKSPACE_NAME_MAX=200
@@ -722,7 +725,9 @@ proxy_config_paths() {
 # them can be written, removed, or have another put in its place. Their ancestors are pinned, so
 # none can be renamed away and replaced, nor made where missing. Reading is left as granted. Another
 # name for a config file, a hard link, which these rules can't see, chopi refuses before launch (see
-# preflight_proxy_config_links), and the proxy refuses a change to a file with one.
+# preflight_proxy_config_links), and the proxy refuses a change to a file with one. The deny on
+# PROXY_CONFIG_DIR also guards a repo's own sandbox config there (load_workspace_sandbox_config):
+# one a command could write could widen the repo's next sessions.
 #
 # usage: write_proxy_config_profile FILE
 write_proxy_config_profile() {

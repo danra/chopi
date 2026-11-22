@@ -224,7 +224,9 @@ refuse_unreadable_claude_context() {
             printf '   - %s\n' "$line"
         done <<< "$denied"
         echo
-        echo "Add read grants for them to CHOPI_SAFEHOUSE_FLAGS in chopi's config (default at config/sandbox.sh), e.g.:"
+        echo "Add read grants for them to CHOPI_SAFEHOUSE_FLAGS, in this repo's own sandbox config, or,"
+        echo "for every project, in chopi's config (default at config/sandbox.sh); \`chopi --config-paths\`"
+        echo "prints both paths. E.g.:"
         echo "   --add-dirs-ro '/dir/to/allow'"
         case "$denied" in
             *'(imported by '*)
