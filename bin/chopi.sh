@@ -408,7 +408,7 @@ main() {
         HTTP_PROXY="$proxy"  HTTPS_PROXY="$proxy" \
         http_proxy="$proxy"  https_proxy="$proxy" \
         NODE_USE_ENV_PROXY=1 \
-        NO_PROXY="127.0.0.1"  no_proxy="127.0.0.1" \
+        NO_PROXY="127.0.0.1,localhost"  no_proxy="127.0.0.1,localhost" \
         GIT_TERMINAL_PROMPT=0 \
         "${gh_env[@]}" \
         "${wrapper_cmd[@]}" \
