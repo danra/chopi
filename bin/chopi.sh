@@ -65,16 +65,25 @@ trap 'chopi_on_signal INT'  INT
 trap 'chopi_on_signal TERM' TERM
 trap 'chopi_on_signal HUP'  HUP
 
+# Set the caller's ws_config_dir to the repo's own config dir for a session at DIR, and its
+# ws_rules and ws_allowlist to the config files in it.
+#
+# usage: local ws_config_dir ws_rules ws_allowlist; set_workspace_config_paths DIR
+set_workspace_config_paths() {
+    arity 1
+    ws_config_dir="$(resolve_workspace_config_dir "$1")" || return 1
+    ws_rules="$ws_config_dir/$DEFAULT_PROXY_RULES"
+    ws_allowlist="$ws_config_dir/$DEFAULT_GITHUB_ALLOWLIST"
+}
+
 # Print the proxy config files a session at DIR reads: the base ones, set by the sandbox config, and
 # the repo's own, noting those not there yet -- in a dir the user can't guess, named for the repo.
 #
 # usage: print_config_paths DIR
 print_config_paths() {
     arity 1
-    local ws_config_dir
-    ws_config_dir="$(resolve_workspace_config_dir "$1")" || return 1
-    local ws_rules="$ws_config_dir/$DEFAULT_PROXY_RULES"
-    local ws_allowlist="$ws_config_dir/$DEFAULT_GITHUB_ALLOWLIST"
+    local ws_config_dir ws_rules ws_allowlist
+    set_workspace_config_paths "$1" || return 1
     echo "For every project:"
     echo "  proxy rules:      $CHOPI_PROXY_RULES"
     echo "  GitHub allowlist: $CHOPI_GITHUB_ALLOWLIST"
@@ -173,10 +182,7 @@ main() {
     # The repo's own proxy config, adding to the base config for its sessions alone; either file may
     # be missing, and be made mid-session.
     local ws_config_dir ws_rules ws_allowlist
-    ws_config_dir="$(resolve_workspace_config_dir "$run_dir")" \
-        || { echo "chopi: refusing to run" >&2; return 1; }
-    ws_rules="$ws_config_dir/$DEFAULT_PROXY_RULES"
-    ws_allowlist="$ws_config_dir/$DEFAULT_GITHUB_ALLOWLIST"
+    set_workspace_config_paths "$run_dir" || { echo "chopi: refusing to run" >&2; return 1; }
     preflight_proxy_config_links "$CHOPI_PROXY_RULES" "$CHOPI_GITHUB_ALLOWLIST" \
         "$ws_rules" "$ws_allowlist" || return $?
 
