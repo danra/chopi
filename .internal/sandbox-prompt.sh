@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 #
-# sandbox-prompt.sh -- render chopi's sandbox context document for claude-prompt.sh
+# sandbox-prompt.sh -- render chopi's sandbox context document, shared by every agent chopi briefs
 #
 # Sourced (never run directly).
 

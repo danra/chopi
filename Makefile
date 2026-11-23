@@ -22,6 +22,7 @@ SHELL_SOURCES = \
 	.internal/claude-common.sh \
 	.internal/sandbox-prompt.sh \
 	.internal/claude-prompt.sh \
+	.internal/codex-prompt.sh \
 	.internal/claude-context-reads.sh \
 	.internal/claude-context-check.sh \
 	.internal/write-targets.sh \

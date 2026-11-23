@@ -11,6 +11,7 @@ SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 
 . "$SCRIPT_DIR/../.internal/util.sh"
 . "$SCRIPT_DIR/../.internal/claude-prompt.sh"
+. "$SCRIPT_DIR/../.internal/codex-prompt.sh"
 . "$SCRIPT_DIR/../.internal/claude-context-reads.sh"
 . "$SCRIPT_DIR/../.internal/write-targets.sh"
 . "$SCRIPT_DIR/../.internal/preflight.sh"
@@ -239,12 +240,9 @@ main() {
 
         claude_argv_with_chopi_prompt "$run_dir" "$targets" "$@" || return 1
         cmd_argv=("${CLAUDE_ARGV_WITH_CHOPI_PROMPT[@]}")
-    elif [ "$(basename -- "$1")" = codex ]; then
-        # Chopi is Codex's external sandbox. Asking Codex to install another macOS
-        # Seatbelt policy would make built-in tools such as apply_patch fail with EPERM.
-        # Its shared app-server daemon can't start sandboxed: recording the daemon's pid
-        # runs ps, which is denied.
-        cmd_argv=("$1" --sandbox danger-full-access --no-daemon "${@:2}")
+    elif is_codex_command "$1"; then
+        codex_argv_with_chopi_prompt "$targets" "$@" || return 1
+        cmd_argv=("${CODEX_ARGV_WITH_CHOPI_PROMPT[@]}")
     fi
 
     # Build chopi's git protection profiles and append them in the order

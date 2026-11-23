@@ -196,7 +196,7 @@ to modify some configuration.
   `HTTP_PROXY`, and the GitHub relay's in `CHOPI_GITHUB_RELAY_PORT`). From inside the sandbox
   those resolve to *your own* process, not the host's proxy, so you kill your own session.
   The proxy lives and dies with this session; you cannot restart it from in here. It is your
-  only gateway to Anthropic's servers, so under normal circumstances, the fact you're reading
+  only gateway to the model provider, so under normal circumstances, the fact you're reading
   this message means the proxy is up.
 - **Do not run `chopi` or `sandbox-exec` from inside the sandbox.** Seatbelt does not nest;
   it will fail in confusing ways.
@@ -205,7 +205,7 @@ to modify some configuration.
 - **A `getcwd` or stat error while changing directory** is usually harmless policy noise,
   not a broken shell.
 
-## Subagents you spawn
+## Claude Code subagents
 
 None of this reaches a subagent's system prompt, so a subagent does not know it is
 sandboxed and will read a denial as a broken setup. Say what is confined in the prompt of

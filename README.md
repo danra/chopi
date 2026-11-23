@@ -232,6 +232,10 @@ can't start in the sandbox. This needs a Codex recent enough to have the flag, a
 commands that work with the daemon, such as `codex agents` and `codex remote-control`, unusable
 under `chopi`.
 
+Chopi supplies the [sandbox context](.internal/sandbox-prompt.md) and the session's safe write
+targets as Codex developer instructions. Chopi's launch-time `-c developer_instructions=...`
+overrides the value in Codex's configuration files.
+
 ### Safe write targets
 
 Sometimes a change should be read before it lands, for example:

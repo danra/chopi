@@ -30,7 +30,7 @@ CHOPI_RUN_DIR="$(cd "$TMPDIR" && pwd -P)"; export CHOPI_RUN_DIR
 trap 'rm -rf "$TMPDIR"' EXIT
 
 . "$repo/.internal/util.sh"
-. "$repo/.internal/claude-prompt.sh"
+. "$repo/.internal/codex-prompt.sh"
 . "$repo/test/lib.sh"
 
 header "test/integration.sh -- chopi's end-to-end integration tests"
@@ -204,18 +204,23 @@ wait_for() {
     wait_for_count "$f" "$pat" 1
 }
 
-# Every sandboxed call: run from the workspace with the minimal config. The Claude-context
-# cases go through the stand-in agent, in another workspace or under another config when the
-# case calls for it.
+# Every sandboxed call: run from the workspace with the minimal config. The agent cases go
+# through a stand-in agent (the Claude or Codex shim), in another workspace or under another
+# config when the case calls for it.
 chopi_t() { chopi_cfg "$cfg" "$@"; }
-chopi_claude_in() {
+# chopi_in DIR CONF CMD... -- run from DIR under CONF
+chopi_in() {
     local dir="$1" conf="$2"; shift 2
-    ( cd "$dir" && "$repo/bin/chopi" --config "$conf" -- "$claude_shim" "$@" )
+    ( cd "$dir" && "$repo/bin/chopi" --config "$conf" -- "$@" )
 }
+chopi_claude_in() { chopi_in "$1" "$2" "$claude_shim" "${@:3}"; }
 chopi_claude() { chopi_claude_in "$ws" "$cfg" "$@"; }
-chopi_codex() { chopi_t "$codex_shim" "$@"; }
+chopi_codex_in() { chopi_in "$1" "$2" "$codex_shim" "${@:3}"; }
+chopi_codex() { chopi_codex_in "$ws" "$cfg" "$@"; }
+# The developer instructions in the Codex shim's argv OUT, decoded from their TOML string.
+codex_instructions() { printf '%s\n' "$1" | sed -n 's/^developer_instructions=//p' | jq -r .; }
 # chopi_cfg CONF CMD... -- run from the workspace under another config
-chopi_cfg() { local conf="$1"; shift; ( cd "$ws" && "$repo/bin/chopi" --config "$conf" -- "$@" ); }
+chopi_cfg() { chopi_in "$ws" "$@"; }
 
 # Run curl INSIDE the sandbox and echo its HTTP status code ("000" when the connection is
 # blocked/refused before any response).
@@ -475,8 +480,10 @@ rm -f "$ws/control-link"
 echo "Codex uses Chopi as its external sandbox"
 # ---------------------------------------------------------------------------
 out="$(chopi_codex exec --json 2>/dev/null)"
-assert_eq "$out" $'--sandbox\ndanger-full-access\n--no-daemon\nexec\n--json' \
-    "Codex disables its nested sandbox and shared daemon before its subcommand"
+assert_eq "$(printf '%s\n' "$out" | grep -v '^developer_instructions=')" $'--sandbox\ndanger-full-access\n--no-daemon\n-c\nexec\n--json' \
+    "Codex receives its sandbox, daemon and config flags before its subcommand"
+assert_eq "$(codex_instructions "$out")" "$(codex_developer_instructions "")" \
+    "Codex's instructions explain the external sandbox, then carry the shared sandbox document"
 
 
 # ---------------------------------------------------------------------------
@@ -727,7 +734,6 @@ printf '# Guidelines\nBe kind.\n' > "$swt_target/Guidelines.md"
 
 cfg_swt="$base/config/sandbox-swt.sh"
 write_cfg "$cfg_swt" \
-    "CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro '$claudebin' )" \
     "CHOPI_SAFE_WRITE_TARGETS=( '$swt_target' )"
 
 swt_repo_real="$(realpath "$swt_repo")"
@@ -736,19 +742,22 @@ swt_slot="$swt_queue/$(path_id "$swt_target")"
 
 out="$(chopi_claude_in "$swt_repo" "$cfg_swt" -c "$probe_prompt" 2>/dev/null)"
 assert_contains "$out" '- `'"$swt_target"'`' "claude's system prompt lists the session's safe write targets"
+out="$(chopi_codex_in "$swt_repo" "$cfg_swt" 2>/dev/null)"
+assert_eq "$(codex_instructions "$out")" "$(codex_developer_instructions "$swt_target")" \
+    "Codex's instructions list the session's safe write targets"
 
 # This run's stderr goes into $out rather than the suite's terminal: the run leaves a patch
 # queued, and chopi's end-of-run review offer prompts for it whenever stderr is a terminal,
 # which would block the suite.
 # shellcheck disable=SC2016 # $CHOPI_DIR, $TMPDIR, $CHOPI_SAFE_WRITE_TARGETS and $1 expand in the sandboxed shell
-out="$( ( cd "$swt_repo" && "$repo/bin/chopi" --config "$cfg_swt" -- /bin/sh -ec '
+out="$( chopi_in "$swt_repo" "$cfg_swt" /bin/sh -ec '
     echo "TARGETS[$CHOPI_SAFE_WRITE_TARGETS]"
     cp "$1/Guidelines.md" "$TMPDIR/draft"
     printf "Greet warmly.\n" >> "$TMPDIR/draft"
     "$CHOPI_DIR/.internal/chopi-queue-patch.sh" -s "Add a greeting rule" -m "Queued by the integration test." \
         "$1/Guidelines.md" "$TMPDIR/draft" && echo QUEUE_OK
     printf x 2>/dev/null >> "$1/Guidelines.md" && echo DIRECT_WRITE_OK || echo DIRECT_WRITE_FAIL
-' sh "$swt_target" ) 2>&1 )"
+' sh "$swt_target" 2>&1 )"
 assert_contains "$out" "TARGETS[$swt_target]" "the session is told the configured targets"
 assert_contains "$out" "QUEUE_OK"          "chopi-queue-patch runs in-sandbox and queues a change to a file the target covers"
 assert_contains "$out" "DIRECT_WRITE_FAIL" "  -> while writing the target directly stays denied"
