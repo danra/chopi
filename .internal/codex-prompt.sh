@@ -33,6 +33,28 @@ CODEX_ARGV_WITH_CHOPI_PROMPT=()
 codex_argv_with_chopi_prompt() {
     local safe_write_targets="$1" cmd="$2"
     shift 2 # safe_write_targets, cmd
+
+    # Only inspect config options before --. Leave parsing their values to Codex.
+    local args=("$@") i=0 override
+    while [ "$i" -lt "${#args[@]}" ]; do
+        case "${args[i]}" in
+            --) break ;;
+            -c|--config)
+                i=$((i + 1))
+                override="${args[i]:-}"
+                ;;
+            --config=*) override="${args[i]#--config=}" ;;
+            -c?*) override="${args[i]#-c}"; override="${override#=}" ;;
+            *) override= ;;
+        esac
+        # Any key naming developer_instructions, however Codex would trim, quote or nest it
+        if [[ "${override%%=*}" == *developer_instructions* ]]; then
+            echo "chopi: remove the Codex developer_instructions override from the command line; chopi uses it for sandbox guidance" >&2
+            return 1
+        fi
+        i=$((i + 1))
+    done
+
     local instructions
     instructions="$(codex_developer_instructions "$safe_write_targets")" || return 1
     # jq's JSON string encoding also produces a TOML basic string.

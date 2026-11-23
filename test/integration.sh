@@ -485,6 +485,21 @@ assert_eq "$(printf '%s\n' "$out" | grep -v '^developer_instructions=')" $'--san
 assert_eq "$(codex_instructions "$out")" "$(codex_developer_instructions "")" \
     "Codex's instructions explain the external sandbox, then carry the shared sandbox document"
 
+# assert_codex_rejects_override WHERE ARGS... -- chopi refuses the developer_instructions override in ARGS
+assert_codex_rejects_override() {
+    local where="$1" rc=0 out; shift
+    out="$(chopi_codex "$@" 2>&1)" || rc=$?
+    assert_nonzero "$rc" "chopi rejects a Codex developer instructions override $where"
+    assert_contains "$out" "remove the Codex developer_instructions override" "  -> and the error identifies the override to remove"
+}
+assert_codex_rejects_override "before the subcommand" -c developer_instructions=custom exec
+assert_codex_rejects_override "after the subcommand, in a long flag" exec --config=' developer_instructions =custom'
+assert_codex_rejects_override "whose key is padded with Unicode whitespace" exec -c $'\302\205developer_instructions\302\205=custom'
+
+out="$(chopi_codex exec -c model=custom -- -c developer_instructions=example 2>/dev/null)"
+assert_contains "$out" $'exec\n-c\nmodel=custom\n--\n-c\ndeveloper_instructions=example' \
+    "chopi preserves unrelated overrides and prompt text after --"
+
 
 # ---------------------------------------------------------------------------
 echo "chopi's addition to claude's system prompt"
