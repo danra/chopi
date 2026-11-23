@@ -11,6 +11,7 @@ SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 
 . "$SCRIPT_DIR/../.internal/util.sh"
 . "$SCRIPT_DIR/../.internal/claude-prompt.sh"
+. "$SCRIPT_DIR/../.internal/codex-prompt.sh"
 . "$SCRIPT_DIR/../.internal/claude-context-reads.sh"
 . "$SCRIPT_DIR/../.internal/write-targets.sh"
 . "$SCRIPT_DIR/../.internal/preflight.sh"
@@ -220,15 +221,6 @@ main() {
         echo "chopi: network: the base config, plus this repo's own in $ws_config_dir" >&2
     fi
 
-    # The session's own proxy, which the sandboxed command gets as its only way out. Launched
-    # once the checks that may refuse the session have passed, so a refused session doesn't wait
-    # for it; it starts as chopi goes on with the rest of its setup, and nothing reaches it before
-    # the sandbox starts.
-    launch_session_proxy "$CHOPI_PROXY_RULES" "$CHOPI_GITHUB_ALLOWLIST" "$verbose" \
-        "$CHOPI_USER_TMPDIR" "$ws_rules" "$ws_allowlist" \
-        || { echo "chopi: refusing to run without the proxy" >&2; return 1; }
-    [ -n "$verbose" ] && echo "chopi: the proxy logs to $SESSION_PROXY_LOG" >&2
-
     local context_flags=()
     local cmd_argv=("$@")
     if is_claude_command "$1"; then
@@ -239,13 +231,19 @@ main() {
 
         claude_argv_with_chopi_prompt "$run_dir" "$targets" "$@" || return 1
         cmd_argv=("${CLAUDE_ARGV_WITH_CHOPI_PROMPT[@]}")
-    elif [ "$(basename -- "$1")" = codex ]; then
-        # Chopi is Codex's external sandbox. Asking Codex to install another macOS
-        # Seatbelt policy would make built-in tools such as apply_patch fail with EPERM.
-        # Its shared app-server daemon can't start sandboxed: recording the daemon's pid
-        # runs ps, which is denied.
-        cmd_argv=("$1" --sandbox danger-full-access --no-daemon "${@:2}")
+    elif is_codex_command "$1"; then
+        codex_argv_with_chopi_prompt "$targets" "$@" || return 1
+        cmd_argv=("${CODEX_ARGV_WITH_CHOPI_PROMPT[@]}")
     fi
+
+    # The session's own proxy, which the sandboxed command gets as its only way out. Launched
+    # once the checks that may refuse the session have passed, so a refused session doesn't wait
+    # for it; it starts as chopi goes on with the rest of its setup, and nothing reaches it before
+    # the sandbox starts.
+    launch_session_proxy "$CHOPI_PROXY_RULES" "$CHOPI_GITHUB_ALLOWLIST" "$verbose" \
+        "$CHOPI_USER_TMPDIR" "$ws_rules" "$ws_allowlist" \
+        || { echo "chopi: refusing to run without the proxy" >&2; return 1; }
+    [ -n "$verbose" ] && echo "chopi: the proxy logs to $SESSION_PROXY_LOG" >&2
 
     # Build chopi's git protection profiles and append them in the order
     # git-protect.sh emits them.

@@ -216,7 +216,7 @@ configuration.
 
 ### Claude Code Integration
 
-When running `claude`, `chopi` appends [context](.internal/claude-sandbox-prompt.md) to the
+When running `claude`, `chopi` appends [context](.internal/sandbox-prompt.md) to the
 system prompt describing the sandbox, what it restricts, the session's safe write targets, and
 how to guide the user.
 
@@ -231,6 +231,10 @@ and network sandbox; Codex's approval policy remains unchanged.
 can't start in the sandbox. This needs a Codex recent enough to have the flag, and leaves the
 commands that work with the daemon, such as `codex agents` and `codex remote-control`, unusable
 under `chopi`.
+
+Chopi supplies the [sandbox context](.internal/sandbox-prompt.md) and the session's safe write
+targets as Codex developer instructions. Chopi's launch-time `-c developer_instructions=...`
+overrides the value in Codex's configuration files.
 
 ### Safe write targets
 

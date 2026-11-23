@@ -31,9 +31,9 @@ assert_contains "$chopi_claude_prompt" "CHOPI_DIR" "the document names the marke
 # ---------------------------------------------------------------------------
 echo "the safe write targets in the document"
 # ---------------------------------------------------------------------------
-document="$(cat "$CHOPI_CLAUDE_PROMPT_FILE")"
-slot="$CHOPI_CLAUDE_PROMPT_TARGETS_SLOT"
-assert_eq "$(grep -c -x -F "$slot" "$CHOPI_CLAUDE_PROMPT_FILE")" 1 "the document holds the slot once, on a line of its own"
+document="$(cat "$CHOPI_SANDBOX_PROMPT_FILE")"
+slot="$CHOPI_SANDBOX_PROMPT_TARGETS_SLOT"
+assert_eq "$(grep -c -x -F "$slot" "$CHOPI_SANDBOX_PROMPT_FILE")" 1 "the document holds the slot once, on a line of its own"
 
 assert_not_contains "$chopi_claude_prompt" "$slot" "rendering fills the slot"
 assert_eq "$chopi_claude_prompt" "${document/"$slot"/No safe write targets are configured this session.}" \

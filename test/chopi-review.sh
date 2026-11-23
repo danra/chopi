@@ -302,7 +302,7 @@ echo "the recipe the sandbox document ships"
 # ---------------------------------------------------------------------------
 reset_fixture
 recipe="$(awk '/^```sh$/ { in_block = 1; next } /^```$/ { in_block = 0 } in_block' \
-    "$repo/.internal/claude-sandbox-prompt.md")"
+    "$repo/.internal/sandbox-prompt.md")"
 assert_contains "$recipe" 'chopi-queue-patch' "the extracted recipe queues through chopi-queue-patch"
 
 # Pin the edit instruction in the recipe so we test the same thing we tell the agent to do
