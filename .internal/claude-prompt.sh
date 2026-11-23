@@ -6,40 +6,8 @@
 # Sourced (never run directly).
 
 _claude_prompt_dir="$(dirname "${BASH_SOURCE[0]}")"
-. "$_claude_prompt_dir/util.sh"
+. "$_claude_prompt_dir/sandbox-prompt.sh"
 unset _claude_prompt_dir
-
-CHOPI_CLAUDE_PROMPT_FILE="$CHOPI_DIR/.internal/claude-sandbox-prompt.md"
-CHOPI_CLAUDE_PROMPT_TARGETS_SLOT='@@SAFE_WRITE_TARGETS@@'
-
-# Print the paragraph listing the safe write targets TARGETS names, one per line; an empty
-# TARGETS says the session has none.
-safe_write_targets_paragraph() {
-    arity 1
-    local targets="$1"
-    local path
-    if [ -z "$targets" ]; then
-        echo "No safe write targets are configured this session."
-        return 0
-    fi
-    echo 'Safe write targets this session (readable; changes land as queued patches, see "Queueing a'
-    echo 'change to a safe write target" below):'
-    echo
-    while IFS= read -r path; do
-        # shellcheck disable=SC2016 # the backticks are markdown, not a substitution
-        printf -- '- `%s`\n' "$path"
-    done <<<"$targets"
-}
-
-# Print chopi's context document, filling in the safe write targets slot
-chopi_prompt_document() {
-    arity 1
-    local targets="$1"
-    local document paragraph
-    document="$(cat "$CHOPI_CLAUDE_PROMPT_FILE")" || return 1
-    paragraph="$(safe_write_targets_paragraph "$targets")"
-    fill_slots "$document" "$CHOPI_CLAUDE_PROMPT_TARGETS_SLOT" "$paragraph"
-}
 
 # Amends the given claude command-line to append chopi's context to claude's system prompt and writes
 # it to CLAUDE_ARGV_WITH_CHOPI_PROMPT. Sets --append-system-prompt-file to point to chopi's context

@@ -216,7 +216,7 @@ configuration.
 
 ### Claude Code Integration
 
-When running `claude`, `chopi` appends [context](.internal/claude-sandbox-prompt.md) to the
+When running `claude`, `chopi` appends [context](.internal/sandbox-prompt.md) to the
 system prompt describing the sandbox, what it restricts, the session's safe write targets, and
 how to guide the user.
 

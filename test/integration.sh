@@ -491,7 +491,7 @@ assert_eq "$out" "$(chopi_prompt_document "")" "claude's system prompt carries c
 out="$(chopi_t /bin/sh -c "$probe_prompt" 2>/dev/null)"
 assert_eq "$out" "NO_PROMPT"                       "  -> and only for claude: no other command gets it"
 
-out="$(chopi_claude -c "cat '$CHOPI_CLAUDE_PROMPT_FILE' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
+out="$(chopi_claude -c "cat '$CHOPI_SANDBOX_PROMPT_FILE' && echo READ_OK || echo READ_FAIL" 2>/dev/null)"
 assert_not_contains "$out" "Denials are configuration" "the document's own path stays unreadable in-sandbox"
 assert_contains     "$out" "READ_FAIL"             "  -> and that read fails"
 

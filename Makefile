@@ -20,6 +20,7 @@ SHELL_SOURCES = \
 	.internal/git-protect-cleanup.sh \
 	.internal/shell-rc.sh \
 	.internal/claude-common.sh \
+	.internal/sandbox-prompt.sh \
 	.internal/claude-prompt.sh \
 	.internal/claude-context-reads.sh \
 	.internal/claude-context-check.sh \
