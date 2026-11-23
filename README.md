@@ -393,11 +393,13 @@ only for allowlisted `/repos/{owner}/{repo}` requests; other repos are reached a
 `/user`) can't be scoped by URL path, so they are denied. Search can't be scoped by path
 either, but code search (`gh search code ... --owner OWNER`) is served with the token when
 its query provably stays within owners that have an `owner/*` entry, by a narrow query
-grammar that the relay's refusal of any other search states. Downloads that the API answers
-with a redirect to GitHub's signed storage (Actions logs and artifacts, release assets)
-are followed through the relay anonymously. Release-asset uploads (`gh release create` /
-`gh release upload`) go to `uploads.github.com`, which the relay serves with the same
-allowlist scoping.
+grammar that the relay's refusal of any other search states. Of the org-level endpoints, only
+the org's Dependabot alert list (`gh api orgs/OWNER/dependabot/alerts`) is served, with the
+token, for owners that have an `owner/*` entry; the host's token needs Dependabot alerts read
+access across the org. Downloads that the API answers with a redirect to GitHub's signed
+storage (Actions logs and artifacts, release assets) are followed through the relay
+anonymously. Release-asset uploads (`gh release create` / `gh release upload`) go to
+`uploads.github.com`, which the relay serves with the same allowlist scoping.
 
 ### Tests
 

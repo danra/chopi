@@ -32,7 +32,7 @@
 #       code scoped to the allowlisted owner works, and its pagination Link stays on the route
 #   5. a credential GitHub rejects fails with an informative error message (git, API, and
 #      uploads), a dot-segment traversal cannot carry the credential past the allowlist, and
-#      code search carries it only for a query scoped to an owner/* entry
+#      code search and org Dependabot alerts carry it only when scoped to an owner/* entry
 
 set -uo pipefail
 
@@ -554,6 +554,11 @@ else
     assert_eq "$(api_code "$api_url/search/code?q=x")"                       403 "unscoped code search carries no credential"
     assert_eq "$(api_code "$api_url/search/code?q=x+user%3Aoctocat&q=x")"    403 "code search with a second q carries no credential"
     assert_eq "$(api_code "$api_url/search/issues?q=x+user%3Aoctocat")"      403 "issue search carries no credential"
+
+    # Org Dependabot alerts: likewise, only for an owner/* entry, and only that endpoint.
+    assert_eq "$(api_code "$api_url/orgs/octocat/dependabot/alerts?state=open")" 401 "org Dependabot alerts for an owner/* entry carry the credential"
+    assert_eq "$(api_code "$api_url/orgs/github/dependabot/alerts")"             403 "another org's Dependabot alerts carry no credential"
+    assert_eq "$(api_code "$api_url/orgs/octocat/members")"                      403 "other org endpoints carry no credential"
 
     api_body "$WORK/h_up5t" "$WORK/b_up5t" --path-as-is -X POST "$up_url/repos/octocat/x/../../../user"
     assert_contains     "$(cat "$WORK/b_up5t")" 'relay authenticates only repos in' "uploads dot-segment traversal is cleaned before credential scoping"

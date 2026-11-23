@@ -1,0 +1,25 @@
+	# The GitHub API relay org fragment: org-wide reads for owner/* allowlist entries, with the
+	# injected GitHub token. Emitted only when the allowlist has such entries.
+	#
+	# An owner/* entry allowlists the owner's every repo, so an org-wide read of data the
+	# per-repo routes already serve reaches nothing new. Only named, read-only endpoints, never
+	# /orgs/OWNER/* wholesale: that also holds members, secrets, webhooks and settings, writes
+	# included. Their query parameters only filter, so they pass through as sent.
+	#
+	# Like @api_allowed, the anchored regex relies on Caddy resolving dot segments before
+	# matching, which test/github-relay-test.sh verifies.
+	@api_org_alerts {
+		method GET
+		path_regexp (?i)^/orgs/(@@OWNERS_REGEX@@)/dependabot/alerts$
+	}
+	handle @api_org_alerts {
+		import apiproxy api.github.com {
+			header_up Authorization "@@CHOPI_API_AUTH@@"
+
+			# Org pagination Links may use the id-form /organizations/{id} URL, which no route
+			# serves; rewrite it back to the name form to keep page 2 on this route.
+			header_down Link https://api\.github\.com/organizations/[0-9]+ https://api.github.com/orgs/{re.1}
+
+			import rejected_credential
+		}
+	}

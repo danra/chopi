@@ -18,8 +18,9 @@ render() { printf '%s\n' "$@" > "$WORK/allow"; "$RENDER" "$WORK/allow"; }
 
 # extract_re FILE MATCHER -- the regex from a "@MATCHER path_regexp <re>" line
 extract_re() { arity 2; grep -E "@$2 path_regexp " "$1" | sed -E 's/.*path_regexp //'; }
-# extract_query_re TEXT PREFIX -- the regex from TEXT's "PREFIXvars_regexp {http.request.uri.query} <re>" line
-extract_query_re() { arity 2; grep -E "^\s*$2vars_regexp \{http.request.uri.query\} " <<< "$1" | sed -E 's/.*query\} //'; }
+# extract_block_re TEXT DIRECTIVE -- the regex from TEXT's indented "DIRECTIVE <re>" line, a block
+# matcher's (DIRECTIVE is an ERE, so escape its braces)
+extract_block_re() { arity 2; grep -E "^\s*$2 " <<< "$1" | sed -E "s/^[[:space:]]*$2 //"; }
 # fragment FILE NAME -- FILE's text of the fragment whose header line contains NAME, up to the
 # next fragment's header (every .caddy fragment opens with a "# [The ]GitHub [API ]relay" line)
 fragment() {
@@ -87,7 +88,7 @@ assert_contains     "$allowed_block" 'Authorization "@@CHOPI_AUTH@@"' "@allowed 
 assert_not_contains "$pub_block"     '@@CHOPI_AUTH@@'                 "no anonymous @pub route carries the credential slot"
 assert_not_contains "$pub_block"     'header_up Authorization'        "  -> nor sets any credential-bearing Authorization header"
 auth_count="$(grep -c 'header_up Authorization' "$cf")"
-assert_eq "$auth_count" 4 "credential headers are injected in exactly four places (git @allowed, API @api_allowed, code search @api_code_search, uploads @uploads_allowed)"
+assert_eq "$auth_count" 5 "credential headers are injected in exactly five places (git @allowed, API @api_allowed, code search @api_code_search, org alerts @api_org_alerts, uploads @uploads_allowed)"
 # The filled credential holds a space ("Basic ...", "Bearer ..."), and Caddy parses an unquoted
 # spaced header_up value as its 3-arg find-replace form: the config validates and the relay starts
 # cleanly, but the route sends no credential at all. Only this render-level check pins the quoting.
@@ -161,8 +162,9 @@ assert_eq "$uploads_re" "$api_re" "the uploads matcher mirrors @api_allowed (sam
 
 echo "-- API @api_code_search matcher (match => proxied WITH the token: code search scoped to owner/* entries) --"
 search_block="$(fragment "$cf" 'API relay code search fragment')"
-search_re="$(extract_query_re "$search_block" "")"
-search_deny_re="$(extract_query_re "$search_block" "not ")"
+query_directive='vars_regexp \{http.request.uri.query\}'
+search_re="$(extract_block_re "$search_block" "$query_directive")"
+search_deny_re="$(extract_block_re "$search_block" "not $query_directive")"
 assert_contains "$search_re" '(soundradix)' "only the owner/* owner is a search scope (owner/repo entries don't enable search)"
 
 # search_ok QUERY -- would the raw query string QUERY take the credentialed code search route?
@@ -201,6 +203,21 @@ assert_contains "$search_block" 'method GET'                         "code searc
 assert_contains "$search_block" 'path /search/code'                  "code search only, not issues/commits/repositories search"
 assert_contains "$search_block" 'Authorization "@@CHOPI_API_AUTH@@"' "code search injects the credential"
 assert_contains "$search_block" 'import rejected_credential'         "code search converts credential-rejected 401s"
+
+echo "-- API @api_org_alerts matcher (match => proxied WITH the token: org-wide reads for owner/* entries) --"
+org_block="$(fragment "$cf" 'API relay org fragment')"
+org_re="$(extract_block_re "$org_block" 'path_regexp')"
+assert_match    "$org_re" '/orgs/soundradix/dependabot/alerts'        "an owner/* org's Dependabot alerts"
+assert_match    "$org_re" '/orgs/SoundRadix/dependabot/alerts'        "  -> case-mismatched owner"
+assert_no_match "$org_re" '/orgs/evil/dependabot/alerts'              "non-allowlisted org refused"
+assert_no_match "$org_re" '/orgs/soundradix2/dependabot/alerts'       "owner prefix lookalike refused"
+assert_no_match "$org_re" '/orgs/acme/dependabot/alerts'              "an owner with only owner/repo entries refused"
+assert_no_match "$org_re" '/orgs/soundradix/dependabot/alerts/1'      "only the alert list (no sub-paths)"
+assert_no_match "$org_re" '/orgs/soundradix/members'                  "other org endpoints refused"
+assert_no_match "$org_re" '/orgs/soundradix/dependabot/secrets'       "org Dependabot secrets refused"
+assert_contains "$org_block" 'method GET'                         "org alerts are GET-only"
+assert_contains "$org_block" 'Authorization "@@CHOPI_API_AUTH@@"' "org alerts inject the credential"
+assert_contains "$org_block" 'import rejected_credential'         "org alerts convert credential-rejected 401s"
 
 echo "-- API @api_pub matcher (anonymous lane) --"
 api_pub_re="$(extract_re "$cf" api_pub)"
@@ -286,7 +303,10 @@ assert_contains     "$empty" 'not an allowed API operation'   "empty: still emit
 assert_contains     "$empty" 'unsupported host'               "empty: catch-all sites still emitted"
 assert_not_contains "$empty" '@api_code_search'               "empty: no code search route"
 assert_contains     "$empty" 'search is allowed only as code search' "empty: the search deny still explains itself"
-assert_not_contains "$(render 'acme/tool')" '@api_code_search' "owner/repo entries alone: no code search route"
+assert_not_contains "$empty" '@api_org_alerts'                "empty: no org alerts route"
+repo_only="$(render 'acme/tool')"
+assert_not_contains "$repo_only" '@api_code_search' "owner/repo entries alone: no code search route"
+assert_not_contains "$repo_only" '@api_org_alerts'  "owner/repo entries alone: no org alerts route"
 
 echo "-- invalid entries are rejected (fail closed, non-zero exit) --"
 render 'no-slash-here' >/dev/null 2>&1; assert_nonzero "$?" "entry without owner/repo rejected"

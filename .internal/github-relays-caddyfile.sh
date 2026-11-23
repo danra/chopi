@@ -11,10 +11,10 @@
 #   fd/{$CHOPI_GIT_FD} (TCP)        git-smart-HTTP -> github.com
 #   fd/{$CHOPI_GH_FD} (unix socket) gh REST API    -> api.github.com / uploads.github.com
 #
-# with the credentialed routes included only when the allowlist has entries (code search only when
-# it has owner/* entries), and a catch-all tail on the API relay: an anonymous passthrough for
-# GitHub's signed-storage download hosts (gh follows those redirects over the socket) and a loud
-# refusal for any other Host.
+# with the credentialed routes included only when the allowlist has entries (code search and
+# org-wide reads only when it has owner/* entries), and a catch-all tail on the API relay: an
+# anonymous passthrough for GitHub's signed-storage download hosts (gh follows those redirects over
+# the socket) and a loud refusal for any other Host.
 #
 # github-relays-config.sh renders this, fills the @@CHOPI_AUTH@@ / @@CHOPI_API_AUTH@@ credential
 # slots in memory, and chopi-smokescreen pipes the result to Caddy over stdin -- so the credentials
@@ -51,7 +51,7 @@ main() {
     done
 
     # The entries' regex alternation, and the owner/* entries' owners: the owners whose every repo
-    # is allowlisted, so a code search scoped to one reaches only allowlisted repos.
+    # is allowlisted, so a code search or org-wide read scoped to one reaches only allowlisted repos.
     local allowlist_regex="" owners_regex="" line entry esc re
     for allowlist in "$@"; do
         while IFS= read -r line || [ -n "$line" ]; do
@@ -99,8 +99,8 @@ deny_pkt() {
 # caller-filled ones: @@CHOPI_AUTH@@ / @@CHOPI_API_AUTH@@ (in-memory credential fills, so this
 # generator never handles the token itself). $1 is the allowlist regex alternation; when it is
 # empty the credentialed fragments are dropped entirely, so no push route and no authed API route
-# exist at all. $2 is the owner/* owners' alternation; when it is empty the code search route is
-# dropped likewise.
+# exist at all. $2 is the owner/* owners' alternation; when it is empty the code search and org
+# routes are dropped likewise.
 emit_caddyfile() {
     arity 2
     local allowlist_regex="$1" owners_regex="$2"
@@ -109,7 +109,7 @@ emit_caddyfile() {
     [ -n "$allowlist_regex" ] && fragments+=(github-relay-allowed)
     fragments+=(github-relay-pub github-api-relay-head)
     [ -n "$allowlist_regex" ] && fragments+=(github-api-relay-allowed)
-    [ -n "$owners_regex" ] && fragments+=(github-api-relay-search)
+    [ -n "$owners_regex" ] && fragments+=(github-api-relay-search github-api-relay-orgs)
     fragments+=(github-api-relay-pub)
     [ -n "$allowlist_regex" ] && fragments+=(github-api-relay-uploads)
     fragments+=(github-api-relay-tail)
