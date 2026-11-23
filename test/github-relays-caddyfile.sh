@@ -18,6 +18,12 @@ render() { printf '%s\n' "$@" > "$WORK/allow"; "$RENDER" "$WORK/allow"; }
 
 # extract_re FILE MATCHER -- the regex from a "@MATCHER path_regexp <re>" line
 extract_re() { arity 2; grep -E "@$2 path_regexp " "$1" | sed -E 's/.*path_regexp //'; }
+# fragment FILE NAME -- FILE's text of the fragment whose header line contains NAME, up to the
+# next fragment's header (every .caddy fragment opens with a "# [The ]GitHub [API ]relay" line)
+fragment() {
+    arity 2
+    awk -v name="$2" '/^[ \t]*# (The )?GitHub (API )?relay / {f = index($0, name) > 0} f' "$1"
+}
 
 # re_match RE PATH -- does PATH match RE? Models Caddy's Go regexps with grep -E; a leading
 # (?i) -- Go's whole-pattern case-insensitivity -- maps to grep -i.
@@ -72,8 +78,8 @@ assert_match    "$pub_lfs_re" '/o/r.git/info/lfs/objects/batch'   ".git suffix i
 assert_no_match "$pub_lfs_re" '/evil/repo/info/lfs/locks'         "non-batch LFS (locks) not anonymously routed"
 
 echo "-- credential scoping: the token reaches ONLY the @allowed route (SECURITY INVARIANT) --"
-allowed_block="$(awk '/@allowed path_regexp/{f=1} /@pub_refs/{f=0} f' "$cf")"
-pub_block="$(awk '/@pub_refs/{f=1} /^# GitHub git site end/{f=0} f' "$cf")"
+allowed_block="$(fragment "$cf" 'GitHub relay allowed repos fragment')"
+pub_block="$(fragment "$cf" 'GitHub relay public repos fragment')"
 
 assert_contains     "$allowed_block" 'Authorization "@@CHOPI_AUTH@@"' "@allowed injects the credential"
 assert_not_contains "$pub_block"     '@@CHOPI_AUTH@@'                 "no anonymous @pub route carries the credential slot"
@@ -159,8 +165,8 @@ assert_match    "$api_pub_re" '/repositories/1296269/issues'    "id-form subreso
 assert_no_match "$api_pub_re" '/repositories/octocat'           "non-numeric id refused"
 
 echo "-- API credential scoping: the token reaches ONLY the @api_allowed route (SECURITY INVARIANT) --"
-api_allowed_block="$(awk '/@api_allowed path_regexp/{f=1} /@api_pub/{f=0} f' "$cf")"
-api_pub_block="$(awk '/@api_pub/{f=1} /^# GitHub API site end/{f=0} f' "$cf")"
+api_allowed_block="$(fragment "$cf" 'API relay allowed repos fragment')"
+api_pub_block="$(fragment "$cf" 'API relay public repos fragment')"
 assert_contains     "$api_allowed_block" 'Authorization "@@CHOPI_API_AUTH@@"' "@api_allowed injects the credential"
 assert_not_contains "$api_pub_block"     'Authorization'                      "the anonymous @api_pub tail carries no Authorization at all"
 assert_contains     "$api_allowed_block" 'header_down Link'                   "@api_allowed rewrites pagination Links to the name form (id-form would paginate anonymously)"
@@ -180,7 +186,7 @@ assert_contains "$api_pub_block"     'relay authenticates only repos'           
 assert_contains "$api_pub_block"     '"message":"chopi GitHub relay: not an allowed API operation"' "the API deny is a JSON message (gh displays only those)"
 
 echo "-- tail catch-alls: anonymous signed-storage passthrough; unmatched hosts fail loudly --"
-tail_block="$(awk '/^# GitHub API relay tail fragment/{f=1} f' "$cf")"
+tail_block="$(fragment "$cf" 'GitHub API relay tail fragment')"
 blob_re="$(printf '%s\n' "$tail_block" | grep -E 'header_regexp blobhost Host ' | sed -E 's/.*Host //')"
 exact_hosts="$(printf '%s\n' "$tail_block" | sed -nE 's/^[[:space:]]*header Host ([^ ]+)$/\1/p')"
 
