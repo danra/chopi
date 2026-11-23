@@ -390,7 +390,10 @@ socket with `GH_HOST=github.localhost` (which makes `gh` speak plaintext `http`,
 no CA) plus `http_unix_socket` in a throwaway config dir. The host-side token is injected
 only for allowlisted `/repos/{owner}/{repo}` requests; other repos are reached anonymously
 (public read only). GraphQL (`/graphql`) and account-level endpoints (gists, keys,
-`/user`) can't be scoped by URL path, so they are denied. Downloads that the API answers
+`/user`) can't be scoped by URL path, so they are denied. Search can't be scoped by path
+either, but code search (`gh search code ... --owner OWNER`) is served with the token when
+its query provably stays within owners that have an `owner/*` entry, by a narrow query
+grammar that the relay's refusal of any other search states. Downloads that the API answers
 with a redirect to GitHub's signed storage (Actions logs and artifacts, release assets)
 are followed through the relay anonymously. Release-asset uploads (`gh release create` /
 `gh release upload`) go to `uploads.github.com`, which the relay serves with the same

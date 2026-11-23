@@ -18,6 +18,8 @@ render() { printf '%s\n' "$@" > "$WORK/allow"; "$RENDER" "$WORK/allow"; }
 
 # extract_re FILE MATCHER -- the regex from a "@MATCHER path_regexp <re>" line
 extract_re() { arity 2; grep -E "@$2 path_regexp " "$1" | sed -E 's/.*path_regexp //'; }
+# extract_query_re TEXT PREFIX -- the regex from TEXT's "PREFIXvars_regexp {http.request.uri.query} <re>" line
+extract_query_re() { arity 2; grep -E "^\s*$2vars_regexp \{http.request.uri.query\} " <<< "$1" | sed -E 's/.*query\} //'; }
 # fragment FILE NAME -- FILE's text of the fragment whose header line contains NAME, up to the
 # next fragment's header (every .caddy fragment opens with a "# [The ]GitHub [API ]relay" line)
 fragment() {
@@ -85,7 +87,7 @@ assert_contains     "$allowed_block" 'Authorization "@@CHOPI_AUTH@@"' "@allowed 
 assert_not_contains "$pub_block"     '@@CHOPI_AUTH@@'                 "no anonymous @pub route carries the credential slot"
 assert_not_contains "$pub_block"     'header_up Authorization'        "  -> nor sets any credential-bearing Authorization header"
 auth_count="$(grep -c 'header_up Authorization' "$cf")"
-assert_eq "$auth_count" 3 "credential headers are injected in exactly three places (git @allowed, API @api_allowed, uploads @uploads_allowed)"
+assert_eq "$auth_count" 4 "credential headers are injected in exactly four places (git @allowed, API @api_allowed, code search @api_code_search, uploads @uploads_allowed)"
 # The filled credential holds a space ("Basic ...", "Bearer ..."), and Caddy parses an unquoted
 # spaced header_up value as its 3-arg find-replace form: the config validates and the relay starts
 # cleanly, but the route sends no credential at all. Only this render-level check pins the quoting.
@@ -157,6 +159,49 @@ assert_no_match "$api_re" '/repositories/1296269'      "id-form URLs never carry
 uploads_re="$(extract_re "$cf" uploads_allowed)"
 assert_eq "$uploads_re" "$api_re" "the uploads matcher mirrors @api_allowed (same allowlist scoping)"
 
+echo "-- API @api_code_search matcher (match => proxied WITH the token: code search scoped to owner/* entries) --"
+search_block="$(fragment "$cf" 'API relay code search fragment')"
+search_re="$(extract_query_re "$search_block" "")"
+search_deny_re="$(extract_query_re "$search_block" "not ")"
+assert_contains "$search_re" '(soundradix)' "only the owner/* owner is a search scope (owner/repo entries don't enable search)"
+
+# search_ok QUERY -- would the raw query string QUERY take the credentialed code search route?
+search_ok() { arity 1; re_match "$search_re" "$1" && ! re_match "$search_deny_re" "$1"; }
+assert_search()    { arity 2; if search_ok "$1"; then ok "$2"; else bad "$2"; fi; }
+assert_no_search() { arity 2; if search_ok "$1"; then bad "$2"; else ok "$2"; fi; }
+
+assert_search    'page=1&per_page=30&q=MyFunc+user%3Asoundradix'                 "gh search code --owner, as gh sends it"
+assert_search    'q=MyFunc+user%3Asoundradix&per_page=30&page=2'                 "params in another order (pagination Links)"
+assert_search    'q=MyFunc%20org:SoundRadix'                                     "org:, %20 and a raw colon, case-mismatched owner"
+assert_search    'q=user%3Asoundradix+my_func.call+language%3Acpp+extension%3Ah' "scope first, dotted word, language: and extension:"
+assert_search    'q=orange+notify+org%3Asoundradix'                              "words merely containing or/not are plain words"
+assert_no_search 'q=MyFunc'                                         "unscoped search refused (would reach every repo the token sees)"
+assert_no_search 'page=1&q=MyFunc+language%3Acpp'                   "narrowing qualifiers alone don't scope"
+assert_no_search 'q=MyFunc+user%3Aevil'                             "non-allowlisted owner refused"
+assert_no_search 'q=MyFunc+user%3Asoundradix+user%3Aevil'           "an extra non-allowlisted owner refused (scopes are OR'ed)"
+assert_no_search 'q=MyFunc+user%3Asoundradix2'                      "owner prefix lookalike refused"
+assert_no_search 'q=MyFunc+user%3Aacme'                             "an owner with only owner/repo entries refused"
+assert_no_search 'q=MyFunc+repo%3Aacme%2Ftool+user%3Asoundradix'    "repo: refused"
+assert_no_search 'q=MyFunc+in%3Afile+user%3Asoundradix'             "other qualifiers refused"
+assert_no_search 'q=-secret+user%3Asoundradix'                      "negation refused"
+assert_no_search 'q=MyFunc+-user%3Aevil+user%3Asoundradix'          "negated qualifier refused (widens the scope)"
+assert_no_search 'q=a+OR+b+user%3Asoundradix'                       "OR refused"
+assert_no_search 'q=a+and+b+user%3Asoundradix'                      "AND refused, in any case"
+assert_no_search 'q=NOT+a+user%3Asoundradix'                        "a leading NOT refused"
+assert_no_search 'q=a+user%3Asoundradix+not'                        "a trailing NOT refused"
+assert_no_search 'q=%22a+b%22+user%3Asoundradix'                    "quotes refused"
+assert_no_search 'q=%28a%29+user%3Asoundradix'                      "parentheses refused"
+assert_no_search 'q=a%2Bb+user%3Asoundradix'                        "other encoded characters refused"
+assert_no_search 'q=MyFunc+user%3Asoundradix&q=secret'              "a second q refused (GitHub might take it)"
+assert_no_search 'q=secret&q=MyFunc+user%3Asoundradix'              "  -> before the validated one too"
+assert_no_search 'q=MyFunc+user%3Asoundradix&sort=indexed'          "other params refused"
+assert_no_search 'q=MyFunc+user%3Asoundradix&page=1%26q%3Dx'        "a non-numeric page refused"
+
+assert_contains "$search_block" 'method GET'                         "code search is GET-only"
+assert_contains "$search_block" 'path /search/code'                  "code search only, not issues/commits/repositories search"
+assert_contains "$search_block" 'Authorization "@@CHOPI_API_AUTH@@"' "code search injects the credential"
+assert_contains "$search_block" 'import rejected_credential'         "code search converts credential-rejected 401s"
+
 echo "-- API @api_pub matcher (anonymous lane) --"
 api_pub_re="$(extract_re "$cf" api_pub)"
 assert_match    "$api_pub_re" '/repos/evil/repo/issues'         "non-allowlisted repo anonymously routed"
@@ -184,6 +229,7 @@ assert_contains "$rejected_block"    'GitHub rejected the relay credential'     
 assert_contains "$api_allowed_block" 'import rejected_credential'                                   "@api_allowed converts credential-rejected 401s"
 assert_contains "$api_pub_block"     'relay authenticates only repos'                               "@api_pub converts anonymous auth-required 401s"
 assert_contains "$api_pub_block"     '"message":"chopi GitHub relay: not an allowed API operation"' "the API deny is a JSON message (gh displays only those)"
+assert_contains "$api_pub_block"     '"message":"chopi GitHub relay: search is allowed only as code search' "searches off the code search route are denied with the rule, as a JSON message"
 
 echo "-- tail catch-alls: anonymous signed-storage passthrough; unmatched hosts fail loudly --"
 tail_block="$(fragment "$cf" 'GitHub API relay tail fragment')"
@@ -238,6 +284,9 @@ assert_not_contains "$empty" '@@CHOPI_API_AUTH@@'             "empty: no API cre
 assert_contains     "$empty" 'relay authenticates only repos' "empty: anonymous auth-required deny still explains itself"
 assert_contains     "$empty" 'not an allowed API operation'   "empty: still emits the API deny handler"
 assert_contains     "$empty" 'unsupported host'               "empty: catch-all sites still emitted"
+assert_not_contains "$empty" '@api_code_search'               "empty: no code search route"
+assert_contains     "$empty" 'search is allowed only as code search' "empty: the search deny still explains itself"
+assert_not_contains "$(render 'acme/tool')" '@api_code_search' "owner/repo entries alone: no code search route"
 
 echo "-- invalid entries are rejected (fail closed, non-zero exit) --"
 render 'no-slash-here' >/dev/null 2>&1; assert_nonzero "$?" "entry without owner/repo rejected"

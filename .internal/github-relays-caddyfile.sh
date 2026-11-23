@@ -11,9 +11,10 @@
 #   fd/{$CHOPI_GIT_FD} (TCP)        git-smart-HTTP -> github.com
 #   fd/{$CHOPI_GH_FD} (unix socket) gh REST API    -> api.github.com / uploads.github.com
 #
-# with the credentialed routes included only when the allowlist has entries, and a catch-all
-# tail on the API relay: an anonymous passthrough for GitHub's signed-storage download hosts
-# (gh follows those redirects over the socket) and a loud refusal for any other Host.
+# with the credentialed routes included only when the allowlist has entries (code search only when
+# it has owner/* entries), and a catch-all tail on the API relay: an anonymous passthrough for
+# GitHub's signed-storage download hosts (gh follows those redirects over the socket) and a loud
+# refusal for any other Host.
 #
 # github-relays-config.sh renders this, fills the @@CHOPI_AUTH@@ / @@CHOPI_API_AUTH@@ credential
 # slots in memory, and chopi-smokescreen pipes the result to Caddy over stdin -- so the credentials
@@ -28,7 +29,7 @@
 # involved.
 #
 # Every route drops all inbound request headers and re-adds only a fixed necessary set. The
-# injected credentials are re-added ONLY on the allowlisted @allowed / @api_allowed routes.
+# injected credentials are re-added ONLY on the routes scoped to the allowlist.
 
 set -euo pipefail
 
@@ -49,16 +50,9 @@ main() {
         fi
     done
 
-    local allowlist_regex
-    allowlist_regex="$(build_allowlist_regex "$@")"
-    emit_caddyfile "$allowlist_regex"
-}
-
-# build_allowlist_regex ALLOWLIST... -- read the allowlist files and print an regex alternation of
-# their entries, e.g. "soundradix/[^/]+|acme/tool(\.git)?". Empty output means empty allowlists.
-build_allowlist_regex() {
-    local entries_regexes=()
-    local allowlist line entry owner repo esc_owner esc_repo entry_regex
+    # The entries' regex alternation, and the owner/* entries' owners: the owners whose every repo
+    # is allowlisted, so a code search scoped to one reaches only allowlisted repos.
+    local allowlist_regex="" owners_regex="" line entry esc re
     for allowlist in "$@"; do
         while IFS= read -r line || [ -n "$line" ]; do
             strip_comment_and_trim_into entry "$line"
@@ -67,24 +61,18 @@ build_allowlist_regex() {
                 echo "github-relays-caddyfile.sh: $allowlist: allowlist entry needs owner/repo or owner/*, using only A-Za-z0-9._-: '$entry'" >&2
                 exit 2
             fi
-            owner="${entry%%/*}"
-            repo="${entry#*/}"
-            esc_owner="${owner//./\\.}"
-            if [ "$repo" = "*" ]; then
-                entry_regex="$esc_owner/[^/]+"
+            # is_allowlist_entry admits no regex metacharacter but the dot (and owner/*'s star)
+            esc="${entry//./\\.}"
+            if [[ $esc == */\* ]]; then
+                owners_regex+="${owners_regex:+|}${esc%/*}"
+                re="${esc%/*}/[^/]+"
             else
-                esc_repo="${repo//./\\.}"
-                entry_regex="$esc_owner/$esc_repo(\\.git)?"
+                re="$esc(\\.git)?"
             fi
-            entries_regexes+=("$entry_regex")
+            allowlist_regex+="${allowlist_regex:+|}$re"
         done < "$allowlist"
     done
-
-    if [ "${#entries_regexes[@]}" -eq 0 ]; then
-        return 0
-    fi
-    local IFS='|'
-    printf '%s' "${entries_regexes[*]}"
+    emit_caddyfile "$allowlist_regex" "$owners_regex"
 }
 
 # Is ENTRY a GitHub allowlist entry: owner/repo, or owner/* for the owner's every repo? A generic
@@ -111,15 +99,17 @@ deny_pkt() {
 # caller-filled ones: @@CHOPI_AUTH@@ / @@CHOPI_API_AUTH@@ (in-memory credential fills, so this
 # generator never handles the token itself). $1 is the allowlist regex alternation; when it is
 # empty the credentialed fragments are dropped entirely, so no push route and no authed API route
-# exist at all.
+# exist at all. $2 is the owner/* owners' alternation; when it is empty the code search route is
+# dropped likewise.
 emit_caddyfile() {
-    arity 1
-    local allowlist_regex="$1"
+    arity 2
+    local allowlist_regex="$1" owners_regex="$2"
 
     local fragments=(github-relay-head)
     [ -n "$allowlist_regex" ] && fragments+=(github-relay-allowed)
     fragments+=(github-relay-pub github-api-relay-head)
     [ -n "$allowlist_regex" ] && fragments+=(github-api-relay-allowed)
+    [ -n "$owners_regex" ] && fragments+=(github-api-relay-search)
     fragments+=(github-api-relay-pub)
     [ -n "$allowlist_regex" ] && fragments+=(github-api-relay-uploads)
     fragments+=(github-api-relay-tail)
@@ -142,6 +132,7 @@ emit_caddyfile() {
 
     fill_slots "$text" \
         @@ALLOWLIST_REGEX@@ "$allowlist_regex" \
+        @@OWNERS_REGEX@@ "$owners_regex" \
         @@DENY_PKT_FETCH@@ "$deny_fetch" \
         @@DENY_PKT_PUSH@@ "$deny_push" \
         @@DENY_PKT_AUTH_FETCH@@ "$deny_auth_fetch" \

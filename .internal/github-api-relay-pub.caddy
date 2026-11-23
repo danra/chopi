@@ -24,6 +24,14 @@
 	# nonexistent repos alike, but a 404 here is also every legitimate miss on a public repo
 	# (an absent branch or issue number), so converting would mislabel real answers.
 
+	# Searches the code search route didn't take (no owner/* entry, another search API, or a
+	# query outside its grammar): state the rule, so the agent can rephrase.
+	@api_search path /search /search/*
+	handle @api_search {
+		header Content-Type application/json
+		respond `{"message":"chopi GitHub relay: search is allowed only as code search (GET /search/code) scoped to an owner with an owner/* entry in chopi's config/github-allowlist. Its q may hold only plain words, at least one org:OWNER or user:OWNER naming such an owner, and language:X or extension:X; no repo: or other qualifiers, quotes, -negation, or AND/OR/NOT. Only page and per_page may accompany q."}` 403
+	}
+
 	# GraphQL (/graphql) names its repo in the POST body, not the URL, so it cannot be scoped to
 	# the allowlist here; it and account-level endpoints (gists, keys, /user) fall through to deny.
 	handle {

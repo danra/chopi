@@ -1,0 +1,31 @@
+	# The GitHub API relay code search fragment: code search scoped to owner/* allowlist entries,
+	# with the injected GitHub token. Emitted only when the allowlist has such entries.
+	#
+	# Search is not repo-scoped by its path, so unscoped it would carry the token to every
+	# private repo the token can see. Credentialed only when the query provably stays inside
+	# owners whose every repo is allowlisted: a whitelist grammar of plain words, at least one
+	# org:/user: naming such an owner, and the narrowing language:/extension: qualifiers.
+	# Nothing else, notably no repo: (an owner/repo entry doesn't enable search), no quotes,
+	# and no -negation (-user:x widens the scope).
+	#
+	# The raw query string is validated whole, and forwarded byte for byte, so GitHub parses
+	# exactly what was validated: just one q (a q GitHub might prefer over the validated one
+	# can't ride along) and numeric page/per_page, in any order. Words and values are drawn
+	# from characters query encoding leaves alone; separators are + or %20, colons : or %3A.
+	# The query is anchored on its first scope term: words before it, words or scopes after.
+	# The @api_search deny message in github-api-relay-pub.caddy restates this grammar for the
+	# agent: keep the two in step.
+	@api_code_search {
+		method GET
+		path /search/code
+		vars_regexp {http.request.uri.query} (?i)^((page|per_page)=[0-9]+&)*q=(((language|extension)(:|%3A))?[a-z0-9_][a-z0-9_.-]*(\+|%20)+)*(org|user)(:|%3A)(@@OWNERS_REGEX@@)((\+|%20)+(((language|extension)(:|%3A))?[a-z0-9_][a-z0-9_.-]*|(org|user)(:|%3A)(@@OWNERS_REGEX@@)))*(&(page|per_page)=[0-9]+)*$
+		# Scope qualifiers are OR'ed with each other, and boolean operators would combine terms in
+		# ways the grammar can't vouch for: refuse AND/OR/NOT as words.
+		not vars_regexp {http.request.uri.query} (?i)(=|\+|%20)(and|or|not)(\+|%20|&|$)
+	}
+	handle @api_code_search {
+		import apiproxy api.github.com {
+			header_up Authorization "@@CHOPI_API_AUTH@@"
+			import rejected_credential
+		}
+	}

@@ -28,8 +28,11 @@
 #   4k. (opt) an allowlisted repo's pagination Links keep naming the repo  (page 2 stays authenticated)
 #   4m. (opt) a release with an asset: gh POSTs the asset to uploads.github.com (the API's
 #       upload_url host) over the same socket, and the relay serves it authed
+#   4n. search off the scoped code search route is refused, stating the rule; (opt) gh search
+#       code scoped to the allowlisted owner works, and its pagination Link stays on the route
 #   5. a credential GitHub rejects fails with an informative error message (git, API, and
-#      uploads), and a dot-segment traversal cannot carry the credential past the allowlist
+#      uploads), a dot-segment traversal cannot carry the credential past the allowlist, and
+#      code search carries it only for a query scoped to an owner/* entry
 
 set -uo pipefail
 
@@ -271,6 +274,8 @@ api_url="http://api.github.localhost"
 api_code() { curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SESSION_GH_SOCK" "$@"; }
 # api_body HDRS BODY [curl-opts...] URL -- request over the socket, saving headers and body
 api_body() { local hdrs="$1" body="$2"; shift 2; curl -s -D "$hdrs" -o "$body" --unix-socket "$SESSION_GH_SOCK" "$@"; }
+# link_header HDRS -- the Link header line saved by api_body, CR-stripped; empty if none
+link_header() { grep -i '^link:' "$1" | tr -d '\r'; }
 
 # 4a. anonymous API read is driven by gh and no token leaks to a non-allowlisted repo.
 #     torvalds/linux isn't allowlisted, so the relay must wipe gh's placeholder Authorization
@@ -406,7 +411,7 @@ fi
 #     the Link verbatim, so the relay must hand it back in the /repos/{owner}/{repo} form.
 if [ -n "${ALLOW_REPO:-}" ] && [ -n "$TOKEN" ]; then
     api_body "$WORK/h_page" "$WORK/b_page" "$api_url/repos/$ALLOW_REPO/commits?per_page=1"
-    page_link="$(grep -i '^link:' "$WORK/h_page" | tr -d '\r')"
+    page_link="$(link_header "$WORK/h_page")"
     if [ -z "$page_link" ]; then
         echo "  note: $ALLOW_REPO has a single commit -- no Link header to check the pagination rewrite on"
     else
@@ -452,6 +457,30 @@ if [ -n "${ALLOW_REPO:-}" ] && [ -n "$TOKEN" ]; then
     if [ -n "$rel_id" ]; then
         gh_relay api -X DELETE "repos/$ALLOW_REPO/releases/$rel_id" >/dev/null 2>&1 \
             || echo "  note: could not delete draft release $rel_tag (id $rel_id) on $ALLOW_REPO -- remove it manually"
+    fi
+fi
+
+# 4n. search names no repo in its path, so only code search scoped to an owner/* entry is
+#     credentialed; anything else is refused by the relay itself, with the rule.
+if gh_relay search code chopi-e2e >/dev/null 2>"$WORK/gh_search_err"; then
+    bad "unscoped gh search code unexpectedly succeeded"
+else
+    assert_contains "$(cat "$WORK/gh_search_err")" 'search is allowed only as code search' "unscoped code search refused, and gh displays the rule"
+fi
+if [ -n "${ALLOW_REPO:-}" ] && [ -n "$TOKEN" ]; then
+    search_owner="${ALLOW_REPO%%/*}"
+    if gh_relay search code README --owner "$search_owner" --limit 1 >/dev/null 2>"$WORK/gh_search_err"; then
+        ok "gh search code --owner $search_owner goes through the relay"
+    else
+        bad "gh search code --owner $search_owner failed:"; sed 's/^/      /' "$WORK/gh_search_err"
+    fi
+    # gh follows GitHub's pagination Link verbatim, so its query must stay in the grammar too
+    api_body "$WORK/h_search" "$WORK/b_search" "$api_url/search/code?q=README+user%3A$search_owner&per_page=1"
+    next="$(link_header "$WORK/h_search" | sed -nE 's/.*<([^>]+)>; rel="next".*/\1/p')"
+    if [ -z "$next" ]; then
+        echo "  note: code search for README in $search_owner has a single page -- no Link to follow"
+    else
+        assert_eq "$(api_code "http://${next#https://}")" 200 "code search pagination Link stays on the credentialed route"
     fi
 fi
 
@@ -518,6 +547,13 @@ else
 
     api_body "$WORK/h_up5n" "$WORK/b_up5n" -X POST "$up_url/repos/torvalds/linux/releases/1/assets?name=x"
     assert_contains "$(cat "$WORK/b_up5n")" 'relay authenticates only repos in' "non-allowlisted asset upload is refused naming the allowlist"
+
+    # Code search: the bogus credential tells the routes apart, as above. A query scoped to the
+    # owner/* entry rides the credentialed route (GitHub's 401); every other is the relay's 403.
+    assert_eq "$(api_code "$api_url/search/code?q=x+user%3Aoctocat")"        401 "code search scoped to an owner/* entry carries the credential"
+    assert_eq "$(api_code "$api_url/search/code?q=x")"                       403 "unscoped code search carries no credential"
+    assert_eq "$(api_code "$api_url/search/code?q=x+user%3Aoctocat&q=x")"    403 "code search with a second q carries no credential"
+    assert_eq "$(api_code "$api_url/search/issues?q=x+user%3Aoctocat")"      403 "issue search carries no credential"
 
     api_body "$WORK/h_up5t" "$WORK/b_up5t" --path-as-is -X POST "$up_url/repos/octocat/x/../../../user"
     assert_contains     "$(cat "$WORK/b_up5t")" 'relay authenticates only repos in' "uploads dot-segment traversal is cleaned before credential scoping"

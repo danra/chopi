@@ -7,7 +7,8 @@
 #
 # One entry per line, naming a repository on github.com (the "github.com/" prefix is implicit),
 # in one of two forms:
-#   owner/*      -- any repository under that owner or org
+#   owner/*      -- any repository under that owner or org; also enables code search
+#                   scoped to it (gh search code --owner owner)
 #   owner/repo   -- exactly that repository
 #
 # Examples (uncomment / edit):

@@ -23,7 +23,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 # The GitHub relay has two shapes: a populated allowlist (credentialed routes present) and an
 # empty one (anonymous routes only).
-printf 'owner/repo\n' > "$WORK/allow-populated"
+printf 'owner/repo\nother-owner/*\n' > "$WORK/allow-populated"
 : > "$WORK/allow-empty"
 "$CHOPI_DIR/.internal/github-relays-caddyfile.sh" "$WORK/allow-populated" > "$WORK/github-populated"
 "$CHOPI_DIR/.internal/github-relays-caddyfile.sh" "$WORK/allow-empty" > "$WORK/github-empty"
