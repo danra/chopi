@@ -51,13 +51,14 @@ case "$CHOPI_RUN_DIR" in
     *) CHOPI_RUN_DIR="$PWD/$CHOPI_RUN_DIR" ;;
 esac
 PROXY_RUN_DIR="${CHOPI_RUN_DIR%/}/run"
-# A custom proxy config file, which the sandbox config's CHOPI_PROXY_RULES or CHOPI_GITHUB_ALLOWLIST
-# names, must be in this dir (see proxy_config_paths).
+# A custom network config, which the sandbox config's CHOPI_NETWORK_CONFIG names, must be in this
+# dir (see proxy_config_paths).
 PROXY_CONFIG_DIR="${CHOPI_RUN_DIR%/}/config"
-# The file names of the default proxy config, under $CHOPI_DIR/config (see proxy_config_paths), and
-# of a workspace's own proxy config, in its dir (see workspace_config_dir).
-DEFAULT_PROXY_RULES="proxy-rules.yaml"
-DEFAULT_GITHUB_ALLOWLIST="github-allowlist"
+# The file name of the default network config, under $CHOPI_DIR/config (see proxy_config_paths),
+# and of a workspace's own network config, in its dir (see workspace_config_dir).
+DEFAULT_NETWORK_CONFIG="network.yaml"
+# The template to start a network config from, under $CHOPI_DIR.
+NETWORK_TEMPLATE="config/templates/network.template.yaml"
 # The name of a workspace's own sandbox config, in its dir, adding to the base sandbox config
 # (see load_workspace_sandbox_config).
 WORKSPACE_SANDBOX_CONFIG="sandbox.sh"
@@ -672,7 +673,7 @@ running_session_configs() {
 }
 
 # Set array VAR to the proxy config files a proxy may read, each once: the FILEs given, the default
-# files, and those running sessions' proxies read (running_session_configs). A file may be missing:
+# file, and those running sessions' proxies read (running_session_configs). A file may be missing:
 # a workspace may have no file there yet. Fails on a path with a newline, VAR then untouched, as on
 # any failure: never a partial list.
 #
@@ -683,15 +684,14 @@ proxy_config_files() {
     running_session_configs _pcf_listed || return 1
     # Listed one per line, below.
     reject_newline_path "$@" "$CHOPI_DIR" || return 1
-    readarray -t "$_pcf_var" < <(printf '%s\n' "$@" "$CHOPI_DIR/config/$DEFAULT_PROXY_RULES" \
-        "$CHOPI_DIR/config/$DEFAULT_GITHUB_ALLOWLIST" "${_pcf_listed[@]+"${_pcf_listed[@]}"}" \
-        | awk '!seen[$0]++')
+    readarray -t "$_pcf_var" < <(printf '%s\n' "$@" "$CHOPI_DIR/config/$DEFAULT_NETWORK_CONFIG" \
+        "${_pcf_listed[@]+"${_pcf_listed[@]}"}" | awk '!seen[$0]++')
 }
 
 # Set array VAR to every path deciding which proxy config a session's proxy reads, now or as a later
 # session starts (resolution_paths): PROXY_CONFIG_DIR's, where a custom one must be, as is a repo's
 # own (workspace_config_dir) -- the whole dir, so a file made there later is covered too; and those
-# of the files proxies may read (proxy_config_files) -- the default files, which may link elsewhere,
+# of the files proxies may read (proxy_config_files) -- the default file, which may link elsewhere,
 # through any number of links, and the running sessions', should a link have been repointed since
 # one started. Every session keeps its command from changing them all, as a safe write target must
 # not overlap them. On failure VAR is left untouched, never a partial list.
@@ -709,7 +709,7 @@ proxy_config_paths() {
 }
 
 # Write the Seatbelt profile denying the sandboxed command any change to the proxy's config to FILE
-# (proxy_config_paths): a command that could rewrite its rules or GitHub allowlist could lift the
+# (proxy_config_paths): a command that could rewrite its network config could lift the
 # outgoing limits of every session, mid-session even, as the proxy hot-reloads them. Whatever grant
 # covers one -- the workspace, the sandbox config's, safehouse's own, a trusted .safehouse's -- this
 # deny, appended after every file grant, comes last among the matching rules and wins: nothing in
@@ -752,15 +752,14 @@ write_proxy_network_profile() {
     } >"$file"
 }
 
-# Print the macOS banner group of the proxy's reloads of config file FILE, the rules or the GitHub
-# allowlist. The proxies of every session reading FILE share the group. They all reload the same
-# edit, so a broken edit shows a single banner, rather than one per session. The next good edit's
-# confirmation replaces that banner, whichever session's proxy reloads the edit first.
+# Print the macOS banner group of the proxy's reloads of network config file FILE. The proxies of
+# every session reading FILE share the group. They all reload the same edit, so a broken edit shows
+# a single banner, rather than one per session. The next good edit's confirmation replaces that
+# banner, whichever session's proxy reloads the edit first.
 #
 # Sharing a group works only among sessions whose reloads of FILE can't differ. Each KEY sets apart
-# the sessions whose reloads can differ: the file FILE is taken up with, base or added, and, for the
-# allowlist, where the session takes its GitHub token from (gh_token_source), which the relays'
-# render depends on.
+# the sessions whose reloads can differ: the files FILE is taken up with, base and added, and where
+# the session takes its GitHub token from (gh_token_source), which the relays' render depends on.
 #
 # usage: reload_banner_group FILE KEY...
 reload_banner_group() {
@@ -800,23 +799,22 @@ is_github_relay_reroute_effective() {
     return 0
 }
 
-# run_chopi_smokescreen DIR PARENT RULES ALLOWLIST RENDER RELAY_LOG ADD_RULES ADD_ALLOWLIST -- run a
-# session's proxy and its GitHub relays on the rules file RULES and the GitHub allowlist file
-# ALLOWLIST. ADD_RULES and ADD_ALLOWLIST add to RULES and ALLOWLIST, and either may be missing.
+# run_chopi_smokescreen DIR PARENT NETWORK RENDER RELAY_LOG ADD_NETWORK -- run a session's proxy and
+# its GitHub relays on the network config file NETWORK. ADD_NETWORK adds to NETWORK, and may be
+# missing.
 #
-# Caddy's config is the output of RENDER, run on ALLOWLIST. The proxy runs RENDER again on each
-# edit to ALLOWLIST, and on a save with no edit. Caddy's output goes to RELAY_LOG. The API relay
-# listens on DIR/gh.sock, and the proxy reports its ports in DIR/ports. The proxy stops once process
-# PARENT exits.
+# Caddy's config is the output of RENDER, run with one argument per GitHub allowlist entry. The
+# proxy runs RENDER again whenever the allowlist changes, and on a save with no edit. Caddy's output goes to RELAY_LOG. The API
+# relay listens on DIR/gh.sock, and the proxy reports its ports in DIR/ports. The proxy stops once
+# process PARENT exits.
 #
 # The function execs, so its PID is the proxy's: run it in the background.
 run_chopi_smokescreen() {
-    arity 8
-    local dir="$1" parent="$2" rules="$3" allowlist="$4" render="$5" relay_log="$6"
-    local add_rules="$7" add_allowlist="$8"
+    arity 6
+    local dir="$1" parent="$2" network="$3" render="$4" relay_log="$5" add_network="$6"
     exec "$SMOKESCREEN_BIN" --dir "$dir" --parent "$parent" --relay-log "$relay_log" \
-        --rules "$rules" --github-allowlist "$allowlist" --add-rules "$add_rules" \
-        --add-github-allowlist "$add_allowlist" \
+        --network "$network" --add-network "$add_network" \
+        --network-template "$CHOPI_DIR/$NETWORK_TEMPLATE" \
         --relay-config "$render" -- --config-file "$CHOPI_DIR/.internal/smokescreen-config.yaml"
 }
 

@@ -1,43 +1,57 @@
 package main
 
-// The rules: chopi's base rules (--rules), and a workspace's own (--add-rules), adding to them for
-// the workspace's sessions alone, both of one format; and likewise a GitHub allowlist added to the
-// base one (--add-github-allowlist). An added file may be missing, which adds nothing, and may
-// appear, or go, mid-session: it is watched as the base ones are.
+// The network config is chopi's base network.yaml (--network), plus a workspace's own
+// (--add-network), which adds to it for the workspace's sessions alone. Each file names the hosts
+// the proxy allows and denies, and the GitHub repos the relays credential.
+//
+// The added file may be missing, which adds nothing. It may also appear or go mid-session: the
+// proxy watches it as it watches the base file.
 
 import (
 	"fmt"
+	"regexp"
 
 	"github.com/stripe/smokescreen/pkg/smokescreen"
 	acl "github.com/stripe/smokescreen/pkg/smokescreen/acl/v1"
 	"gopkg.in/yaml.v2"
 )
 
-// rulesConfig is all a rules file may hold, the base one and one added to it alike. Nothing in it
-// can loosen how the proxy enforces: every file's hosts go on the one global allow list, beneath the
-// one global deny list (newRules), so a file adding to the base widens only what the sessions given
-// it reach, and narrows it as it pleases.
-type rulesConfig struct {
-	AllowedDomains []string `yaml:"allowed_domains"`
-	GlobalDenyList []string `yaml:"global_deny_list"`
+// networkConfig is all a network config file may hold. Nothing in it can loosen how the proxy
+// enforces the rules: every file's hosts go on one global allow list, and the one global deny list
+// overrides it (newRules). So a file adding to the base config affects only the sessions given it:
+// it can widen what they reach, and narrow it freely.
+type networkConfig struct {
+	AllowedDomains  []string `yaml:"allowed_domains"`
+	GlobalDenyList  []string `yaml:"global_deny_list"`
+	GitHubAllowlist []string `yaml:"github_allowlist"`
 }
 
-// parseRules parses content, the rules at path: none for nil content. A key other than
-// rulesConfig's is refused, rather than silently ignored -- smokescreen's own format's included,
-// which the rules no longer take -- as is a host that isn't one. Each refusal names the file and the
-// list, for the user to know what to fix.
-func parseRules(path string, content []byte) (rulesConfig, error) {
-	var c rulesConfig
+// networkKeys lists networkConfig's keys, for an error to say what a file may hold.
+const networkKeys = "allowed_domains, global_deny_list and github_allowlist"
+
+// allowlistEntry matches a GitHub allowlist entry: owner/repo, or owner/* for all the owner's
+// repos. github-relays-caddyfile.sh's is_allowlist_entry, which renders the relays from the
+// entries, checks the same. It is a sanity check that keeps a config value safe, and doesn't
+// follow GitHub's actual naming rules.
+var allowlistEntry = regexp.MustCompile(`^[A-Za-z0-9._-]+/([A-Za-z0-9._-]+|\*)$`)
+
+// parseNetwork parses content, the network config at path. Nil content is an empty config.
+//
+// It refuses a key networkConfig lacks, rather than silently ignoring it. It also refuses an
+// invalid host or GitHub allowlist entry. Each refusal names the file and the list, so the user
+// knows what to fix.
+func parseNetwork(path string, content []byte) (networkConfig, error) {
+	var c networkConfig
 	if err := yaml.UnmarshalStrict(content, &c); err != nil {
-		return c, fmt.Errorf("%s: %w (rules may only have allowed_domains and global_deny_list)", path, err)
+		return c, fmt.Errorf("%s: %w (a network config may only have %s)", path, err, networkKeys)
 	}
 	for _, hosts := range []struct {
 		list  string
 		globs []string
 	}{{"allowed_domains", c.AllowedDomains}, {"global_deny_list", c.GlobalDenyList}} {
 		for _, glob := range hosts.globs {
-			// smokescreen's own refusal names the list, given as its service, but for that of an
-			// empty glob, which names nothing.
+			// smokescreen's own refusal names the list, passed as its service. Its refusal of an
+			// empty glob names nothing, so refuse that here.
 			if glob == "" {
 				return c, fmt.Errorf("%s: %s: a host cannot be empty", path, hosts.list)
 			}
@@ -46,12 +60,17 @@ func parseRules(path string, content []byte) (rulesConfig, error) {
 			}
 		}
 	}
+	for _, entry := range c.GitHubAllowlist {
+		if !allowlistEntry.MatchString(entry) {
+			return c, fmt.Errorf("%s: github_allowlist: %q needs owner/repo or owner/*, using only A-Za-z0-9._-", path, entry)
+		}
+	}
 	return c, nil
 }
 
-// newRules is the rules allowing allowed and denying deny, deny winning: smokescreen checks its global
-// deny list before its global allow list, and the default rule, which chopi's requests have no
-// role but go to, allows nothing of its own and enforces.
+// newRules returns the rules allowing allowed and denying deny, with deny winning: smokescreen
+// checks its global deny list before its global allow list. chopi's requests have no role, so they
+// go to the default rule, which allows nothing of its own and enforces.
 func newRules(conf *smokescreen.Config, allowed, deny []string) (*acl.ACL, error) {
 	return acl.New(conf.Log, &acl.YAMLConfig{
 		Version:         "v1",
@@ -62,48 +81,63 @@ func newRules(conf *smokescreen.Config, allowed, deny []string) (*acl.ACL, error
 	}, conf.DisabledAclPolicyActions)
 }
 
-// loadRules loads the rules from the contents of the base rules file, at basePath, and of the one
-// added to it, at addedPath: nil content for one missing. The paths are for errors to name, each
-// naming the file to fix. It returns too the rules' gitHubExfiltration refusals, for the caller to
-// decide on, each naming a file allowing its hosts: every file allowing any is refused, for all of
-// them to be fixed at once.
-func loadRules(conf *smokescreen.Config, basePath, addedPath string, baseContent, addedContent []byte) (*acl.ACL, []*exfiltrationError, error) {
-	type file struct {
-		path   string
-		config rulesConfig
-	}
-	var files []file
+// configContent is a network config file's content, with its path for errors to name. content is
+// nil for a missing added file. config is the parsed content (parseNetwork), parsed as it is read,
+// and err is parseNetwork's refusal.
+type configContent struct {
+	path    string
+	content []byte
+	config  networkConfig
+	err     error
+}
+
+// newConfigContent parses content, the content of the network config file at path.
+func newConfigContent(path string, content []byte) configContent {
+	c, err := parseNetwork(path, content)
+	return configContent{path: path, content: content, config: c, err: err}
+}
+
+// network is the config taken up from the network config files: the rules, the GitHub allowlist
+// the relays are rendered from, and the rules' gitHubExfiltration refusals, for the caller to
+// decide on. The allowlist joins every file's entries, in order.
+type network struct {
+	rules        *acl.ACL
+	exfiltration []*exfiltrationError
+	allowlist    []string
+}
+
+// loadNetwork loads the network config from the parsed contents of its files, the base file first.
+//
+// Each gitHubExfiltration refusal names a file that allows the refused hosts. loadNetwork refuses
+// every file that allows any, so the user can fix them all at once.
+func loadNetwork(conf *smokescreen.Config, files []configContent) (*network, error) {
 	var allowed, deny []string
-	for _, f := range []struct {
-		path    string
-		content []byte
-	}{{basePath, baseContent}, {addedPath, addedContent}} {
-		c, err := parseRules(f.path, f.content)
-		if err != nil {
-			return nil, nil, err
+	n := &network{}
+	for _, f := range files {
+		if f.err != nil {
+			return nil, f.err
 		}
-		files = append(files, file{f.path, c})
-		allowed = append(allowed, c.AllowedDomains...)
-		deny = append(deny, c.GlobalDenyList...)
+		allowed = append(allowed, f.config.AllowedDomains...)
+		deny = append(deny, f.config.GlobalDenyList...)
+		n.allowlist = append(n.allowlist, f.config.GitHubAllowlist...)
 	}
 	rules, err := newRules(conf, allowed, deny)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	// Each file allows a subset of what the files together allow, beneath the same deny list: when
-	// they together allow no GitHub host, no file does, and one rule set is all it takes to know.
+	n.rules = rules
+	// If the files together allow no GitHub host, no file alone does, so there is no file to name.
 	if gitHubExfiltration(rules, "") == nil {
-		return rules, nil, nil
+		return n, nil
 	}
-	var refusals []*exfiltrationError
 	for _, f := range files {
-		fileRules, err := newRules(conf, f.config.AllowedDomains, deny)
+		rules, err := newRules(conf, f.config.AllowedDomains, deny)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
-		if e := gitHubExfiltration(fileRules, f.path); e != nil {
-			refusals = append(refusals, e)
+		if e := gitHubExfiltration(rules, f.path); e != nil {
+			n.exfiltration = append(n.exfiltration, e)
 		}
 	}
-	return rules, refusals, nil
+	return n, nil
 }

@@ -14,7 +14,7 @@
 #                               per host per session, no deny hook
 #                             anything else -> run the deny hook, print a loud DENY line
 #                           allowed -> nothing to show, drop it
-#     no  -> format-reload.jq a hot-reload line of the rules or the GitHub allowlist? render
+#     no  -> format-reload.jq a hot-reload line of the network config? render
 #                           it: plain for a reload, loud for a failed one (the previous
 #                           config stays in effect)
 #       no  -> format-misc.jq drop the known noise, pass anything else through unchanged
@@ -61,11 +61,9 @@ known_deny_seen() {
 #                     known denies, see below -- or "" for none. The proxy passes notify_deny
 #                     (pops a macOS banner); the tests pass "" so a test run never fires
 #                     real notifications.
-#   <on_reload_cmd>   or "" for none. classify_log calls it as
-#                     `<on_reload_cmd> failed <kind> <line>` once per failed reload, and as
-#                     `<on_reload_cmd> ok <kind> <line>` once per successful one. <kind> is
-#                     which config reloaded, "rules" or "allowlist" (the GitHub allowlist).
-#                     <line> is the raw log line, which names the file.
+#   <on_reload_cmd>   or "" for none. classify_log calls it as `<on_reload_cmd> failed <line>`
+#                     once per failed reload, and as `<on_reload_cmd> ok <line>` once per
+#                     successful one. <line> is the raw log line, which names the file.
 #                     A failure means the user's edit did NOT take effect, which they must hear
 #                     about as surely as a DENY; a success makes any earlier failure of that
 #                     file's stale. The proxy passes notify_reload (pops a macOS banner, a
@@ -94,21 +92,19 @@ known_deny_seen() {
 # surfacing the raw line.
 classify_log() {
     arity 4
-    local script="$1" on_deny="$2" on_reload="$3" verbose="$4" line host known reload_line status kind
+    local script="$1" on_deny="$2" on_reload="$3" verbose="$4" line host known reload_line status
     # Hosts whose denylist denial was already logged this session (read by known_deny_seen)
     local -a known_seen=()
     while IFS= read -r line || [ -n "$line" ]; do
         [ "$verbose" = true ] && printf '%s\n' "$line"
         # Matched on the raw text, ahead of any jq, so a failing filter can't swallow the alert.
         if [ -n "$on_reload" ]; then
-            status="" kind=""
+            status=""
             case "$line" in
-                *'"msg":"egress ACL reload failed'*) status=failed kind=rules ;;
-                *'"msg":"egress ACL reloaded"'*) status=ok kind=rules ;;
-                *'"msg":"GitHub allowlist reload failed'*) status=failed kind=allowlist ;;
-                *'"msg":"GitHub allowlist reloaded"'*) status=ok kind=allowlist ;;
+                *'"msg":"network config reload failed'*) status=failed ;;
+                *'"msg":"network config reloaded"'*) status=ok ;;
             esac
-            [ -z "$kind" ] || "$on_reload" "$status" "$kind" "$line"
+            [ -z "$status" ] || "$on_reload" "$status" "$line"
         fi
         if [ -n "$(printf '%s\n' "$line" | jq -R -r -f "$CONNECTION_FILTER")" ]; then
             # deny-host.jq decides deny-or-allow; if it fails we can't tell, so surface the
@@ -132,7 +128,7 @@ classify_log() {
                     --arg host "$host" --arg known "$known" \
                     -f "$FORMAT_DENY_FILTER" || surface_raw "$verbose" "$line"
             fi
-        elif [[ "$line" == *'"msg":"egress ACL reload'* || "$line" == *'"msg":"GitHub allowlist reload'* ]] && \
+        elif [[ "$line" == *'"msg":"network config reload'* ]] && \
              reload_line=$(printf '%s\n' "$line" | jq -R -r -L "$JQ_LIB_DIR" \
                 --arg script "$script" \
                 -f "$FORMAT_RELOAD_FILTER") && [ -n "$reload_line" ]; then

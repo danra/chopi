@@ -31,46 +31,47 @@ Before first use, review the configuration.
 
 ## Configuration
 
-The proxy rules, `config/proxy-rules.yaml`, set what the session's proxy lets through:
+The network config, `config/network.yaml`, sets what the session's proxy lets through:
 
 ```yaml
 allowed_domains:      # the hosts the proxy allows; "*.example.com" for subdomains
   - pypi.org
 global_deny_list:     # hosts the proxy denies even where allowed, without an alert
   - "*.datadoghq.com"
+github_allowlist:     # repos the relays use your GitHub token for: push, private repos
+  - owner/repo
+  - owner/*
 ```
 
-To set the GitHub repos allowlist, edit `config/github-allowlist`.
+Listing a host in `global_deny_list` keeps its blocked requests (telemetry, auto-updates etc.)
+from spamming you with notifications.
 
-Listing a host in the rules' `global_deny_list` keeps its blocked requests (telemetry,
-auto-updates etc.) from spamming you with notifications.
+Edits take effect immediately, even in a running `chopi` session. When you change
+`github_allowlist`, or save the file with no edit, the session's proxy also takes up any GitHub
+token that `gh` has replaced since the session started.
 
-Edits take effect immediately, even in a running `chopi` session. When you edit the allowlist, the
-session's proxy also takes up any GitHub token that `gh` has replaced since the session started.
-
-Those files apply to every project. To allow a host or a repo for a single project, put it in
-that repo's own config instead. The repo's config adds to the base files, for the repo's sessions
-alone. It lives in `~/.chopi/config/workspaces/`, in a dir named for the repo's path, every
-character but a letter, digit or dash made a dash (as Claude Code names its project dirs; a very
-long one is cut short), then a digest of the path, telling apart repos whose paths would otherwise
-name the same dir. A session sets `$CHOPI_WORKSPACE_PROXY_RULES` and
-`$CHOPI_WORKSPACE_GITHUB_ALLOWLIST` to the paths of the repo's files, and Claude is told to quote
-those paths when it suggests adding to a file. `chopi --config-paths`, run anywhere in the repo,
-prints the paths too. E.g. for `~/dev/myapp`:
+That file applies to every project. To allow a host or a repo for a single project, put it in
+that repo's own network config instead. The repo's network config adds to the base one, for the
+repo's sessions alone. It lives in `~/.chopi/config/workspaces/`, in a dir named for the repo's
+path, every character but a letter, digit or dash made a dash (as Claude Code names its project
+dirs; a very long one is cut short), then a digest of the path, telling apart repos whose paths
+would otherwise name the same dir. A session sets `$CHOPI_WORKSPACE_NETWORK_CONFIG` to the path
+of the repo's network config, and Claude is told to quote that path when it suggests adding to the
+file. `chopi --config-paths`, run anywhere in the repo, prints the path too. E.g. for
+`~/dev/myapp`:
 
 ```
 ~/.chopi/config/workspaces/-Users-me-dev-myapp-1a2b3c4d5e6f7a8b/
     sandbox.sh           # the repo's own sandbox config, see below
-    proxy-rules.yaml     # the repo's own proxy rules, in the base rules' format
-    github-allowlist     # owner/repo or owner/*, one per line, as the base allowlist
+    network.yaml         # the repo's own network config, in the base one's format
 ```
 
-Either of the repo's files is optional. Each takes effect immediately, even when created or
-deleted mid-session. The repo's rules file takes the same keys as the base one, and `chopi`
-refuses any other key. It can add hosts, or deny them. Either rules file's `global_deny_list`
-denies its hosts even where either file allows them.
+The repo's network config is optional. It takes effect immediately, even when created or deleted
+mid-session. It takes the same keys as the base one, and `chopi` refuses any other key. It can add
+hosts and repos, or deny hosts. Either file's `global_deny_list` denies its hosts even where the
+other file allows them.
 
-A mistake made in either of the repo's files mid-session never stops a running session: the edit
+A mistake made in the repo's network config mid-session never stops a running session: the edit
 doesn't take effect, as the notification says, and what the file added before it stays. An edit to
 the base config still takes effect, with what the file last added. But a mistake keeps a new
 session from starting, as a mistake in the base config does, so that the repo's sessions all run on
@@ -279,14 +280,14 @@ applied without you approving it, and `chopi-review` runs only out-of-sandbox.
 
 ### Advanced
 
-To run the proxy against a different rules file or GitHub allowlist, set `CHOPI_PROXY_RULES` or
-`CHOPI_GITHUB_ALLOWLIST` in the sandbox config to its absolute path, which must be in
-`~/.chopi/config`. Every session denies its sandboxed command any change to that directory, to
-the default files, and to the dirs above them, whichever of them the session itself reads, even
-under a grant covering them. A command that could rewrite rules or an allowlist could lift its own
-limits, or another session's. A config file there with other hard links refuses every session,
-whichever repo's it is and whether any session uses it, as writing through one would escape the
-deny (`CHOPI_ALLOW_SELF=1` downgrades this to a warning, as for `--config` below).
+To run the proxy against a different network config, set `CHOPI_NETWORK_CONFIG` in the sandbox
+config to its absolute path, which must be in `~/.chopi/config`. Every session denies its sandboxed
+command any change to that directory, to the default file, and to the dirs above them, whichever of
+them the session itself reads, even under a grant covering them. A command that could rewrite a
+network config could lift its own limits, or another session's. A config file there with other hard
+links refuses every session, whichever repo's it is and whether any session uses it, as writing
+through one would escape the deny (`CHOPI_ALLOW_SELF=1` downgrades this to a warning, as for
+`--config` below).
 
 To use a different sandbox config for a single run, pass `chopi --config FILE`. The file 
 must define the same `CHOPI_SAFEHOUSE_FLAGS` / `CHOPI_EXTRA_ENV` arrays as `config/sandbox.sh`
@@ -360,11 +361,14 @@ Network path of the sandboxed command:
 - **A network connection was refused** -- Refused hosts appear as `DENY` lines in the
   session's proxy log under `~/Library/Logs/chopi` (or as a single plain `deny(known)`
   line if they match the known denylist); if the host should be allowed, add it to
-  `config/proxy-rules.yaml`. The proxy hot-reloads the rules, so you don't need to
-  restart the session. A rules edit that loads pops a brief notification naming the
-  file -- none means the session's proxy reads a different file (see `CHOPI_PROXY_RULES`
+  `config/network.yaml`. The proxy hot-reloads it, so you don't need to
+  restart the session. An edit that loads pops a brief notification naming the
+  file -- none means the session's proxy reads a different file (see `CHOPI_NETWORK_CONFIG`
   in `config/sandbox.sh`). One that fails to load pops a notification that stays until
-  you fix it, and shows in the log as `RULES RELOAD FAILED`, with the previous rules kept.
+  you fix it, and shows in the log as `NETWORK CONFIG RELOAD FAILED`, with the previous
+  config kept. The exception is an edit to `github_allowlist` that the GitHub relays fail
+  to come up on. The edit's hosts still take effect, the relays keep serving the previous
+  allowlist, and the next save tries again.
 - **A `gh` subcommand fails with `not an allowed API operation`, `none of the git
   remotes ... correspond to the GH_HOST environment variable`, or `unable to expand
   placeholder in path`** -- Use REST forms naming the repo explicitly (`-R OWNER/REPO`,
@@ -386,11 +390,11 @@ under `config/templates`.
 ### The proxy binary
 
 The proxy is an in-repo Go wrapper, `.internal/proxy/`, that embeds smokescreen as a
-library and hot-reloads the rules file (the standalone smokescreen binary only reads
-its rules at startup). It also supervises the session's Caddy GitHub relays: it opens
-every listener itself, on ports the kernel picks, hands the relays' to Caddy, and stops
-Caddy with the proxy -- including once `chopi` exits, however it exits. `install.sh` and
-`make build` compile it to `.internal/proxy/chopi-smokescreen`.
+library and hot-reloads its rules from the network config (the standalone smokescreen
+binary only reads its rules at startup). It also supervises the session's Caddy GitHub
+relays: it opens every listener itself, on ports the kernel picks, hands the relays' to
+Caddy, and stops Caddy with the proxy -- including once `chopi` exits, however it exits.
+`install.sh` and `make build` compile it to `.internal/proxy/chopi-smokescreen`.
 
 ### The GitHub relays
 

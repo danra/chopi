@@ -8,12 +8,11 @@
 # everything else -- the formatted smokescreen log -- goes to the --log file, and the relays' own
 # to a .caddy.log beside it.
 #
-# usage: chopi-proxy.sh --dir DIR --log FILE --parent PID --rules FILE --github-allowlist FILE
-#                       --add-rules FILE --add-github-allowlist FILE [--verbose]
+# usage: chopi-proxy.sh --dir DIR --log FILE --parent PID --network FILE --add-network FILE
+#                       [--verbose]
 #
-# The --rules and --github-allowlist files are the base ones, chopi's. The --add-rules and
-# --add-github-allowlist files are a workspace's own (see workspace_config_dir), which add to the
-# base ones. Either may be missing.
+# The --network file is the base network config, chopi's. The --add-network file is a workspace's
+# own network config (see workspace_config_dir), which adds to the base one. It may be missing.
 
 set -euo pipefail
 # The GitHub token is chopi-smokescreen's alone, which exports it again (see run_smokescreen): kept
@@ -26,10 +25,8 @@ SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
 PROXY_DIR=""
 LOG=""
 PARENT_PID=""
-RULES=""
-GITHUB_ALLOWLIST=""
-ADD_RULES=""
-ADD_GITHUB_ALLOWLIST=""
+NETWORK=""
+ADD_NETWORK=""
 VERBOSE=false
 # The --dir, which chopi made for us, is ours to remove, however we exit: only once what we lead is
 # gone, as chopi-smokescreen and Caddy keep their temporaries, and the API relay's socket, in it.
@@ -40,10 +37,8 @@ trap 'exit 143' TERM HUP
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --dir)              PROXY_DIR="${2:-}" ;;
-        --rules)            RULES="${2:-}" ;;
-        --github-allowlist) GITHUB_ALLOWLIST="${2:-}" ;;
-        --add-rules)        ADD_RULES="${2:-}" ;;
-        --add-github-allowlist) ADD_GITHUB_ALLOWLIST="${2:-}" ;;
+        --network)          NETWORK="${2:-}" ;;
+        --add-network)      ADD_NETWORK="${2:-}" ;;
         --log)              LOG="${2:-}" ;;
         --parent)           PARENT_PID="${2:-}" ;;
         --verbose) VERBOSE=true; shift; continue ;;
@@ -56,10 +51,8 @@ done
 . "$SCRIPT_DIR/util.sh"
 
 if [ -z "$PROXY_DIR" ] || [ -z "$LOG" ] || [ -z "$PARENT_PID" ] \
-    || [ -z "$RULES" ] || [ -z "$GITHUB_ALLOWLIST" ] \
-    || [ -z "$ADD_RULES" ] || [ -z "$ADD_GITHUB_ALLOWLIST" ]; then
-    echo "error: --dir, --log, --parent, --rules, --github-allowlist, --add-rules and" \
-         "--add-github-allowlist are required" >&2
+    || [ -z "$NETWORK" ] || [ -z "$ADD_NETWORK" ]; then
+    echo "error: --dir, --log, --parent, --network and --add-network are required" >&2
     exit 1
 fi
 # The relays' log sits beside ours, outliving the session as it does: named for chopi's sweep of
@@ -95,10 +88,8 @@ if ! command -v alerter >/dev/null 2>&1; then
     exit 1
 fi
 
-echo "[$SCRIPT_NAME] using proxy rules: $RULES"
-echo "[$SCRIPT_NAME] using GitHub allowlist: $GITHUB_ALLOWLIST"
-echo "[$SCRIPT_NAME] adding the proxy rules in, where present: $ADD_RULES"
-echo "[$SCRIPT_NAME] adding the GitHub allowlist in, where present: $ADD_GITHUB_ALLOWLIST"
+echo "[$SCRIPT_NAME] using network config: $NETWORK"
+echo "[$SCRIPT_NAME] adding the workspace's network config, where present: $ADD_NETWORK"
 
 . "$CHOPI_DIR/.internal/classify-log.sh"
 for f in "$CONNECTION_FILTER" "$DENY_HOST_FILTER" "$KNOWN_DENY_FILTER" \
@@ -114,8 +105,8 @@ done
 # - Denied connections show as "DENY host @ time" and trigger notifications
 # - Denials of hosts matching the configured denylist show as a plain "deny(known)" line,
 #   once per host per session -- no notification, repeats dropped
-# - Rules hot-reloads show as a plain "rules reloaded" line.
-# - A failed reload, whose edit did NOT take effect, shows as a loud "RULES RELOAD FAILED"
+# - Network config hot-reloads show as a plain "network config reloaded" line.
+# - A failed reload, whose edit did NOT take effect, shows as a loud "NETWORK CONFIG RELOAD FAILED"
 #   line and triggers a notification. The next successful reload replaces that notification with a
 #   brief confirmation.
 # - Allowed connections and the known noise are dropped
@@ -125,14 +116,11 @@ format_smokescreen_log() {
     # log says so where it ends, rather than just going quiet.
     trap 'report_formatter_failure $?' EXIT
     # Work out the reload banners' groups (see notify_reload) here, off the proxy's startup path.
-    # Each group is keyed by its file and the other file it is taken up with, and an allowlist's
-    # group by where the token comes from too.
+    # Each group is keyed by the network config files and by where the token comes from.
     local token_source
     token_source="$(gh_token_source)"
-    RULES_RELOAD_GROUP="$(reload_banner_group "$RULES" "$ADD_RULES")"
-    RULES_WS_RELOAD_GROUP="$(reload_banner_group "$ADD_RULES" "$RULES")"
-    ALLOWLIST_RELOAD_GROUP="$(reload_banner_group "$GITHUB_ALLOWLIST" "$ADD_GITHUB_ALLOWLIST" "$token_source")"
-    ALLOWLIST_WS_RELOAD_GROUP="$(reload_banner_group "$ADD_GITHUB_ALLOWLIST" "$GITHUB_ALLOWLIST" "$token_source")"
+    NETWORK_GROUP="$(reload_banner_group "$NETWORK" "$NETWORK" "$ADD_NETWORK" "$token_source")"
+    ADD_NETWORK_GROUP="$(reload_banner_group "$ADD_NETWORK" "$NETWORK" "$ADD_NETWORK" "$token_source")"
     classify_log "$SCRIPT_NAME" notify_deny notify_reload "$VERBOSE"
 }
 
@@ -151,13 +139,13 @@ notify_deny() {
     notify "chopi-proxy-deny-$PARENT_PID" "$LOG" 'connection denied' "DENY $1" "$NOTIFY_ALERT_SECS"
 }
 
-# Each config file's reloads have a banner group of their own, since a reload of one file says
-# nothing of another file's last edit.
+# Each network config file's reloads have a banner group of their own, since a reload of one file
+# says nothing of another file's last edit.
 #
 # The sessions whose reloads of the file go alike share its group (reload_banner_group): those that
-# take the file up with the same base and workspace files, and, for an allowlist, take the token
-# from the same place. So a base edit shows once per workspace, and a base edit refused for what a
-# workspace's file holds shows only in that workspace's sessions.
+# take the file up with the same base and workspace files, and take the token from the same place.
+# So a base edit shows once per workspace, and a base edit refused for what a workspace's file holds
+# shows only in that workspace's sessions.
 #
 # A reload's banner replaces its group's last one. A failure stays up until the user fixes it, and
 # the fix's confirmation then takes its place, briefly. The proxy has no terminal, so the
@@ -166,20 +154,16 @@ notify_deny() {
 #
 # The banner says what reloaded and names the file as the proxy's log LINE does.
 #
-# usage: notify_reload ok|failed rules|allowlist LINE
+# usage: notify_reload ok|failed LINE
 notify_reload() {
-    arity 3
-    local group="$RULES_RELOAD_GROUP" ws_group="$RULES_WS_RELOAD_GROUP"
-    local what name added
-    if [ "$2" = allowlist ]; then
-        group="$ALLOWLIST_RELOAD_GROUP" ws_group="$ALLOWLIST_WS_RELOAD_GROUP"
-    fi
+    arity 2
+    local group="$NETWORK_GROUP" what name added
     # A jq of its own, not a filter file: one edited as the proxy runs can't swallow the banner.
     { IFS= read -r what && IFS= read -r name && IFS= read -r added; } \
-        < <(printf '%s\n' "$3" | jq -r '(.what // "proxy config"), (.name // "the proxy config"),
+        < <(printf '%s\n' "$2" | jq -r '(.what // "network config"), (.name // "the network config"),
                                         (.added == true)' 2>/dev/null) \
-        || { what='proxy config' name='the proxy config' added=false; }
-    [ "$added" = true ] && group="$ws_group"
+        || { what='network config' name='the network config' added=false; }
+    [ "$added" = true ] && group="$ADD_NETWORK_GROUP"
     case "$1" in
         failed) notify "$group" "$LOG" "$what reload failed" \
                     "Your edit to $name did not take effect" "$NOTIFY_ALERT_SECS" ;;
@@ -199,8 +183,8 @@ run_smokescreen() {
 }
 
 # chopi-smokescreen opens the listeners, serves the proxy, and starts Caddy on the relays' config.
-# It renders that config from the allowlist, and again on each edit to the allowlist, and on a save
-# with no edit, which takes up a GitHub token gh replaced.
+# It renders that config from the network config's GitHub allowlist, and again on each edit to the
+# allowlist, and on a save with no edit, which takes up a GitHub token gh replaced.
 #
 # chopi-smokescreen reports its ports in DIR/ports once up. Until then, its stderr is still the one
 # chopi started us with, where chopi shows why it couldn't start. Its log output, on stdout, goes
@@ -229,9 +213,9 @@ exec 3<>"$LOG_FIFO"
 format_smokescreen_log 2>&1 <"$LOG_FIFO" 3>&- &
 formatter=$!
 status=0
-TMPDIR="$PROXY_DIR" lead_group run_smokescreen "$PROXY_DIR" "$PARENT_PID" "$RULES" \
-    "$GITHUB_ALLOWLIST" "$CHOPI_DIR/.internal/github-relays-config.sh" "$CADDY_LOG" \
-    "$ADD_RULES" "$ADD_GITHUB_ALLOWLIST" 4>&2 2>&1 >&3 3>&- || status=$?
+TMPDIR="$PROXY_DIR" lead_group run_smokescreen "$PROXY_DIR" "$PARENT_PID" "$NETWORK" \
+    "$CHOPI_DIR/.internal/github-relays-config.sh" "$CADDY_LOG" "$ADD_NETWORK" \
+    4>&2 2>&1 >&3 3>&- || status=$?
 exec 3>&-
 # Our end of the FIFO closed, the formatter ends once it reads the rest. A second stop signal while
 # it does stops us waiting.

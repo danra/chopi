@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,13 +40,14 @@ type options struct {
 	dir         string // where the ports are reported and the API relay's socket is
 	parent      int    // the process whose exit stops the proxy: chopi
 	relayLog    string // Caddy's output
-	rules       string // the rules, watched for changes
-	allowlist   string // the GitHub allowlist, watched for changes
-	relayConfig string // the command rendering the relays' Caddy config from the allowlist
+	network     string // the network config, watched for changes
+	relayConfig string // the command rendering the relays' Caddy config from the GitHub allowlist
 
-	// Rules and a GitHub allowlist adding to the base ones (see network_config.go). They are watched
-	// for changes the same way, and each may be missing.
-	addRules, addAllowlist string
+	// The network config adding to the base one (see network_config.go). It is watched for changes
+	// the same way, and may be missing.
+	addNetwork string
+	// chopi's current network config template, for the advice on a refused network config.
+	networkTemplate string
 
 	smokeArgs []string
 }
@@ -60,11 +60,10 @@ func parseOptions(args []string) (options, error) {
 	fs.StringVar(&opts.dir, "dir", "", "")
 	fs.IntVar(&opts.parent, "parent", 0, "")
 	fs.StringVar(&opts.relayLog, "relay-log", "", "")
-	fs.StringVar(&opts.rules, "rules", "", "")
-	fs.StringVar(&opts.allowlist, "github-allowlist", "", "")
+	fs.StringVar(&opts.network, "network", "", "")
 	fs.StringVar(&opts.relayConfig, "relay-config", "", "")
-	fs.StringVar(&opts.addRules, "add-rules", "", "")
-	fs.StringVar(&opts.addAllowlist, "add-github-allowlist", "", "")
+	fs.StringVar(&opts.addNetwork, "add-network", "", "")
+	fs.StringVar(&opts.networkTemplate, "network-template", "", "")
 	if err := fs.Parse(args); err != nil {
 		return opts, err
 	}
@@ -73,11 +72,10 @@ func parseOptions(args []string) (options, error) {
 		opts.smokeArgs = fs.Args()
 	}
 	if opts.dir == "" || opts.parent <= 0 || opts.relayLog == "" ||
-		opts.rules == "" || opts.allowlist == "" || opts.relayConfig == "" ||
-		opts.addRules == "" || opts.addAllowlist == "" || opts.smokeArgs == nil {
+		opts.network == "" || opts.relayConfig == "" ||
+		opts.addNetwork == "" || opts.networkTemplate == "" || opts.smokeArgs == nil {
 		return opts, errors.New("usage: chopi-smokescreen --dir DIR --parent PID " +
-			"--relay-log FILE --rules FILE --github-allowlist FILE " +
-			"--add-rules FILE --add-github-allowlist FILE " +
+			"--relay-log FILE --network FILE --add-network FILE --network-template FILE " +
 			"--relay-config CMD -- SMOKESCREEN_FLAGS...")
 	}
 	return opts, nil
@@ -132,40 +130,6 @@ type relayConfig struct {
 	env []string
 }
 
-// allowlistEntry matches a GitHub allowlist entry: owner/repo, or owner/* for all the owner's
-// repos. github-relays-caddyfile.sh's is_allowlist_entry, which renders the relays from the
-// entries, checks the same. It is a sanity check that keeps a config value safe, and doesn't
-// follow GitHub's actual naming rules.
-var allowlistEntry = regexp.MustCompile(`^[A-Za-z0-9._-]+/([A-Za-z0-9._-]+|\*)$`)
-
-// allowlistEntries returns the GitHub allowlist the relays are rendered from: the entries of the
-// base allowlist, at basePath, then those of the one added to it, at addedPath. A nil added, for a
-// missing added allowlist, adds nothing.
-//
-// Each line holds one entry, with any trailing '#'-comment dropped and surrounding whitespace
-// trimmed. Blank lines hold none. allowlistEntries refuses a line that isn't an entry, naming its
-// file.
-func allowlistEntries(basePath, addedPath string, base, added []byte) ([]string, error) {
-	var entries []string
-	for _, file := range []struct {
-		path    string
-		content []byte
-	}{{basePath, base}, {addedPath, added}} {
-		for _, line := range strings.Split(string(file.content), "\n") {
-			entry, _, _ := strings.Cut(line, "#")
-			entry = strings.TrimSpace(entry)
-			if entry == "" {
-				continue
-			}
-			if !allowlistEntry.MatchString(entry) {
-				return nil, fmt.Errorf("%s: allowlist entry needs owner/repo or owner/*, using only A-Za-z0-9._-: '%s'", file.path, entry)
-			}
-			entries = append(entries, entry)
-		}
-	}
-	return entries, nil
-}
-
 // renderCancelGrace bounds how long a cancelled render's output pipes are waited on, once its
 // process group is TERMed, before they are closed on whatever still holds them.
 const renderCancelGrace = 2 * time.Second
@@ -194,9 +158,10 @@ func (c relayConfig) render(ctx context.Context, allowlist []string) (config []b
 
 // caddyProc is a Caddy serving the relays, or starting or stopping to.
 type caddyProc struct {
-	process *os.Process
-	config  []byte        // what it serves
-	exited  chan struct{} // closed once it has exited
+	process   *os.Process
+	config    []byte        // what it serves
+	allowlist []string      // the GitHub allowlist config was rendered from, or one rendering the same
+	exited    chan struct{} // closed once it has exited
 }
 
 // stop TERMs Caddy and returns once it has exited, killing it if it is still up after timeout: by
@@ -216,10 +181,9 @@ func (c *caddyProc) stop(timeout time.Duration) {
 // A var, for tests to shorten.
 var caddyStopTimeout = 5 * time.Second
 
-// relaySupervisor runs the Caddy serving the relays. On a change to a GitHub allowlist, the base
-// one or one added to it, it replaces that Caddy with one on the new config, on the same listeners.
-// It keeps the listeners open for the proxy's life, as running chopi sessions are confined to their
-// ports and socket path.
+// relaySupervisor runs the Caddy serving the relays. On a change to the GitHub allowlist, it
+// replaces that Caddy with one on the new config, on the same listeners. It keeps the listeners
+// open for the proxy's life, as running chopi sessions are confined to their ports and socket path.
 type relaySupervisor struct {
 	relays  *relays
 	logPath string // Caddy's output, every Caddy's in turn
@@ -235,6 +199,11 @@ type relaySupervisor struct {
 	stopRenders context.CancelFunc
 	renderCtx   context.Context
 	rendering   sync.WaitGroup
+
+	// A reload holds swapping from the end of its render until its Caddy serves or fails to.
+	// Reloads swap Caddys one at a time, and each checks it wasn't cancelled for a newer reload
+	// before starting its Caddy.
+	swapping sync.Mutex
 
 	failed     chan struct{} // closed once the serving Caddy exits unasked
 	failedOnce sync.Once
@@ -252,8 +221,8 @@ func newRelaySupervisor(r *relays, logPath string, config relayConfig) *relaySup
 // environment: CHOPI_GIT_FD and CHOPI_GH_FD, and CHOPI_GIT_PORT for the redirects it rewrites. It
 // returns once Caddy serves, as Caddy reports by connecting to its --pingback address: not by
 // asking the relays, which may still be answered by the Caddy it replaces. A Caddy that doesn't
-// come up is stopped.
-func (s *relaySupervisor) start(config []byte) (*caddyProc, error) {
+// come up is stopped. allowlist is the GitHub allowlist that config was rendered from.
+func (s *relaySupervisor) start(config []byte, allowlist []string) (*caddyProc, error) {
 	gitFile, err := s.relays.git.File()
 	if err != nil {
 		return nil, err
@@ -295,7 +264,7 @@ func (s *relaySupervisor) start(config []byte) (*caddyProc, error) {
 		s.mu.Unlock()
 		return nil, err
 	}
-	proc := &caddyProc{process: caddy.Process, config: config, exited: make(chan struct{})}
+	proc := &caddyProc{process: caddy.Process, config: config, allowlist: allowlist, exited: make(chan struct{})}
 	s.live[proc] = true
 	s.mu.Unlock()
 	go func() {
@@ -352,9 +321,14 @@ func (s *relaySupervisor) serve(proc *caddyProc) (replaced *caddyProc) {
 }
 
 // reload replaces the serving Caddy with one on the config rendered from the GitHub allowlist
-// (relayConfig.render), unless the serving Caddy already serves that config (a save with no
-// edit). On failure, the serving Caddy stays.
-func (s *relaySupervisor) reload(allowlist []string) error {
+// (relayConfig.render), unless the serving Caddy already serves that config. On failure, the
+// serving Caddy stays.
+//
+// Cancelling ctx for a newer reload stops the render, maybe at a keychain prompt. If the render is
+// done but the reload hasn't started its Caddy yet, cancelling keeps it from starting one. Reloads
+// swap Caddys one at a time, so the last one started is the newest reload's, whatever order their
+// renders end in. served reports what the relays then serve, whichever reload brought it up.
+func (s *relaySupervisor) reload(ctx context.Context, allowlist []string) error {
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
@@ -362,7 +336,10 @@ func (s *relaySupervisor) reload(allowlist []string) error {
 	}
 	s.rendering.Add(1)
 	s.mu.Unlock()
-	config, notes, err := s.config.render(s.renderCtx, allowlist)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	defer context.AfterFunc(s.renderCtx, cancel)()
+	config, notes, err := s.config.render(ctx, allowlist)
 	s.rendering.Done()
 	if err != nil {
 		return err
@@ -370,8 +347,16 @@ func (s *relaySupervisor) reload(allowlist []string) error {
 	if notes != "" {
 		fmt.Println(notes)
 	}
+	s.swapping.Lock()
+	defer s.swapping.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	unchanged := s.serving != nil && bytes.Equal(s.serving.config, config)
+	if unchanged {
+		s.serving.allowlist = allowlist
+	}
 	s.mu.Unlock()
 	if unchanged {
 		return nil
@@ -380,7 +365,7 @@ func (s *relaySupervisor) reload(allowlist []string) error {
 	if st, err := os.Stat(s.logPath); err == nil {
 		logged = st.Size()
 	}
-	proc, err := s.start(config)
+	proc, err := s.start(config, allowlist)
 	if err != nil {
 		return fmt.Errorf("caddy did not come up (%v): %s", err, outputSince(s.logPath, logged))
 	}
@@ -388,6 +373,16 @@ func (s *relaySupervisor) reload(allowlist []string) error {
 		go replaced.stop(relayDrainTimeout)
 	}
 	return nil
+}
+
+// served is the GitHub allowlist the relays serve: the serving Caddy's, nil if none is.
+func (s *relaySupervisor) served() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.serving == nil {
+		return nil
+	}
+	return s.serving.allowlist
 }
 
 // outputSince is what was written to the file at path past offset, on one line.

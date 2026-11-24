@@ -1,4 +1,6 @@
 # Local configuration, copied from templates and customized
-proxy-rules.yaml
+network.yaml
 sandbox.sh
+# The network config's predecessors
+proxy-rules.yaml
 github-allowlist

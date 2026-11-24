@@ -15,14 +15,14 @@ import (
 
 func TestParseOptionsSplitsChopisFlagsFromSmokescreens(t *testing.T) {
 	opts, err := parseOptions([]string{"--dir", "/d", "--parent", "42", "--relay-log", "/l",
-		"--rules", "/ru", "--github-allowlist", "/a", "--relay-config", "/r",
-		"--add-rules", "/ar", "--add-github-allowlist", "/aa", "--", "--config-file", "/c"})
+		"--network", "/n", "--relay-config", "/r", "--add-network", "/an",
+		"--network-template", "/t", "--", "--config-file", "/c"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if opts.dir != "/d" || opts.parent != 42 || opts.relayLog != "/l" ||
-		opts.rules != "/ru" || opts.allowlist != "/a" || opts.relayConfig != "/r" ||
-		opts.addRules != "/ar" || opts.addAllowlist != "/aa" {
+		opts.network != "/n" || opts.relayConfig != "/r" || opts.addNetwork != "/an" ||
+		opts.networkTemplate != "/t" {
 		t.Errorf("parsed %+v", opts)
 	}
 	if !slices.Equal(opts.smokeArgs, []string{"--config-file", "/c"}) {
@@ -32,8 +32,8 @@ func TestParseOptionsSplitsChopisFlagsFromSmokescreens(t *testing.T) {
 
 func TestParseOptionsRefuses(t *testing.T) {
 	all := []string{"--dir", "/d", "--parent", "42", "--relay-log", "/l",
-		"--rules", "/ru", "--github-allowlist", "/a", "--relay-config", "/r",
-		"--add-rules", "/ar", "--add-github-allowlist", "/aa"}
+		"--network", "/n", "--relay-config", "/r", "--add-network", "/an",
+		"--network-template", "/t"}
 	// Each of chopi's flags left out in turn.
 	for i := 0; i < len(all); i += 2 {
 		args := append(slices.Clone(all[:i]), all[i+2:]...)
@@ -44,10 +44,10 @@ func TestParseOptionsRefuses(t *testing.T) {
 	for _, args := range [][]string{
 		all, // no smokescreen flags
 		append(slices.Clone(all), "--bogus", "1", "--"), // unknown
-		{"--dir", "/d", "--parent", "x", "--relay-log", "/l", "--github-allowlist", "/a",
-			"--relay-config", "/r", "--"}, // not a pid
-		{"--dir", "/d", "--parent", "-1", "--relay-log", "/l", "--github-allowlist", "/a",
-			"--relay-config", "/r", "--"}, // not a pid
+		{"--dir", "/d", "--parent", "x", "--relay-log", "/l", "--network", "/n",
+			"--add-network", "/an", "--relay-config", "/r", "--"}, // not a pid
+		{"--dir", "/d", "--parent", "-1", "--relay-log", "/l", "--network", "/n",
+			"--add-network", "/an", "--relay-config", "/r", "--"}, // not a pid
 		{"--dir"}, // no value
 	} {
 		if _, err := parseOptions(args); err == nil {
@@ -123,7 +123,7 @@ func TestStopAllStopsAReloadsRender(t *testing.T) {
 	cmd, pidFile := stuckRender(t)
 	s := newRelaySupervisor(nil, filepath.Join(t.TempDir(), "log"), relayConfig{cmd: cmd})
 	reloaded := make(chan error, 1)
-	go func() { reloaded <- s.reload(nil) }()
+	go func() { reloaded <- s.reload(context.Background(), nil) }()
 	pid := awaitPid(t, pidFile)
 	s.stopAll()
 	// Checked at once, not waited for: stopAll returns only once the render's group is gone.
@@ -134,7 +134,7 @@ func TestStopAllStopsAReloadsRender(t *testing.T) {
 	if err := <-reloaded; err == nil {
 		t.Error("a reload stopped as it rendered succeeded")
 	}
-	if err := s.reload(nil); err == nil {
+	if err := s.reload(context.Background(), nil); err == nil {
 		t.Error("a reload after stopAll succeeded")
 	}
 }

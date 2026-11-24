@@ -1,8 +1,9 @@
-# chopi proxy rules: the hosts the proxy allows and denies.
+# chopi network config: the hosts the proxy allows and denies, and the GitHub repos the relays
+# send the host's GitHub token for.
 #
 # allowed_domains and global_deny_list match the exact host; use a leading "*."
-# for subdomains (e.g. "*.anthropic.com"). A host on global_deny_list is denied
-# whatever allows it.
+# for subdomains (e.g. "*.anthropic.com"). global_deny_list denies a host even
+# where allowed_domains allows it.
 
 allowed_domains:
   - api.anthropic.com
@@ -35,3 +36,17 @@ global_deny_list:
   # socket; direct hits (e.g. Claude Code's plugin-marketplace update poll) are expected
   - api.github.com
 
+# The GitHub repos the relays inject the host's GitHub token for. git-pushing to any repo
+# requires a matching entry, and so does any access to a private repo. Fetching/cloning any
+# PUBLIC repo works regardless of this list.
+#
+# Each entry names a repository on github.com (the "github.com/" prefix is implicit), in one
+# of two forms:
+#   owner/*      -- any repository under that owner or org; also enables code search
+#                   scoped to it (gh search code --owner owner) and the org's
+#                   Dependabot alert list (gh api orgs/owner/dependabot/alerts)
+#   owner/repo   -- exactly that repository
+github_allowlist: []
+  # Examples (uncomment / edit, and drop the [] above):
+  # - owner/*
+  # - owner/repo

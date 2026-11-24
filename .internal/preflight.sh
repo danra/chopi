@@ -13,7 +13,7 @@
 #                                   --worktree target), since that is the dir a custom
 #                                   --config must stay outside of.
 #
-# resolve_proxy_config, run up front, resolves the proxy config files, which the proxy reads all
+# resolve_network_config, run up front, resolves the network config, which the proxy reads all
 # session long.
 
 _preflight_dir="$(dirname "${BASH_SOURCE[0]}")"
@@ -187,9 +187,9 @@ require_in_proxy_config_dir() {
     return 1
 }
 
-# Set the sandbox config's variable VAR to the real path of the proxy config file it names. When it
-# names none, use the default config/DEFAULT, which the installer creates from
-# config/templates/TEMPLATE.
+# Set CHOPI_NETWORK_CONFIG to the real path of the network config file it names. When it names
+# none, use the default config/DEFAULT_NETWORK_CONFIG, which the installer creates from the
+# template.
 #
 # chopi hands the proxy that path, and the proxy reads the file for the whole session,
 # hot-reloading the rules. Seatbelt matches the real path, so with the path resolved once, no
@@ -198,38 +198,37 @@ require_in_proxy_config_dir() {
 # A configured file must be in PROXY_CONFIG_DIR, which every session keeps its command from
 # changing, not just this session.
 #
-# usage: resolve_proxy_config VAR DEFAULT TEMPLATE
-resolve_proxy_config() {
-    arity 3
-    local var="$1" default="$CHOPI_DIR/config/$2" template="$CHOPI_DIR/config/templates/$3"
-    local path resolved
-    path="${!var}"
+# usage: resolve_network_config
+resolve_network_config() {
+    arity 0
+    local default="$CHOPI_DIR/config/$DEFAULT_NETWORK_CONFIG" template="$CHOPI_DIR/$NETWORK_TEMPLATE"
+    local path="$CHOPI_NETWORK_CONFIG" resolved
     case "$path" in
         '') if [ ! -e "$default" ]; then
-                echo "chopi: no $2 at $default" >&2
+                echo "chopi: no $DEFAULT_NETWORK_CONFIG at $default" >&2
                 echo "Run the installer to create it from the template:  $CHOPI_DIR/install.sh" >&2
                 echo "or copy it manually:  cp \"$template\" \"$default\"" >&2
                 return 1
             fi
             path="$default" ;;
         /*) ;;
-        *)  echo "chopi: $var must be an absolute path, got '$path'" >&2
+        *)  echo "chopi: CHOPI_NETWORK_CONFIG must be an absolute path, got '$path'" >&2
             return 1 ;;
     esac
     # Checked first: resolved_path appends what follows a missing node unresolved.
-    [ -f "$path" ] || { echo "chopi: no $var file at '$path'" >&2; return 1; }
+    [ -f "$path" ] || { echo "chopi: no CHOPI_NETWORK_CONFIG file at '$path'" >&2; return 1; }
     resolved_path resolved "$path" || return 1
     if [ "$path" != "$default" ]; then
         require_in_proxy_config_dir "$resolved" \
-            "chopi: $var must be in $PROXY_CONFIG_DIR, got '$path'" \
-            "Move it there, and point $var at it." || return 1
+            "chopi: CHOPI_NETWORK_CONFIG must be in $PROXY_CONFIG_DIR, got '$path'" \
+            "Move it there, and point CHOPI_NETWORK_CONFIG at it." || return 1
     fi
-    printf -v "$var" '%s' "$resolved"
+    CHOPI_NETWORK_CONFIG="$resolved"
 }
 
 # Print the real path of the own config dir of the workspace at RUN_DIR (workspace_config_dir),
-# whether or not it exists. chopi hands the proxy the proxy config files in that dir, and the proxy
-# reads the files all session, from whenever they appear. The dir, resolved through any symlinks on
+# whether or not it exists. chopi hands the proxy the network config in that dir, and the proxy
+# reads the file all session, from whenever it appears. The dir, resolved through any symlinks on
 # the way, must still be in PROXY_CONFIG_DIR, where every session keeps its command from changing
 # it.
 #
@@ -252,7 +251,7 @@ WORKSPACE_SANDBOX_ARRAYS=(CHOPI_SAFEHOUSE_FLAGS CHOPI_EXTRA_ENV CHOPI_GIT_CONFIG
 # (WORKSPACE_SANDBOX_ARRAYS), for its sessions alone, as workspace-sandbox-loader.sh reports it. A
 # missing FILE adds nothing.
 #
-# Like the repo's own proxy config files beside it, FILE is in PROXY_CONFIG_DIR, where every session
+# Like the repo's own network config beside it, FILE is in PROXY_CONFIG_DIR, where every session
 # keeps its command from changing it. So this refuses a symlink, which may lead to a place a command
 # can change. It also refuses a file with other hard links, which a command may have written
 # through; CHOPI_ALLOW_SELF downgrades that refusal to a warning, as for the proxy config.

@@ -9,7 +9,7 @@
 #   * preflight_initial -- the chopi-dir overlap refusal (and its CHOPI_ALLOW_SELF
 #     downgrade).
 #   * preflight_config_placement -- refusing a custom --config that lives inside the workspace.
-#   * resolve_proxy_config -- resolving the proxy's config to the real paths that
+#   * resolve_network_config -- resolving the proxy's config to the real paths that
 #     write_proxy_config_profile keeps the sandboxed command from writing.
 #   * workspace_config_dir / resolve_workspace_config_dir -- which repo's own proxy config a
 #     session reads, and refusing one that leads out of the dir every session protects.
@@ -307,7 +307,7 @@ assert_eq "$(cd /tmp && run_dir HOME=/home CHOPI_RUN_DIR=rel/dir)" "$(cd /tmp &&
 
 
 # ---------------------------------------------------------------------------
-echo "resolve_proxy_config (resolving the proxy's config paths once, up front)"
+echo "resolve_network_config (resolving the proxy's config paths once, up front)"
 # ---------------------------------------------------------------------------
 rp="$(mktemp -d)"; rp="$(realpath "$rp")"
 mkdir "$rp/team" "$rp/chopi" "$rp/chopi/config" "$rp/elsewhere"
@@ -326,17 +326,17 @@ printf '%s\n' "$1"
 EOF
 chmod +x "$rp/gnu/realpath"
 
-out="$( CHOPI_PROXY_RULES="$rp/link/rules.yaml"
-        resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml && printf '%s' "$CHOPI_PROXY_RULES" )"
+out="$( CHOPI_NETWORK_CONFIG="$rp/link/rules.yaml"
+        resolve_network_config && printf '%s' "$CHOPI_NETWORK_CONFIG" )"
 assert_eq "$out" "$rp/team/rules.yaml" "a configured path is resolved through its symlinks"
 
 # A case-insensitive volume (macOS's default) takes a path in any case; the profile's rules match
 # the case on disk.
 if [ -e "$rp/TEAM/RULES.yaml" ]; then
     for path_prefix in "" "$rp/gnu:"; do
-        out="$( PROXY_CONFIG_DIR="$rp/team"; CHOPI_PROXY_RULES="$rp/TEAM/RULES.yaml"
-                PATH="$path_prefix$PATH" resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml \
-                    && printf '%s' "$CHOPI_PROXY_RULES" )"
+        out="$( PROXY_CONFIG_DIR="$rp/team"; CHOPI_NETWORK_CONFIG="$rp/TEAM/RULES.yaml"
+                PATH="$path_prefix$PATH" resolve_network_config \
+                    && printf '%s' "$CHOPI_NETWORK_CONFIG" )"
         assert_eq "$out" "$rp/team/rules.yaml" \
             "  -> and to its case on disk, where the volume ignores case, with realpath from PATH='$path_prefix'"
     done
@@ -352,59 +352,59 @@ else
     echo "case-sensitive volume -- skipping the case-insensitive path test"
 fi
 
-out="$( CHOPI_PROXY_RULES="$rp/elsewhere/rules.yaml"
-        resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml 2>&1 )"; st=$?
+out="$( CHOPI_NETWORK_CONFIG="$rp/elsewhere/rules.yaml"
+        resolve_network_config 2>&1 )"; st=$?
 assert_nonzero "$st" "a configured path outside the config dir is refused"
-assert_contains "$out" "CHOPI_PROXY_RULES must be in $rp/link" "  -> naming the setting, and where it must be"
+assert_contains "$out" "CHOPI_NETWORK_CONFIG must be in $rp/link" "  -> naming the setting, and where it must be"
 assert_contains "$out" "another session's" "  -> saying why"
-out="$( CHOPI_PROXY_RULES="$rp/link/escaping.yaml"
-        resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml 2>&1 )"; st=$?
+out="$( CHOPI_NETWORK_CONFIG="$rp/link/escaping.yaml"
+        resolve_network_config 2>&1 )"; st=$?
 assert_nonzero "$st" "  -> as is one in it that links out of it"
 
 newline_config_dir="$rp/team"$'\n'
 mkdir "$newline_config_dir"
 ln -s "$newline_config_dir" "$rp/newline-config-link"
 out="$( PROXY_CONFIG_DIR="$rp/newline-config-link"
-        CHOPI_PROXY_RULES="$rp/team/rules.yaml"
-        resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml 2>&1 )"; st=$?
+        CHOPI_NETWORK_CONFIG="$rp/team/rules.yaml"
+        resolve_network_config 2>&1 )"; st=$?
 assert_nonzero "$st" "a configured path in the sibling of a config dir ending in a newline is refused"
 assert_contains "$out" "must not contain a newline" "  -> rejecting the config dir's newline target"
 
-out="$( CHOPI_PROXY_RULES=""; CHOPI_DIR="$rp/chopi"
-        ln -s "$rp/team/rules.yaml" "$rp/chopi/config/proxy-rules.yaml"
-        resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml && printf '%s' "$CHOPI_PROXY_RULES" )"
+out="$( CHOPI_NETWORK_CONFIG=""; CHOPI_DIR="$rp/chopi"
+        ln -s "$rp/team/rules.yaml" "$rp/chopi/config/network.yaml"
+        resolve_network_config && printf '%s' "$CHOPI_NETWORK_CONFIG" )"
 assert_eq "$out" "$rp/team/rules.yaml" "with none configured, the default is resolved too"
-rm "$rp/chopi/config/proxy-rules.yaml"
+rm "$rp/chopi/config/network.yaml"
 
-out="$( CHOPI_PROXY_RULES=""; CHOPI_DIR="$rp/chopi"
-        resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml 2>&1 )"; st=$?
+out="$( CHOPI_NETWORK_CONFIG=""; CHOPI_DIR="$rp/chopi"
+        resolve_network_config 2>&1 )"; st=$?
 assert_nonzero "$st" "a missing default is refused"
-assert_contains "$out" "cp \"$rp/chopi/config/templates/proxy-rules.template.yaml\" \"$rp/chopi/config/proxy-rules.yaml\"" \
+assert_contains "$out" "cp \"$rp/chopi/config/templates/network.template.yaml\" \"$rp/chopi/config/network.yaml\"" \
     "  -> saying how to create it"
 
-# shellcheck disable=SC2034 # read by resolve_proxy_config, through its name
-out="$( CHOPI_PROXY_RULES=rules.yaml; resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml 2>&1 )"; st=$?
+# shellcheck disable=SC2034 # read by resolve_network_config
+out="$( CHOPI_NETWORK_CONFIG=rules.yaml; resolve_network_config 2>&1 )"; st=$?
 assert_nonzero "$st" "a relative path is refused"
-assert_contains "$out" "CHOPI_PROXY_RULES must be an absolute path" "  -> naming the setting"
+assert_contains "$out" "CHOPI_NETWORK_CONFIG must be an absolute path" "  -> naming the setting"
 
-newline_rules="$rp/team/rules"$'\n'"backup.yaml"
-trailing_newline_rules="$rp/team/rules.yaml"$'\n'
-: >"$newline_rules"
-: >"$trailing_newline_rules"
-ln -s "$trailing_newline_rules" "$rp/team/newline-target.yaml"
-for selected_rules in "$newline_rules" "$rp/team/newline-target.yaml"; do
-    # shellcheck disable=SC2034 # read by resolve_proxy_config, through its name
-    out="$( CHOPI_PROXY_RULES="$selected_rules"
-            resolve_proxy_config CHOPI_PROXY_RULES proxy-rules.yaml proxy-rules.template.yaml 2>&1 )"; st=$?
+newline_network="$rp/team/rules"$'\n'"backup.yaml"
+trailing_newline_network="$rp/team/rules.yaml"$'\n'
+: >"$newline_network"
+: >"$trailing_newline_network"
+ln -s "$trailing_newline_network" "$rp/team/newline-target.yaml"
+for selected_network in "$newline_network" "$rp/team/newline-target.yaml"; do
+    # shellcheck disable=SC2034 # read by resolve_network_config
+    out="$( CHOPI_NETWORK_CONFIG="$selected_network"
+            resolve_network_config 2>&1 )"; st=$?
     assert_nonzero "$st" "a configured path with a newline in its name or target is refused"
     assert_contains "$out" "must not contain a newline" "  -> explaining the refusal"
 done
 
-# shellcheck disable=SC2034 # read by resolve_proxy_config, through its name
-out="$( CHOPI_GITHUB_ALLOWLIST="$rp/team/missing"; PATH="$rp/gnu:$PATH"
-        resolve_proxy_config CHOPI_GITHUB_ALLOWLIST github-allowlist github-allowlist.template 2>&1 )"; st=$?
+# shellcheck disable=SC2034 # read by resolve_network_config
+out="$( CHOPI_NETWORK_CONFIG="$rp/team/missing"; PATH="$rp/gnu:$PATH"
+        resolve_network_config 2>&1 )"; st=$?
 assert_nonzero "$st" "a configured path that doesn't exist is refused, whichever realpath is on PATH"
-assert_contains "$out" "no CHOPI_GITHUB_ALLOWLIST file at '$rp/team/missing'" "  -> naming the setting"
+assert_contains "$out" "no CHOPI_NETWORK_CONFIG file at '$rp/team/missing'" "  -> naming the setting"
 
 
 # ---------------------------------------------------------------------------
@@ -414,8 +414,7 @@ echo "preflight_proxy_config_links (refusing a proxy config with other hard link
 # sandbox.
 hl="$(mktemp -d)"; hl="$(realpath "$hl")"
 mkdir -p "$hl/chopi/config" "$hl/config/team" "$hl/elsewhere"
-echo 'allow: []' >"$hl/chopi/config/$DEFAULT_PROXY_RULES"
-: >"$hl/chopi/config/$DEFAULT_GITHUB_ALLOWLIST"
+echo 'allowed_domains: []' >"$hl/chopi/config/$DEFAULT_NETWORK_CONFIG"
 echo 'allow: []' >"$hl/config/team/rules.yaml"
 unset CHOPI_ALLOW_SELF
 PROXY_CONFIG_DIR="$hl/config"
@@ -452,11 +451,11 @@ assert_nonzero "$st" "a hard-linked config is refused when PROXY_CONFIG_DIR is a
 assert_contains "$out" "'$hl/config-link/team/rules.yaml' has other hard links" "  -> naming it"
 rm "$hl/config-link" "$hl/elsewhere/other-link.yaml"
 
-ln "$hl/chopi/config/$DEFAULT_GITHUB_ALLOWLIST" "$hl/elsewhere/allowlist"
+ln "$hl/chopi/config/$DEFAULT_NETWORK_CONFIG" "$hl/elsewhere/network.yaml"
 out="$(CHOPI_ALLOW_SELF='' links_check 2>&1)"; st=$?
 assert_nonzero "$st" "a default config file with other hard links is refused"
-assert_contains "$out" "'$hl/chopi/config/$DEFAULT_GITHUB_ALLOWLIST' has other hard links" "  -> naming it"
-rm "$hl/elsewhere/allowlist"
+assert_contains "$out" "'$hl/chopi/config/$DEFAULT_NETWORK_CONFIG' has other hard links" "  -> naming it"
+rm "$hl/elsewhere/network.yaml"
 
 mkdir "$hl/config/unused"; chmod 000 "$hl/config/unused"
 out="$(links_check 2>&1)"; st=$?
@@ -476,25 +475,25 @@ fi
 
 # A repo whose proxy config is unreadable should not prevent a different repo from starting.
 mkdir -p "$hl/config/workspaces/unrelated" "$hl/config/workspaces/current"
-current_rules="$hl/config/workspaces/current/$DEFAULT_PROXY_RULES"
-other_rules="$hl/config/workspaces/unrelated/$DEFAULT_PROXY_RULES"
-: >"$current_rules"
-: >"$other_rules"
+current_network="$hl/config/workspaces/current/$DEFAULT_NETWORK_CONFIG"
+other_network="$hl/config/workspaces/unrelated/$DEFAULT_NETWORK_CONFIG"
+: >"$current_network"
+: >"$other_network"
 chmod 000 "$hl/config/workspaces/unrelated"
-out="$(links_check "$current_rules" 2>&1)"; st=$?
+out="$(links_check "$current_network" 2>&1)"; st=$?
 chmod 700 "$hl/config/workspaces/unrelated"
 assert_zero "$st" "an unreadable unrelated workspace config does not block startup"
 
-ln "$other_rules" "$hl/elsewhere/workspace-rules"
-out="$(links_check "$current_rules" 2>&1)"; st=$?
+ln "$other_network" "$hl/elsewhere/workspace-rules"
+out="$(links_check "$current_network" 2>&1)"; st=$?
 assert_nonzero "$st" "a hard-linked workspace config is refused even if no session uses it"
-assert_contains "$out" "'$other_rules' has other hard links" "  -> naming it"
+assert_contains "$out" "'$other_network' has other hard links" "  -> naming it"
 rm "$hl/elsewhere/workspace-rules"
 
 other_sandbox="$hl/config/workspaces/unrelated/$WORKSPACE_SANDBOX_CONFIG"
 : >"$other_sandbox"
 ln "$other_sandbox" "$hl/elsewhere/workspace-sandbox"
-out="$(links_check "$current_rules" 2>&1)"; st=$?
+out="$(links_check "$current_network" 2>&1)"; st=$?
 assert_nonzero "$st" "another repo's hard-linked sandbox config is refused too"
 assert_contains "$out" "a repo's own sandbox config '$other_sandbox' has other hard links" \
     "  -> naming it as one"
@@ -644,12 +643,12 @@ assert_eq "${CHOPI_EXTRA_ENV[1]}" $'MULTI=a\nb' "  -> and one with a newline"
 assert_eq "${CHOPI_GIT_CONFIG[*]}" "gc.auto=0" "  -> an array it leaves alone unchanged"
 assert_contains "$out" "chatter on stdout" "  -> the file's own output passed on"
 
-printf 'CHOPI_PROXY_RULES=/elsewhere\nCHOPI_SAFE_WRITE_TARGETS=(x)\n' >"$ws_sb"
+printf 'CHOPI_NETWORK_CONFIG=/elsewhere\nCHOPI_SAFE_WRITE_TARGETS=(x)\n' >"$ws_sb"
 reset_arrays
 out="$(load_workspace_sandbox_config "$ws_sb" 2>&1)"; st=$?
 assert_nonzero "$st" "a file setting another CHOPI_ variable -> refused"
 assert_contains "$out" "may only add to" "  -> saying so"
-assert_contains "$out" "CHOPI_PROXY_RULES" "  -> naming it"
+assert_contains "$out" "CHOPI_NETWORK_CONFIG" "  -> naming it"
 assert_contains "$out" "CHOPI_SAFE_WRITE_TARGETS" "  -> each of them"
 
 printf 'unset CHOPI_EXTRA_ENV\n' >"$ws_sb"

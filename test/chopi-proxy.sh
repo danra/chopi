@@ -212,38 +212,38 @@ assert_eq "$out" "[chopi-proxy.sh] DENY  tele.example:443  @ T
 
 
 # ---------------------------------------------------------------------------
-echo "rules hot-reload lines (format-reload: plain on reload, loud on failure)"
+echo "network config hot-reload lines (format-reload: plain on reload, loud on failure)"
 # ---------------------------------------------------------------------------
-# The proxy wrapper (.internal/proxy/main.go) logs a reload of the rules file as JSON;
+# The proxy wrapper (.internal/proxy/main.go) logs a reload of the network config as JSON;
 # the classifier renders it. A successful reload is routine -> plain line; a FAILED
-# reload means the user's edit did NOT take effect (the previous rules stay in force),
+# reload means the user's edit did NOT take effect (the previous config stays in force),
 # so it is as loud as a DENY.
-reload_ok='{"level":"info","msg":"egress ACL reloaded","rules":"/x/rules.yaml","time":"T"}'
-reload_fail='{"level":"error","msg":"egress ACL reload failed; keeping the previous rules","error":"yaml: line 3: could not find expected key","rules":"/x/rules.yaml","time":"T"}'
+reload_ok='{"level":"info","msg":"network config reloaded","network":"/x/network.yaml","time":"T"}'
+reload_fail='{"level":"error","msg":"network config reload failed; keeping the previous config","error":"yaml: line 3: could not find expected key","network":"/x/network.yaml","time":"T"}'
 
 out="$(printf '%s\n' "$reload_ok" | classify)"
-assert_eq "$out" "[chopi-proxy.sh] rules reloaded  @ T" "rules reload -> plain 'rules reloaded' line"
+assert_eq "$out" "[chopi-proxy.sh] network config reloaded  @ T" "reload -> plain 'network config reloaded' line"
 
 out="$(printf '%s\n' "$reload_fail" | classify)"
-assert_eq "$out" "[chopi-proxy.sh] RULES RELOAD FAILED (previous rules kept)  yaml: line 3: could not find expected key  @ T" \
+assert_eq "$out" "[chopi-proxy.sh] NETWORK CONFIG RELOAD FAILED (previous config kept)  yaml: line 3: could not find expected key  @ T" \
     "failed reload -> loud line naming the parse error"
 
-out="$(printf '%s\n' '{"level":"error","msg":"egress ACL reload failed; keeping the previous rules","time":"T"}' | classify)"
-assert_eq "$out" "[chopi-proxy.sh] RULES RELOAD FAILED (previous rules kept)  ?  @ T" \
+out="$(printf '%s\n' '{"level":"error","msg":"network config reload failed; keeping the previous config","time":"T"}' | classify)"
+assert_eq "$out" "[chopi-proxy.sh] NETWORK CONFIG RELOAD FAILED (previous config kept)  ?  @ T" \
     "a failed reload missing the error field still surfaces loud"
 
 # The reload hook (the macOS notification in the live proxy) tells failures from successes.
-record_reload_hook() { arity 3; printf 'HOOK:%s %s%s\n' "$1" "$2" "${3:+ $3}"; }
+record_reload_hook() { arity 2; printf 'HOOK:%s%s\n' "$1" "${2:+ $2}"; }
 out="$(printf '%s\n' "$reload_fail" | classify_log "chopi-proxy.sh" "" record_reload_hook false)"
-assert_contains "$out" "HOOK:failed rules" "a failed reload fires the reload hook with 'failed', of the rules"
+assert_contains "$out" "HOOK:failed" "a failed reload fires the reload hook with 'failed'"
 assert_not_contains "$out" "HOOK:ok" "  -> and not with 'ok'"
 out="$(printf '%s\n' "$reload_ok" | classify_log "chopi-proxy.sh" "" record_reload_hook false)"
-assert_contains "$out" "HOOK:ok rules" "a successful reload fires the reload hook with 'ok', of the rules"
+assert_contains "$out" "HOOK:ok" "a successful reload fires the reload hook with 'ok'"
 assert_not_contains "$out" "HOOK:failed" "  -> and not with 'failed'"
 
 out="$(printf '%s\n' "$reload_ok" | classify_verbose)"
 assert_eq "$out" "$reload_ok
-[chopi-proxy.sh] rules reloaded  @ T" "verbose rules reload -> raw line, then the formatted line after it"
+[chopi-proxy.sh] network config reloaded  @ T" "verbose reload -> raw line, then the formatted line after it"
 
 # Fail-safe under the live proxy's `set -e`: if format-reload.jq itself fails, the line
 # surfaces raw (via format-misc.jq) and the loop survives to process later lines.
@@ -262,46 +262,23 @@ assert_eq "$out" "$reload_ok
 
 
 # ---------------------------------------------------------------------------
-echo "GitHub allowlist hot-reload lines (format-reload, as for the rules)"
-# ---------------------------------------------------------------------------
-# The relays' supervisor (.internal/proxy/supervise.go) logs a reload of the allowlist as the rules'
-# is logged: a failure keeps the relays serving the previous allowlist.
-allowlist_ok='{"level":"info","msg":"GitHub allowlist reloaded","allowlist":"/x/github-allowlist","time":"T"}'
-allowlist_fail='{"level":"error","msg":"GitHub allowlist reload failed; keeping the previous relays","error":"rendering the GitHub relays'"'"' config from /x/github-allowlist: exit status 1","allowlist":"/x/github-allowlist","time":"T"}'
-
-out="$(printf '%s\n' "$allowlist_ok" | classify)"
-assert_eq "$out" "[chopi-proxy.sh] GitHub allowlist reloaded  @ T" "allowlist reload -> plain 'GitHub allowlist reloaded' line"
-out="$(printf '%s\n' "$allowlist_fail" | classify)"
-assert_eq "$out" "[chopi-proxy.sh] GITHUB ALLOWLIST RELOAD FAILED (previous relays kept)  rendering the GitHub relays' config from /x/github-allowlist: exit status 1  @ T" \
-    "failed allowlist reload -> loud line naming the error"
-
-out="$(printf '%s\n' "$allowlist_fail" | classify_log "chopi-proxy.sh" "" record_reload_hook false)"
-assert_contains "$out" "HOOK:failed allowlist" "a failed allowlist reload fires the reload hook with 'failed', of the allowlist"
-out="$(printf '%s\n' "$allowlist_ok" | classify_log "chopi-proxy.sh" "" record_reload_hook false)"
-assert_contains "$out" "HOOK:ok allowlist" "a successful allowlist reload fires the reload hook with 'ok', of the allowlist"
-
-
-# ---------------------------------------------------------------------------
 echo "workspace config hot-reload lines (as the base config's, saying they are the workspace's)"
 # ---------------------------------------------------------------------------
 # The proxy logs a reload of a file added to the base one -- chopi's, the workspace's own -- as it
 # logs the base file's, saying what it reloaded, and naming the file, in fields of their own.
-ws_rules_ok='{"level":"info","msg":"egress ACL reloaded","name":"ws/proxy-rules.yaml","rules":"/x/ws/proxy-rules.yaml","time":"T","what":"workspace rules"}'
-ws_rules_fail='{"error":"bad key","level":"error","msg":"egress ACL reload failed; keeping the previous rules","name":"ws/proxy-rules.yaml","rules":"/x/ws/proxy-rules.yaml","time":"T","what":"workspace rules"}'
-ws_allowlist_ok='{"allowlist":"/x/ws/github-allowlist","level":"info","msg":"GitHub allowlist reloaded","name":"ws/github-allowlist","time":"T","what":"workspace GitHub allowlist"}'
+ws_ok='{"level":"info","msg":"network config reloaded","name":"ws/network.yaml","network":"/x/ws/network.yaml","time":"T","what":"workspace network config"}'
+ws_fail='{"error":"bad key","level":"error","msg":"network config reload failed; keeping the previous config","name":"ws/network.yaml","network":"/x/ws/network.yaml","time":"T","what":"workspace network config"}'
 
-out="$(printf '%s\n' "$ws_rules_ok" | classify)"
-assert_eq "$out" "[chopi-proxy.sh] workspace rules reloaded  @ T" "workspace rules reload -> says it is the workspace's"
-out="$(printf '%s\n' "$ws_rules_fail" | classify)"
-assert_eq "$out" "[chopi-proxy.sh] WORKSPACE RULES RELOAD FAILED (previous rules kept)  bad key  @ T" \
+out="$(printf '%s\n' "$ws_ok" | classify)"
+assert_eq "$out" "[chopi-proxy.sh] workspace network config reloaded  @ T" "workspace config reload -> says it is the workspace's"
+out="$(printf '%s\n' "$ws_fail" | classify)"
+assert_eq "$out" "[chopi-proxy.sh] WORKSPACE NETWORK CONFIG RELOAD FAILED (previous config kept)  bad key  @ T" \
     "  -> as does its failure, loud"
-out="$(printf '%s\n' "$ws_allowlist_ok" | classify)"
-assert_eq "$out" "[chopi-proxy.sh] workspace GitHub allowlist reloaded  @ T" "workspace allowlist reload -> says it is the workspace's"
 
-out="$(printf '%s\n' "$ws_rules_fail" | classify_log "chopi-proxy.sh" "" record_reload_hook false)"
-assert_contains "$out" "HOOK:failed rules $ws_rules_fail" "a failed workspace rules reload fires the reload hook, with its line, for the banner to say"
-out="$(printf '%s\n' "$ws_allowlist_ok" | classify_log "chopi-proxy.sh" "" record_reload_hook false)"
-assert_contains "$out" "HOOK:ok allowlist $ws_allowlist_ok" "a workspace allowlist reload fires the reload hook, with its line"
+out="$(printf '%s\n' "$ws_fail" | classify_log "chopi-proxy.sh" "" record_reload_hook false)"
+assert_contains "$out" "HOOK:failed $ws_fail" "a failed workspace config reload fires the reload hook, with its line, for the banner to say"
+out="$(printf '%s\n' "$ws_ok" | classify_log "chopi-proxy.sh" "" record_reload_hook false)"
+assert_contains "$out" "HOOK:ok $ws_ok" "a workspace config reload fires the reload hook, with its line"
 
 
 # ---------------------------------------------------------------------------
@@ -430,18 +407,17 @@ echo "the proxies' config is out of the sandbox's reach to change, whatever else
 config_t="$TMPDIR/home dir"
 mkdir -p "$config_t/chopi/config" "$config_t/dotfiles"
 config_t="$(realpath "$config_t")"   # as the profile has them, through the TMPDIR's symlinks
-: > "$config_t/dotfiles/rules.yaml"
-ln -s "$config_t/dotfiles/rules.yaml" "$config_t/chopi/config/proxy-rules.yaml"
-: > "$config_t/chopi/config/github-allowlist"
+: > "$config_t/dotfiles/network.yaml"
+ln -s "$config_t/dotfiles/network.yaml" "$config_t/chopi/config/network.yaml"
 ( CHOPI_DIR="$config_t/chopi" PROXY_CONFIG_DIR="$config_t/.chopi/config"
   write_proxy_config_profile "$TMPDIR/config.sb" )
 config_rules="$(grep -v '^;' "$TMPDIR/config.sb")"
 assert_contains "$config_rules" '(deny file-write* (subpath "'"$config_t/.chopi/config"'"))' \
     "the profile denies changing anything in the custom config dir, any session's"
-assert_contains "$config_rules" '(deny file-write* (subpath "'"$config_t/dotfiles/rules.yaml"'"))' \
-    "  -> and the default rules, where they link"
-assert_contains "$config_rules" '(deny file-write* (subpath "'"$config_t/chopi/config/github-allowlist"'"))' \
-    "  -> and the default allowlist"
+assert_contains "$config_rules" '(deny file-write* (subpath "'"$config_t/dotfiles/network.yaml"'"))' \
+    "  -> and the default network config, where it links"
+assert_contains "$config_rules" '(deny file-write* (subpath "'"$config_t/chopi/config/network.yaml"'"))' \
+    "  -> and the link to it"
 assert_not_contains "$config_rules" 'file-read' "  -> leaving reading them as granted"
 assert_contains "$config_rules" '(deny file-write* (literal "'"$config_t/.chopi"'"))' \
     "  -> and pins their ancestors, so none can be renamed away and replaced, nor made where missing"
@@ -477,7 +453,7 @@ while [ "\$#" -gt 0 ]; do
         --dir) dir="\$2" ;;
     esac
     case "\$1" in
-        --log|--parent|--dir|--rules|--github-allowlist|--add-rules|--add-github-allowlist) printf '%s=%s\n' "\$1" "\$2" >> "$TMPDIR/stub-args"; shift 2 ;;
+        --log|--parent|--dir|--network|--add-network) printf '%s=%s\n' "\$1" "\$2" >> "$TMPDIR/stub-args"; shift 2 ;;
         *) shift ;;
     esac
 done
@@ -505,9 +481,8 @@ user_tmpdir="$TMPDIR/user tmp"
 # start_proxy_with PLAN [USER_TMPDIR] -- start a session proxy under the stub.
 start_proxy_with() {
     : > "$TMPDIR/stub-args"
-    STUB_PLAN="$1" launch_session_proxy "$TMPDIR/rules.yaml" "$TMPDIR/allowlist" "" \
-        "${2-$user_tmpdir}" "$TMPDIR/ws/$DEFAULT_PROXY_RULES" "$TMPDIR/ws/$DEFAULT_GITHUB_ALLOWLIST" \
-        && await_session_proxy
+    STUB_PLAN="$1" launch_session_proxy "$TMPDIR/network.yaml" "" "${2-$user_tmpdir}" \
+        "$TMPDIR/ws/$DEFAULT_NETWORK_CONFIG" && await_session_proxy
 }
 
 # Not in a $(...): the proxy must outlive the call, as it does in chopi, and a job started under job
@@ -518,20 +493,16 @@ assert_eq "$(cat "$TMPDIR/start.err")" "" "  -> quietly"
 assert_eq "$SESSION_PROXY_PORT" 24760 "  -> its port the one it reports"
 assert_eq "$SESSION_RELAY_PORT" 24761 "  -> and the relay's"
 assert_eq "$SESSION_GH_SOCK" "$SESSION_PROXY_DIR/$PROXY_GH_SOCK_FILE_NAME" "  -> and the API relay's socket"
-assert_contains "$(cat "$TMPDIR/stub-args")" "--rules=$TMPDIR/rules.yaml" "  -> passing the configured rules"
-assert_contains "$(cat "$TMPDIR/stub-args")" "--github-allowlist=$TMPDIR/allowlist" "  -> and the configured allowlist"
-assert_contains "$(cat "$TMPDIR/stub-args")" "--add-rules=$TMPDIR/ws/$DEFAULT_PROXY_RULES" "  -> and the rules adding to them"
-assert_contains "$(cat "$TMPDIR/stub-args")" "--add-github-allowlist=$TMPDIR/ws/$DEFAULT_GITHUB_ALLOWLIST" "  -> and the allowlist"
+assert_contains "$(cat "$TMPDIR/stub-args")" "--network=$TMPDIR/network.yaml" "  -> passing the configured network config"
+assert_contains "$(cat "$TMPDIR/stub-args")" "--add-network=$TMPDIR/ws/$DEFAULT_NETWORK_CONFIG" "  -> and the one adding to it"
 assert_contains "$(cat "$TMPDIR/stub-args")" "--log=$CHOPI_PROXY_LOG_DIR/proxy-" "  -> logging under the log dir"
 pid="$SESSION_PROXY_PID" dir="$SESSION_PROXY_DIR" child="$(cat "$TMPDIR/stub-child")"
 kill -0 "$pid" 2>/dev/null
 assert_zero $? "  -> and stays up"
 assert_contains "$(cat "$TMPDIR/stub-args")" "--dir=$dir" "  -> with a dir of its own"
 # For later sessions to protect what it reads (proxy_config_paths), the added files included.
-assert_eq "$(cat "$dir/$PROXY_CONFIGS_FILE_NAME")" "$TMPDIR/rules.yaml
-$TMPDIR/allowlist
-$TMPDIR/ws/$DEFAULT_PROXY_RULES
-$TMPDIR/ws/$DEFAULT_GITHUB_ALLOWLIST" "  -> listing every config file it reads there"
+assert_eq "$(cat "$dir/$PROXY_CONFIGS_FILE_NAME")" "$TMPDIR/network.yaml
+$TMPDIR/ws/$DEFAULT_NETWORK_CONFIG" "  -> listing every config file it reads there"
 assert_eq "$(dirname "$dir")" "$PROXY_RUN_DIR" "  -> in the run dir, out of the sandbox's reach"
 # Not chopi's TMPDIR, which goes with the session: an editor a banner opens can outlive it.
 assert_contains "$(cat "$TMPDIR/stub-args")" "TMPDIR=$user_tmpdir"$'\n' "  -> with the TMPDIR chopi was started with"
@@ -575,8 +546,7 @@ assert_contains "$(cat "$TMPDIR/start.err")" "a warning for the user" "  -> show
 stop_session_proxy
 
 # Stopped while still starting, as chopi stops it when its own setup fails or the user hits Ctrl-C.
-STUB_PLAN=starting launch_session_proxy "$TMPDIR/rules.yaml" "$TMPDIR/allowlist" "" "" \
-    "$TMPDIR/ws/$DEFAULT_PROXY_RULES" "$TMPDIR/ws/$DEFAULT_GITHUB_ALLOWLIST"
+STUB_PLAN=starting launch_session_proxy "$TMPDIR/network.yaml" "" "" "$TMPDIR/ws/$DEFAULT_NETWORK_CONFIG"
 pid="$SESSION_PROXY_PID" dir="$SESSION_PROXY_DIR"
 sleep 0.2
 stop_session_proxy
@@ -615,7 +585,7 @@ kill "$(cat "$TMPDIR/stub-child")" 2>/dev/null
 echo "option values (an option given no value, or an empty one, is refused)"
 # ---------------------------------------------------------------------------
 # Refused before anything is started, the log included.
-required=(--dir --log --parent --rules --github-allowlist --add-rules --add-github-allowlist)
+required=(--dir --log --parent --network --add-network)
 for opt in "${required[@]}"; do
     others=()
     for other in "${required[@]}"; do
@@ -661,16 +631,15 @@ assert_contains "$out" "another user" "  -> naming why"
 
 
 # ---------------------------------------------------------------------------
-echo "a missing rules file"
+echo "a missing network config"
 # ---------------------------------------------------------------------------
-# A missing rules file ends any run that gets past startup's checks, with nothing started.
-no_rules="$TMPDIR/no-such-rules.yaml"
+# A missing network config ends any run that gets past startup's checks, with nothing started.
+no_network="$TMPDIR/no-such-network.yaml"
 mkdir -p "$TMPDIR/pg-proxy"
 out="$("$repo/.internal/chopi-proxy.sh" --dir "$TMPDIR/pg-proxy" --log "$TMPDIR/pg-proxy.log" \
-    --parent $$ --rules "$no_rules" --github-allowlist /dev/null \
-    --add-rules "$TMPDIR/no-such-ws/$DEFAULT_PROXY_RULES" \
-    --add-github-allowlist "$TMPDIR/no-such-ws/$DEFAULT_GITHUB_ALLOWLIST" 2>&1)"
-assert_contains "$out" "$no_rules" "a missing rules file is named on stderr"
+    --parent $$ --network "$no_network" \
+    --add-network "$TMPDIR/no-such-ws/$DEFAULT_NETWORK_CONFIG" 2>&1)"
+assert_contains "$out" "$no_network" "a missing network config is named on stderr"
 
 
 # ---------------------------------------------------------------------------
@@ -724,9 +693,9 @@ assert_not_eq "$(reload_banner_group /x/allow env)" "$(reload_banner_group /x/al
     "  -> but not with a different one, whose reload can fail where theirs succeeds"
 assert_not_eq "$(reload_banner_group /x/allow env)" "$(reload_banner_group /y/allow env)" \
     "  -> nor with a different file"
-assert_not_eq "$(reload_banner_group /x/rules /ws1/rules)" "$(reload_banner_group /x/rules /ws2/rules)" \
+assert_not_eq "$(reload_banner_group /x/network /ws1/network)" "$(reload_banner_group /x/network /ws2/network)" \
     "sessions reading the same base file with different workspace files don't share its group"
-assert_not_eq "$(reload_banner_group /x/rules /ws1/rules)" "$(reload_banner_group /ws1/rules /x/rules)" \
+assert_not_eq "$(reload_banner_group /x/network /ws1/network)" "$(reload_banner_group /ws1/network /x/network)" \
     "  -> nor do a base file's and its workspace file's"
 
 
@@ -735,15 +704,18 @@ assert_not_eq "$(reload_banner_group /x/rules /ws1/rules)" "$(reload_banner_grou
 banner_sequence="$(
     eval "$(sed -n '/^notify_reload() {$/,/^}$/p' "$repo/.internal/chopi-proxy.sh")"
     notify() { printf '%s %s\n' "$1" "$3"; }
-    RULES_RELOAD_GROUP=base
-    RULES_WS_RELOAD_GROUP=workspace
-    notify_reload failed rules '{"rules":"/config/ws/rules.yaml","what":"workspace rules","added":true}'
-    notify_reload failed rules '{"rules":"/config/rules.yaml","what":"rules","added":false}'
-    notify_reload ok rules '{"rules":"/config/rules.yaml","what":"rules","added":false}'
-    notify_reload failed rules 'not json'
+    NETWORK_GROUP='group(/config/network.yaml /config/ws/network.yaml gh)'
+    ADD_NETWORK_GROUP='group(/config/ws/network.yaml /config/network.yaml gh)'
+    notify_reload failed '{"network":"/config/ws/network.yaml","added":true,"what":"workspace network config"}'
+    notify_reload failed '{"network":"/config/network.yaml","added":false,"what":"network config"}'
+    notify_reload ok '{"network":"/config/network.yaml","added":false,"what":"network config"}'
+    notify_reload failed 'not json'
 )"
-assert_eq "$banner_sequence" $'workspace workspace rules reload failed\nbase rules reload failed\nbase rules reloaded\nbase proxy config reload failed' \
-    "each file's reloads go to its own group, so a base reload leaves the workspace file's failure up"
+assert_eq "$banner_sequence" "group(/config/ws/network.yaml /config/network.yaml gh) workspace network config reload failed
+group(/config/network.yaml /config/ws/network.yaml gh) network config reload failed
+group(/config/network.yaml /config/ws/network.yaml gh) network config reloaded
+group(/config/network.yaml /config/ws/network.yaml gh) network config reload failed" \
+    "each file's reloads go to its own group, keyed by the files and token source it is taken up with, so a base reload leaves the workspace file's failure up"
 
 # ---------------------------------------------------------------------------
 summary

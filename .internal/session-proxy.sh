@@ -27,9 +27,8 @@ SESSION_PROXY_PORT=""
 SESSION_RELAY_PORT=""
 SESSION_GH_SOCK=""
 
-# Start the session's proxy on the rules RULES and the GitHub allowlist ALLOWLIST, with its log
-# verbose when VERBOSE is non-empty. ADD_RULES and ADD_ALLOWLIST add to RULES and ALLOWLIST, and
-# either may be missing.
+# Start the session's proxy on the network config NETWORK, with its log verbose when VERBOSE is
+# non-empty. ADD_NETWORK adds to NETWORK, and may be missing.
 #
 # This returns as soon as the proxy is launched, so chopi goes on with its own setup as the proxy
 # starts. await_session_proxy waits for the proxy.
@@ -38,10 +37,10 @@ SESSION_GH_SOCK=""
 # none. The proxy runs with it, not with chopi's, which goes with the session: an editor its banner
 # opens can outlive the session, and so must the TMPDIR it's given.
 #
-# usage: launch_session_proxy RULES ALLOWLIST VERBOSE USER_TMPDIR ADD_RULES ADD_ALLOWLIST
+# usage: launch_session_proxy NETWORK VERBOSE USER_TMPDIR ADD_NETWORK
 launch_session_proxy() {
-    arity 6
-    local rules="$1" allowlist="$2" verbose="$3" user_tmpdir="$4" add_rules="$5" add_allowlist="$6"
+    arity 4
+    local network="$1" verbose="$2" user_tmpdir="$3" add_network="$4"
 
     if ! mkdir -p "$CHOPI_PROXY_LOG_DIR" 2>/dev/null; then
         echo "chopi: cannot create the proxy log dir $CHOPI_PROXY_LOG_DIR" >&2
@@ -62,12 +61,11 @@ launch_session_proxy() {
 
     # The proxy puts the relays' log beside its own, as a .caddy.log, which the sweep above covers
     # too.
-    local flags=(--log "$SESSION_PROXY_LOG" --parent "$$" --rules "$rules"
-                 --github-allowlist "$allowlist" --add-rules "$add_rules"
-                 --add-github-allowlist "$add_allowlist")
+    local flags=(--log "$SESSION_PROXY_LOG" --parent "$$" --network "$network"
+                 --add-network "$add_network")
     [ -n "$verbose" ] && flags+=(--verbose)
 
-    prepare_session_proxy_dir "$rules" "$allowlist" "$add_rules" "$add_allowlist" || return 1
+    prepare_session_proxy_dir "$network" "$add_network" || return 1
 
     # Job control puts the proxy in a process group of its own, out of reach of the terminal's
     # signals: a Ctrl-C meant for the sandboxed command must not stop the proxy under it. chopi

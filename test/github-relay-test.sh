@@ -74,10 +74,10 @@ cleanup() { stop_session_proxy; rm -rf "$TMPDIR"; }
 trap cleanup EXIT
 
 # The outgoing proxy, which serves beside the relays, gets rules allowing nothing: only the relays
-# are under test.
-printf 'allowed_domains: []\n' > "$WORK/rules.yaml"
-# The GitHub allowlist stays empty: the fake renderer below ignores it.
-: > "$WORK/allowlist"
+# are under test. Its GitHub allowlist holds a dummy entry. The fake renderer below ignores the
+# entry, but a save with no edit renders the relays again only for an allowlist with entries, and
+# reload_relays relies on that.
+printf 'allowed_domains: []\ngithub_allowlist: [chopi-e2e/dummy]\n' > "$WORK/network.yaml"
 
 
 # start_relays CONFIG LOG -- start the proxy as a session's would, the relays on the Caddy config
@@ -85,7 +85,7 @@ printf 'allowed_domains: []\n' > "$WORK/rules.yaml"
 # SESSION_PROXY_PID, CADDY_PID, SESSION_RELAY_PORT, SESSION_GH_SOCK and git_url once they serve, or
 # fails. Awaited as chopi awaits a session's proxy, sharing its handshake. The fake renderer
 # "renders" the config by printing RELAY_CONFIG. reload_relays edits RELAY_CONFIG, then saves the
-# GitHub allowlist with no edit, so the proxy renders the relays' config again.
+# network config with no edit, so the proxy renders the relays' config again.
 RELAY_CONFIG="$WORK/relay.caddy"
 printf '#!/bin/sh\nexec cat %q\n' "$RELAY_CONFIG" > "$WORK/render"
 chmod +x "$WORK/render"
@@ -93,12 +93,12 @@ start_relays() {
     local config="$1" log="$2"
     printf '%s' "$config" > "$RELAY_CONFIG"
     RELAY_LOG="$log"
-    prepare_session_proxy_dir "$WORK/rules.yaml" "$WORK/allowlist" || return 1
+    prepare_session_proxy_dir "$WORK/network.yaml" || return 1
     # shellcheck disable=SC2034 # consumed by await_session_proxy
     SESSION_PROXY_LOG="$log"
     # shellcheck disable=SC2153 # set by prepare_session_proxy_dir
-    run_chopi_smokescreen "$SESSION_PROXY_DIR" $$ "$WORK/rules.yaml" "$WORK/allowlist" "$WORK/render" \
-        "$log.caddy" "$(realpath "$WORK")/ws/rules.yaml" "$(realpath "$WORK")/ws/allowlist" >>"$log" 2>"$SESSION_PROXY_ERR" &
+    run_chopi_smokescreen "$SESSION_PROXY_DIR" $$ "$WORK/network.yaml" "$WORK/render" \
+        "$log.caddy" "$(realpath "$WORK")/ws/network.yaml" >>"$log" 2>"$SESSION_PROXY_ERR" &
     SESSION_PROXY_PID=$!
     await_session_proxy 2>>"$log" || return 1
     CADDY_PID="$(pgrep -P "$SESSION_PROXY_PID" -x caddy)"
@@ -109,15 +109,15 @@ start_relays() {
 # edit does: on the same listeners, by a new Caddy. Sets CADDY_PID to it once it serves, or fails.
 reload_relays() {
     local config="$1" _ before
-    before="$(grep -c 'GitHub allowlist reloaded' "$RELAY_LOG")"
+    before="$(grep -c 'network config reloaded' "$RELAY_LOG")"
     printf '%s' "$config" > "$RELAY_CONFIG"
-    touch "$WORK/allowlist"
+    touch "$WORK/network.yaml"
     for _ in {1..300}; do
-        if [ "$(grep -c 'GitHub allowlist reloaded' "$RELAY_LOG")" -gt "$before" ]; then
+        if [ "$(grep -c 'network config reloaded' "$RELAY_LOG")" -gt "$before" ]; then
             CADDY_PID="$(pgrep -n -P "$SESSION_PROXY_PID" -x caddy)"
             return 0
         fi
-        grep -q 'GitHub allowlist reload failed' "$RELAY_LOG" && return 1
+        grep -q 'network config reload failed' "$RELAY_LOG" && return 1
         sleep 0.1
     done
     return 1
@@ -353,7 +353,7 @@ assert_contains "$(cat "$WORK/b_evil")" '"message":"chopi GitHub relay: unsuppor
 #     the raw "Requires authentication" to a message naming the allowlist.
 api_body "$WORK/h_anonw" "$WORK/b_anonw" -X POST "$api_url/repos/torvalds/linux/issues"
 assert_contains "$(head -1 "$WORK/h_anonw")" ' 401 ' "anonymous write is refused (401)"
-assert_contains "$(cat "$WORK/b_anonw")" 'relay authenticates only repos in' "anonymous-write deny names the allowlist"
+assert_contains "$(cat "$WORK/b_anonw")" 'relay authenticates only repos on' "anonymous-write deny names the allowlist"
 
 # 4i. the chain behind `gh run view --log`, walked for real: a run's jobs_url is an absolute
 #     api.github.com URL, the job-log endpoint answers a redirect, and the signed URL it points at
@@ -550,7 +550,7 @@ else
     assert_contains "$(cat "$WORK/b_up5")" 'GitHub rejected the relay credential' "  -> and shows the informative message"
 
     api_body "$WORK/h_up5n" "$WORK/b_up5n" -X POST "$up_url/repos/torvalds/linux/releases/1/assets?name=x"
-    assert_contains "$(cat "$WORK/b_up5n")" 'relay authenticates only repos in' "non-allowlisted asset upload is refused naming the allowlist"
+    assert_contains "$(cat "$WORK/b_up5n")" 'relay authenticates only repos on' "non-allowlisted asset upload is refused naming the allowlist"
 
     # Code search: the bogus credential tells the routes apart, as above. A query scoped to the
     # owner/* entry rides the credentialed route (GitHub's 401); every other is the relay's 403.
@@ -565,7 +565,7 @@ else
     assert_eq "$(api_code "$api_url/orgs/octocat/members")"                      403 "other org endpoints carry no credential"
 
     api_body "$WORK/h_up5t" "$WORK/b_up5t" --path-as-is -X POST "$up_url/repos/octocat/x/../../../user"
-    assert_contains     "$(cat "$WORK/b_up5t")" 'relay authenticates only repos in' "uploads dot-segment traversal is cleaned before credential scoping"
+    assert_contains     "$(cat "$WORK/b_up5t")" 'relay authenticates only repos on' "uploads dot-segment traversal is cleaned before credential scoping"
     assert_not_contains "$(cat "$WORK/b_up5t")" 'rejected the relay credential'     "  -> no credential carried past the uploads allowlist"
 fi
 

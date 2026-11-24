@@ -66,11 +66,11 @@ CHOPI_SAFE_WRITE_TARGETS=(
     # CLAUDE.md
 )
 
-# The absolute paths of the outgoing proxy rules and the GitHub allowlist to use instead of the
-# defaults, config/proxy-rules.yaml and config/github-allowlist. Each must be in ~/.chopi/config,
-# where no sandboxed command can write it: a command that could write it would lift its own limits.
-# CHOPI_PROXY_RULES="$HOME/.chopi/config/team-proxy-rules.yaml"
-# CHOPI_GITHUB_ALLOWLIST="$HOME/.chopi/config/team-github-allowlist"
+# The absolute path of the network config to use instead of the default, config/network.yaml.
+# The network config holds the outgoing proxy's allowed and denied hosts, and the GitHub
+# allowlist. It must be in ~/.chopi/config, where no sandboxed command can write it: a command
+# that could write it would lift its own limits.
+# CHOPI_NETWORK_CONFIG="$HOME/.chopi/config/team-network.yaml"
 
 # Extra git config for the sandboxed command, as key=value pairs. They are appended to the
 # GIT_CONFIG_* environment inside the sandbox, so they merge with, rather than overwrite,

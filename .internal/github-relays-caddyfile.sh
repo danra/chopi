@@ -42,7 +42,7 @@ main() {
     # is allowlisted, so a code search or org-wide read scoped to one reaches only allowlisted repos.
     local allowlist_regex="" owners_regex="" entry esc re
     for entry in "$@"; do
-        # The proxy already checks every entry as it reads the allowlists, and names the file
+        # The proxy already checks every entry as it reads the network config, and names the file
         # in its error. This check stays because the regex built below is safe only for entries
         # that pass it.
         if ! is_allowlist_entry "$entry"; then
@@ -110,9 +110,9 @@ emit_caddyfile() {
 
     local deny_fetch deny_push auth_msg deny_auth_fetch deny_auth_push
     deny_fetch="$(deny_pkt git-upload-pack \
-        "chopi: repo not found, or private and missing from chopi's config/github-allowlist")"
+        "chopi: repo not found, or private and missing from the github_allowlist of chopi's network config")"
     deny_push="$(deny_pkt git-receive-pack \
-        "chopi: push denied, repo is not in chopi's config/github-allowlist")"
+        "chopi: push denied, repo is not on the github_allowlist of chopi's network config")"
     auth_msg="chopi: GitHub rejected the relay credential; refresh the host's GitHub token outside the sandbox (gh auth login / GH_TOKEN)"
     deny_auth_fetch="$(deny_pkt git-upload-pack "$auth_msg")"
     deny_auth_push="$(deny_pkt git-receive-pack "$auth_msg")"
