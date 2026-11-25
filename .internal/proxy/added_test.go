@@ -537,9 +537,8 @@ func TestBrokenAddedRulesKeepTheProxyFromStarting(t *testing.T) {
 	}
 }
 
-// Added rules opening GitHub hosts beyond those the base allows are refused naming the added file,
-// even with the base's own refused -- the override taking both up, with a warning each -- and only
-// for the hosts the added rules open.
+// Added rules allowing GitHub hosts are refused naming the added file, even with the base's own
+// refused -- the override taking both up, with a warning each -- each file for the hosts it allows.
 func TestAddedRulesAllowingGitHubBeyondTheBase(t *testing.T) {
 	base := []byte(rulesAllowing("github.com"))
 	added := []byte("allowed_domains: [api.github.com]\n")
@@ -585,8 +584,9 @@ func TestAddedRulesBadGlobsNameTheFileAndList(t *testing.T) {
 }
 
 // Every way of spreading GitHub hosts, and another, over the base rules' and the added ones'
-// allowed_domains and global_deny_list: rules letting a GitHub host taking writes through are
-// refused, whichever file allows it, whatever the other holds.
+// allowed_domains and global_deny_list: rules are refused exactly when they let a GitHub host
+// taking writes through -- whichever file allows it, whatever the other holds -- each refusal naming
+// a file that allows a host that gets through.
 func TestRulesLettingGitHubThroughAreRefused(t *testing.T) {
 	hosts := []string{"github.com", "api.github.com", "*.github.com", "ok.example"}
 	var allows [][]string // every subset of hosts
@@ -609,8 +609,16 @@ func TestRulesLettingGitHubThroughAreRefused(t *testing.T) {
 					if err != nil {
 						t.Fatalf("%v:\n--- base\n%s--- added\n%s", err, base, added)
 					}
-					if through := gitHubThrough(rules); len(through) > 0 && len(refusals) == 0 {
-						t.Errorf("rules letting %v through taken up:\n--- base\n%s--- added\n%s", through, base, added)
+					through := gitHubThrough(rules)
+					if (len(through) > 0) != (len(refusals) > 0) {
+						t.Errorf("letting %v through, refused %v:\n--- base\n%s--- added\n%s", through, refusals, base, added)
+					}
+					for _, refusal := range refusals {
+						if !slices.ContainsFunc(refusal.allowed, func(host string) bool {
+							return slices.Contains(through, host) || host == "*.github.com"
+						}) {
+							t.Errorf("%v refused for none of %v, which get through:\n--- base\n%s--- added\n%s", refusal, through, base, added)
+						}
 					}
 				}
 			}

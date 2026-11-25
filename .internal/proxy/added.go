@@ -7,7 +7,6 @@ package main
 
 import (
 	"fmt"
-	"slices"
 
 	"github.com/stripe/smokescreen/pkg/smokescreen"
 	acl "github.com/stripe/smokescreen/pkg/smokescreen/acl/v1"
@@ -66,8 +65,8 @@ func newRules(conf *smokescreen.Config, allowed, deny []string) (*acl.ACL, error
 // loadRules loads the rules from the contents of the base rules file, at basePath, and of the one
 // added to it, at addedPath: nil content for one missing. The paths are for errors to name, each
 // naming the file to fix. It returns too the rules' gitHubExfiltration refusals, for the caller to
-// decide on: the base rules', if any, then that of the GitHub hosts the added ones allow beyond
-// them, if any, naming the added file.
+// decide on, each naming a file allowing its hosts: every file allowing any is refused, for all of
+// them to be fixed at once.
 func loadRules(conf *smokescreen.Config, basePath, addedPath string, baseContent, addedContent []byte) (*acl.ACL, []*exfiltrationError, error) {
 	type file struct {
 		path   string
@@ -91,28 +90,19 @@ func loadRules(conf *smokescreen.Config, basePath, addedPath string, baseContent
 	if err != nil {
 		return nil, nil, err
 	}
-	base, added := files[0].config, files[1].config
-	baseRules, err := newRules(conf, base.AllowedDomains, base.GlobalDenyList)
-	if err != nil {
-		return nil, nil, err
+	// Each file allows a subset of what the files together allow, beneath the same deny list: when
+	// they together allow no GitHub host, no file does, and one rule set is all it takes to know.
+	if gitHubExfiltration(rules, "") == nil {
+		return rules, nil, nil
 	}
 	var refusals []*exfiltrationError
-	baseRefusal := gitHubExfiltration(baseRules, basePath)
-	if baseRefusal != nil {
-		refusals = append(refusals, baseRefusal)
-	}
-	if len(added.AllowedDomains) == 0 {
-		// The added deny list only narrows what the base allows: no GitHub host beyond its refusal.
-		return rules, refusals, nil
-	}
-	if all := gitHubExfiltration(rules, addedPath); all != nil {
-		if baseRefusal != nil {
-			all.allowed = slices.DeleteFunc(all.allowed, func(host string) bool {
-				return slices.Contains(baseRefusal.allowed, host)
-			})
+	for _, f := range files {
+		fileRules, err := newRules(conf, f.config.AllowedDomains, deny)
+		if err != nil {
+			return nil, nil, err
 		}
-		if len(all.allowed) > 0 {
-			refusals = append(refusals, all)
+		if e := gitHubExfiltration(fileRules, f.path); e != nil {
+			refusals = append(refusals, e)
 		}
 	}
 	return rules, refusals, nil
