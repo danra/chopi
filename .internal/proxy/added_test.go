@@ -83,7 +83,7 @@ func wantReloadFailure(t *testing.T, hook *logrustest.Hook, substr, want string)
 // wantGlobalDenied checks the holder denies host for the global deny list, as a known denial.
 func wantGlobalDenied(t *testing.T, holder *swappableACL, host string) {
 	t.Helper()
-	if d, _ := holder.Decide(acl.DecideArgs{Host: host}); d.Result != acl.Deny || d.Reason != knownDenyReason {
+	if d, _ := holder.Decide(acl.DecideArgs{Host: host}); d.Result != acl.Deny || d.Reason != "host matched rule in global deny list" {
 		t.Errorf("%s: got %v (%q), want denied for the global deny list", host, d.Result, d.Reason)
 	}
 }
@@ -203,13 +203,6 @@ func TestAddedRulesReplacedByADanglingLinkAreKept(t *testing.T) {
 	wantGlobalDenied(t, holder, "quiet.example")
 }
 
-func TestAddedAllowedDomainsNeedABaseDefaultRule(t *testing.T) {
-	base, added := []byte(rulesWithoutDefault), []byte("allowed_domains: [ws.example]\n")
-	if _, _, err := loadRules(smokescreen.NewConfig(), "/rules.yaml", "/ws.yaml", base, added); err == nil || !strings.Contains(err.Error(), "no default rule") {
-		t.Errorf("got %v, want a refusal naming the missing default rule", err)
-	}
-}
-
 // The relays are rendered from the entries of both allowlists, in order: an added one missing, or
 // empty, adds nothing; comments and blank lines are no entries.
 func TestAllowlistEntriesJoinBothAllowlists(t *testing.T) {
@@ -327,15 +320,20 @@ func TestDeletedLinkInPlaceOfMissingAddedRulesIsConfirmedGone(t *testing.T) {
 // and a later poll of the base takes up nothing more: the two are taken up as one, as a session
 // starting would take them up.
 func TestBaseEditRefusedForTheAddedRulesIsTakenUpOnceTheyAllowIt(t *testing.T) {
-	conf, holder, rules, ws, hook := addedSetup(t, "allowed_domains: [ws.example]\n")
-	rewrite(t, rules, rules.base, conf.Log, rulesWithoutDefault)
-	wantReloadFailure(t, hook, "no default rule", "the base edit refused for the added rules")
+	// The added rules allow a GitHub host the base denies: a base edit no longer denying it opens it.
+	basePath, addedPath := addedFiles(t, rulesAllowing("base.example")+"global_deny_list: [api.github.com]\n",
+		"allowed_domains: [ws.example, api.github.com]\n")
+	conf, holder, rules, hook := setupWith(t, basePath, addedPath)
+	ws := rules.added
+	rewrite(t, rules, rules.base, conf.Log, rulesAllowing("new.example"))
+	wantReloadFailure(t, hook, "api.github.com", "the base edit refused for the added rules")
 	wantDecisions(t, holder, "after the refused base edit", map[string]acl.DecisionResult{"ws.example": acl.Allow})
 	wantNoReload(t, rules, rules.base, conf.Log, hook, 1, "an unchanged refused base edit taken up again")
 
 	rewrite(t, rules, ws, conf.Log, "global_deny_list: [quiet.example]\n")
 	reloaded(t, hook)
 	wantDecisions(t, holder, "once the added rules allow the base edit", map[string]acl.DecisionResult{
+		"new.example":  acl.Allow,
 		"base.example": acl.Deny,
 		"ws.example":   acl.Deny,
 	})
@@ -434,13 +432,13 @@ func TestBrokenAddedRulesDontHoldUpTheBaseReload(t *testing.T) {
 
 func TestBaseReloadDoesNotRetryUnreadableAddedRules(t *testing.T) {
 	skipIfRoot(t)
-	basePath, addedPath := addedFiles(t, rulesWithoutDefault, "")
+	basePath, addedPath := addedFiles(t, rulesAllowing("base.example"), "")
 	conf, holder, rules, hook := setupWith(t, basePath, addedPath)
-	rewrite(t, rules, rules.added, conf.Log, "allowed_domains: [ws.example]\n")
-	wantReloadFailure(t, hook, "no default rule", "the added rules require a default rule")
+	rewrite(t, rules, rules.added, conf.Log, "allowed_domains: [ws.example, api.github.com]\n")
+	wantReloadFailure(t, hook, "api.github.com", "the added rules require the base to deny api.github.com")
 
 	chmod(t, addedPath, 0)
-	rewrite(t, rules, rules.base, conf.Log, rulesAllowing("base.example"))
+	rewrite(t, rules, rules.base, conf.Log, rulesAllowing("base.example")+"global_deny_list: [api.github.com]\n")
 	rules.applyIfChanged(conf.Log, rules.added)
 	wantReloadFailure(t, hook, "permission denied", "the added rules are unreadable")
 	wantDecisions(t, holder, "while the added rules are unreadable", map[string]acl.DecisionResult{
@@ -488,22 +486,22 @@ func TestRestoringAccessToUnchangedWorkspaceRulesClearsWarning(t *testing.T) {
 	hook.Reset()
 	chmod(t, parent, 0o700)
 	rules.applyIfChanged(conf.Log, rules.added)
-	wantReloadFailure(t, hook, "added rules may only have", "the edit is still invalid")
+	wantReloadFailure(t, hook, "rules may only have", "the edit is still invalid")
 	wantDecisions(t, holder, "after access to the refused edit is restored", map[string]acl.DecisionResult{"ws.example": acl.Allow})
 }
 
 // An edit refused for what the other file had is taken up once that file changes for it to fit:
-// the added rules refused for the base's lacking a default rule are taken up with the base edit
-// adding one, their reload logged after the base edit's.
+// the added rules refused for allowing a GitHub host are taken up with the base edit denying it,
+// their reload logged after the base edit's.
 func TestRefusedAddedRulesAreRetriedOnABaseEdit(t *testing.T) {
-	basePath, addedPath := addedFiles(t, rulesWithoutDefault, "")
+	basePath, addedPath := addedFiles(t, rulesAllowing("base.example"), "")
 	conf, holder, rules, hook := setupWith(t, basePath, addedPath)
-	writeFile(t, addedPath, "allowed_domains: [ws.example]\n")
+	writeFile(t, addedPath, "allowed_domains: [ws.example, api.github.com]\n")
 	rules.applyIfChanged(conf.Log, rules.added)
-	wantReloadFailure(t, hook, "no default rule", "the added rules refused for the base's lacking a default rule")
+	wantReloadFailure(t, hook, "api.github.com", "the added rules refused for allowing api.github.com")
 
 	hook.Reset()
-	rewrite(t, rules, rules.base, conf.Log, rulesAllowing("base.example"))
+	rewrite(t, rules, rules.base, conf.Log, rulesAllowing("base.example")+"global_deny_list: [api.github.com]\n")
 	if len(hook.Entries) != 2 || hook.Entries[0].Data["rules"] != basePath ||
 		hook.Entries[1].Data["rules"] != addedPath || hook.Entries[1].Message != rulesReloaded {
 		t.Fatalf("want the base reload, then the added file's; got %+v", hook.Entries)
@@ -560,7 +558,7 @@ func TestAddedRulesAllowingGitHubBeyondTheBase(t *testing.T) {
 }
 
 // A host on the added global_deny_list is denied, as a known denial, whatever allows it: the base's
-// default rule and the added allowed_domains alike, which smokescreen would check first.
+// allowed_domains and the added ones alike.
 func TestAddedGlobalDenyListWinsOverAllows(t *testing.T) {
 	_, holder, _, _, _ := addedSetup(t, "allowed_domains: [ws.example]\nglobal_deny_list: [base.example, ws.example]\n")
 	wantGlobalDenied(t, holder, "base.example")
@@ -606,7 +604,7 @@ func TestRulesLettingGitHubThroughAreRefused(t *testing.T) {
 		for _, baseDeny := range denies {
 			for _, addedAllow := range allows {
 				for _, addedDeny := range denies {
-					base, added := baseRulesWith(baseAllow, baseDeny), hostsWith(addedAllow, addedDeny)
+					base, added := hostsWith(baseAllow, baseDeny), hostsWith(addedAllow, addedDeny)
 					rules, refusals, err := loadRules(smokescreen.NewConfig(), "/rules.yaml", "/ws.yaml", []byte(base), []byte(added))
 					if err != nil {
 						t.Fatalf("%v:\n--- base\n%s--- added\n%s", err, base, added)
@@ -637,12 +635,6 @@ func gitHubThrough(rules interface {
 // hostsWith is rules allowing allow and denying deny.
 func hostsWith(allow, deny []string) string {
 	return "allowed_domains: [" + quoted(allow) + "]\nglobal_deny_list: [" + quoted(deny) + "]\n"
-}
-
-// baseRulesWith is base rules, in smokescreen's format, allowing allow and denying deny.
-func baseRulesWith(allow, deny []string) string {
-	return "version: v1\nservices: []\ndefault:\n  name: default\n  action: enforce\n  allowed_domains: [" +
-		quoted(allow) + "]\nglobal_deny_list: [" + quoted(deny) + "]\n"
 }
 
 // quoted is hosts as a YAML flow list's items.

@@ -147,13 +147,8 @@ write_cfg "$cfg"
 write_test_rules() {
     arity 0
     cat > "$rules" <<EOF
-version: v1
-services: []
-default:
-  name: default
-  action: enforce
-  allowed_domains:
-    - $ALLOWED_HOST
+allowed_domains:
+  - $ALLOWED_HOST
 EOF
 }
 write_test_rules
@@ -247,15 +242,10 @@ echo "the session's proxy refuses rules that allow github.com/api.github.com (pr
 # ---------------------------------------------------------------------------
 exfil_rules="$PROXY_CONFIG_DIR/itest-rules-exfil.yaml"
 cat > "$exfil_rules" <<EOF
-version: v1
-services: []
-default:
-  name: default
-  action: enforce
-  allowed_domains:
-    - $ALLOWED_HOST
-    - github.com
-    - api.github.com
+allowed_domains:
+  - $ALLOWED_HOST
+  - github.com
+  - api.github.com
 EOF
 write_cfg "$base/config/exfil.sh" "CHOPI_PROXY_RULES=\"$exfil_rules\""
 out="$(chopi_cfg "$base/config/exfil.sh" /bin/sh -c 'echo RAN' 2>&1)"; rc=$?

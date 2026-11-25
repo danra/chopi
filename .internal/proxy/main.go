@@ -1,5 +1,5 @@
 // chopi-smokescreen -- a chopi session's proxy. It embeds Stripe's smokescreen egress proxy as a
-// library, takes its rules from the --rules file and hot-reloads them, and supervises the
+// library, takes its rules from chopi's rules files and hot-reloads them, and supervises the
 // session's GitHub relays, which Caddy serves.
 //
 //	chopi-smokescreen --dir DIR --parent PID --relay-log FILE --rules FILE --github-allowlist FILE
@@ -8,7 +8,7 @@
 //
 //   - Smokescreen's flags and log output are identical to the standalone smokescreen binary's,
 //     but for where it listens: --listen-ip and --listen-port are ignored. Smokescreen takes its
-//     rules from the --rules file, which the proxy reads itself, instead of an --egress-acl-file.
+//     rules from the rules files (see added.go) instead of an --egress-acl-file.
 //   - The proxy polls the --rules file for changes and takes up a new valid rule set right away.
 //     It swaps the rules in atomically.
 //   - The --add-rules and --add-github-allowlist files add to the base ones (see added.go). The
@@ -46,13 +46,11 @@ import (
 	"io"
 	"io/fs"
 	"log"
-	"maps"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -74,10 +72,8 @@ const (
 )
 
 type swappableACL struct {
-	current atomic.Pointer[ruleSet]
-	// allowGitHub is whether gitHubExfiltrationOverride is set. If it is, take only warns about
-	// rules allowing GitHub's domains.
-	allowGitHub bool
+	current     atomic.Pointer[acl.ACL]
+	allowGitHub bool // gitHubExfiltrationOverride is set: rules allowing GitHub's domains only warn
 }
 
 func (s *swappableACL) Decide(args acl.DecideArgs) (acl.Decision, error) {
@@ -89,7 +85,7 @@ func (s *swappableACL) Decide(args acl.DecideArgs) (acl.Decision, error) {
 //
 // It returns the first of gitHubExfiltration's refusals, exfiltration, leaving the rules as they
 // were. With allowGitHub set, it takes up the rules and passes each refusal to warn instead.
-func (s *swappableACL) take(rules *ruleSet, exfiltration []*exfiltrationError, warn func(error)) error {
+func (s *swappableACL) take(rules *acl.ACL, exfiltration []*exfiltrationError, warn func(error)) error {
 	if len(exfiltration) > 0 && !s.allowGitHub {
 		return exfiltration[0]
 	}
@@ -144,15 +140,11 @@ const gitHubExfiltrationOverride = "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAIN
 // sandboxed command could push data to ANY repo directly, skipping the relays. A *.github.com glob
 // is refused too, as it would allow any such host GitHub adds; a read-only host named alone, like
 // codeload.github.com, is not. The rules themselves decide, so whatever way they allow a host
-// counts -- a glob, the global allow list, an open or report policy. path is the rules file the
-// refusal names as allowing the hosts.
-func gitHubExfiltration(rules *ruleSet, path string) *exfiltrationError {
-	services := append(slices.Collect(maps.Keys(rules.Rules)), "") // "": the default rule
+// counts, a glob included. path is the rules file the refusal names as allowing the hosts.
+func gitHubExfiltration(rules *acl.ACL, path string) *exfiltrationError {
 	allows := func(host string) bool {
-		return slices.ContainsFunc(services, func(service string) bool {
-			d, _ := rules.Decide(acl.DecideArgs{Service: service, Host: host})
-			return d.Result == acl.Allow || d.Result == acl.AllowAndReport
-		})
+		d, _ := rules.Decide(acl.DecideArgs{Host: host})
+		return d.Result == acl.Allow
 	}
 	var allowed []string
 	if allows("github.com") {

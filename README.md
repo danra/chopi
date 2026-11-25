@@ -31,8 +31,16 @@ Before first use, review the configuration.
 
 ## Configuration
 
-To add or remove allowed domains, edit `config/proxy-rules.yaml`. To set the GitHub repos
-allowlist, edit `config/github-allowlist`.
+The proxy rules, `config/proxy-rules.yaml`, set what the session's proxy lets through:
+
+```yaml
+allowed_domains:      # the hosts the proxy allows; "*.example.com" for subdomains
+  - pypi.org
+global_deny_list:     # hosts the proxy denies even where allowed, without an alert
+  - "*.datadoghq.com"
+```
+
+To set the GitHub repos allowlist, edit `config/github-allowlist`.
 
 Listing a host in the rules' `global_deny_list` keeps its blocked requests (telemetry,
 auto-updates etc.) from spamming you with notifications.
@@ -53,14 +61,14 @@ prints the paths too. E.g. for `~/dev/myapp`:
 ```
 ~/.chopi/config/workspaces/-Users-me-dev-myapp-1a2b3c4d5e6f7a8b/
     sandbox.sh           # the repo's own sandbox config, see below
-    proxy-rules.yaml     # allowed_domains: [pypi.org], and/or global_deny_list
+    proxy-rules.yaml     # the repo's own proxy rules, in the base rules' format
     github-allowlist     # owner/repo or owner/*, one per line, as the base allowlist
 ```
 
 Either of the repo's files is optional. Each takes effect immediately, even when created or
-deleted mid-session. The repo's rules file takes only the keys `allowed_domains` and
-`global_deny_list`, and `chopi` refuses any other key. It can add hosts, or deny them. Either rules
-file's `global_deny_list` denies its hosts even where the other file allows them.
+deleted mid-session. The repo's rules file takes the same keys as the base one, and `chopi`
+refuses any other key. It can add hosts, or deny them. Either rules file's `global_deny_list`
+denies its hosts even where either file allows them.
 
 A mistake made in either of the repo's files mid-session never stops a running session: the edit
 doesn't take effect, as the notification says, and what the file added before it stays. An edit to

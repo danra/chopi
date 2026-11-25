@@ -75,8 +75,7 @@ trap cleanup EXIT
 
 # The outgoing proxy, which serves beside the relays, gets rules allowing nothing: only the relays
 # are under test.
-printf 'version: v1\nservices: []\ndefault:\n  name: default\n  action: enforce\n  allowed_domains: []\n' \
-    > "$WORK/rules.yaml"
+printf 'allowed_domains: []\n' > "$WORK/rules.yaml"
 # The GitHub allowlist stays empty: the fake renderer below ignores it.
 : > "$WORK/allowlist"
 

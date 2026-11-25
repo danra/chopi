@@ -17,19 +17,9 @@ import (
 	acl "github.com/stripe/smokescreen/pkg/smokescreen/acl/v1"
 )
 
-// A minimal valid rules file with no default rule, allowing nothing.
-const rulesWithoutDefault = "version: v1\nservices: []\n"
-
-// A minimal valid rules file allowing exactly one host.
+// A minimal rules file allowing exactly one host.
 func rulesAllowing(host string) string {
-	return fmt.Sprintf(`version: v1
-services: []
-default:
-  name: default
-  action: enforce
-  allowed_domains:
-    - %s
-`, host)
+	return fmt.Sprintf("allowed_domains:\n  - %s\n", host)
 }
 
 func writeFile(t *testing.T, path, content string) {
@@ -667,32 +657,16 @@ func TestGitHubExfiltration(t *testing.T) {
 	template := readFile(t, filepath.Join("../..", rulesTemplate))
 	for _, tc := range []struct{ name, rules, want string }{
 		{"a pre-relay rules file names both domains", rulesAllowing("api.anthropic.com") +
-			"    - github.com\n    - api.github.com\n    - raw.githubusercontent.com\n", "github.com, api.github.com"},
+			"  - github.com\n  - api.github.com\n  - raw.githubusercontent.com\n", "github.com, api.github.com"},
 		{"the shipped template is clean", template, ""},
-		{"a service's rule counts too", `version: v1
-services:
-  - name: svc
-    project: p
-    action: enforce
-    allowed_domains:
-      - api.github.com
-`, "api.github.com"},
-		{"the global allow list counts too", rulesAllowing("api.anthropic.com") +
-			"global_allow_list:\n  - github.com\n", "github.com"},
-		{"an open policy allows them without naming them", `version: v1
-services: []
-default:
-  name: default
-  action: open
-`, "github.com, *.github.com"},
 		{"the upload host counts", rulesAllowing(`uploads.github.com`), "uploads.github.com"},
 		{"the gist host counts", rulesAllowing(`gist.github.com`), "gist.github.com"},
 		{"a subdomain glob counts, as one", rulesAllowing(`"*.github.com"`), "rules.yaml allows *.github.com:"},
 		{"a read-only subdomain named alone doesn't", rulesAllowing("codeload.github.com"), ""},
-		{"the global deny list wins over the global allow list", rulesAllowing("api.anthropic.com") +
-			"global_allow_list:\n  - github.com\nglobal_deny_list:\n  - github.com\n", ""},
+		{"the deny list wins over the allowed domains", rulesAllowing("github.com") +
+			"global_deny_list:\n  - github.com\n", ""},
 		{"lookalike domains don't match", rulesAllowing("raw.githubusercontent.com") +
-			"    - mygithub.com\n    - github.com.evil.example\n", ""},
+			"  - mygithub.com\n  - github.com.evil.example\n", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, refusals, err := loadRules(smokescreen.NewConfig(), "rules.yaml", "", []byte(tc.rules), nil)
