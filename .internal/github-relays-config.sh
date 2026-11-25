@@ -2,13 +2,13 @@
 #
 # github-relays-config.sh -- print the Caddy config of chopi's GitHub relays, credentials included.
 #
-#   github-relays-config.sh <allowlist-file>...
+#   github-relays-config.sh [ENTRY...]
 #
-# Renders the config for the allowlists' union (github-relays-caddyfile.sh) and fills its credential
-# slots with the GitHub token: the GH_TOKEN or GITHUB_TOKEN set, else gh's. chopi-smokescreen runs
-# this as the proxy starts, and again on every edit to the allowlist, piping the output to Caddy
-# over stdin: the token never touches disk or any argv. A save of the allowlist with no edit runs it
-# again too, which takes up a token gh rotated.
+# Renders the config for the allowlist, one entry per argument (github-relays-caddyfile.sh), and
+# fills its credential slots with the GitHub token: the GH_TOKEN or GITHUB_TOKEN set, else gh's.
+# chopi-smokescreen runs this as the proxy starts, and again on every edit to the allowlist, piping
+# the output to Caddy over stdin: the token never touches disk or any argv. A save of the network
+# config with no edit runs it again too, which takes up a token gh rotated.
 #
 # Notes for the user, and why it fails, go to stderr: chopi-smokescreen logs the notes, and shows
 # why it fails in chopi's terminal where the proxy starts, and in its log on a reload.
@@ -20,13 +20,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 . "$SCRIPT_DIR/util.sh"
 
 main() {
-    if [ "$#" -eq 0 ]; then
-        echo "$SCRIPT_NAME: usage: $SCRIPT_NAME <allowlist-file>..." >&2
-        exit 2
-    fi
     local config token auth api_auth
     config="$("$SCRIPT_DIR/github-relays-caddyfile.sh" "$@")" \
-        || { echo "[$SCRIPT_NAME] error: could not render the GitHub relay config from $*" >&2; exit 1; }
+        || { echo "[$SCRIPT_NAME] error: could not render the GitHub relay config" >&2; exit 1; }
     if [[ "$config" == *@@CHOPI_AUTH@@* ]]; then
         token="$(resolve_gh_token)"
         if [ -z "$token" ]; then

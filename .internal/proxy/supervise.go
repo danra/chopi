@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -121,50 +122,60 @@ func takeEnv(names ...string) []string {
 	return taken
 }
 
-// relayConfig renders the relays' Caddy config: the output of cmd run on the GitHub allowlists'
-// contents. env holds the GitHub token the user exported, if any. Only cmd gets it, added to our
-// environment. paths are the allowlists' files, the base one and the one added to it, so that what
-// cmd says about their contents names them.
+// relayConfig renders the relays' Caddy config: the output of cmd run on the GitHub allowlist.
+// env holds the GitHub token the user exported, if any. Only cmd gets it, added to our
+// environment.
 type relayConfig struct {
-	cmd   string
-	env   []string
-	paths [2]string
+	cmd string
+	env []string
+}
+
+// allowlistEntry matches a GitHub allowlist entry: owner/repo, or owner/* for all the owner's
+// repos. github-relays-caddyfile.sh's is_allowlist_entry, which renders the relays from the
+// entries, checks the same. It is a sanity check that keeps a config value safe, and doesn't
+// follow GitHub's actual naming rules.
+var allowlistEntry = regexp.MustCompile(`^[A-Za-z0-9._-]+/([A-Za-z0-9._-]+|\*)$`)
+
+// allowlistEntries returns the GitHub allowlist the relays are rendered from: the entries of the
+// base allowlist, at basePath, then those of the one added to it, at addedPath. A nil added, for a
+// missing added allowlist, adds nothing.
+//
+// Each line holds one entry, with any trailing '#'-comment dropped and surrounding whitespace
+// trimmed. Blank lines hold none. allowlistEntries refuses a line that isn't an entry, naming its
+// file.
+func allowlistEntries(basePath, addedPath string, base, added []byte) ([]string, error) {
+	var entries []string
+	for _, file := range []struct {
+		path    string
+		content []byte
+	}{{basePath, base}, {addedPath, added}} {
+		for _, line := range strings.Split(string(file.content), "\n") {
+			entry, _, _ := strings.Cut(line, "#")
+			entry = strings.TrimSpace(entry)
+			if entry == "" {
+				continue
+			}
+			if !allowlistEntry.MatchString(entry) {
+				return nil, fmt.Errorf("%s: allowlist entry needs owner/repo or owner/*, using only A-Za-z0-9._-: '%s'", file.path, entry)
+			}
+			entries = append(entries, entry)
+		}
+	}
+	return entries, nil
 }
 
 // renderCancelGrace bounds how long a cancelled render's output pipes are waited on, once its
 // process group is TERMed, before they are closed on whatever still holds them.
 const renderCancelGrace = 2 * time.Second
 
-// render returns the relays' config, rendered by cmd from the allowlists' contents as taken up. It
-// also returns any notes cmd wrote on stderr for the user. If cmd fails, the error includes what
-// cmd wrote on stderr, which says why.
-//
-// cmd gets each allowlist's contents in a file of its own, private to the proxy, so it reads no
-// allowlist as it is now. added is nil when the added allowlist is missing. What cmd says about
-// such a file names the allowlist's own path instead.
+// render returns the relays' config, rendered by cmd from the GitHub allowlist, one entry per
+// argument. It also returns any notes cmd wrote on stderr for the user. If cmd fails, the error
+// includes what cmd wrote on stderr, which says why.
 //
 // Cancelling ctx TERMs cmd's whole process group: what cmd waits on, like gh at a keychain prompt
 // for the token, is a child process of cmd's.
-func (c relayConfig) render(ctx context.Context, base, added []byte) (config []byte, notes string, err error) {
-	dir, err := os.MkdirTemp("", "chopi-allowlists-")
-	if err != nil {
-		return nil, "", err
-	}
-	defer os.RemoveAll(dir)
-	contents := [][]byte{base}
-	if added != nil {
-		contents = append(contents, added)
-	}
-	var files, names []string
-	for i, content := range contents {
-		file := filepath.Join(dir, strconv.Itoa(i))
-		if err := os.WriteFile(file, content, 0o600); err != nil {
-			return nil, "", err
-		}
-		files = append(files, file)
-		names = append(names, file, c.paths[i])
-	}
-	cmd := exec.CommandContext(ctx, c.cmd, files...)
+func (c relayConfig) render(ctx context.Context, allowlist []string) (config []byte, notes string, err error) {
+	cmd := exec.CommandContext(ctx, c.cmd, allowlist...)
 	cmd.Env = append(os.Environ(), c.env...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
@@ -172,7 +183,7 @@ func (c relayConfig) render(ctx context.Context, base, added []byte) (config []b
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	config, err = cmd.Output()
-	said := strings.NewReplacer(names...).Replace(strings.TrimSpace(stderr.String()))
+	said := strings.TrimSpace(stderr.String())
 	if err != nil {
 		return nil, "", fmt.Errorf("rendering the GitHub relays' config failed (%v): %s", err, said)
 	}
@@ -338,10 +349,10 @@ func (s *relaySupervisor) serve(proc *caddyProc) (replaced *caddyProc) {
 	return replaced
 }
 
-// reload replaces the serving Caddy with one on the config rendered from the allowlists' contents,
-// base and added (relayConfig.render), unless the serving Caddy already serves that config (a save
-// with no edit). On failure, the serving Caddy stays.
-func (s *relaySupervisor) reload(base, added []byte) error {
+// reload replaces the serving Caddy with one on the config rendered from the GitHub allowlist
+// (relayConfig.render), unless the serving Caddy already serves that config (a save with no
+// edit). On failure, the serving Caddy stays.
+func (s *relaySupervisor) reload(allowlist []string) error {
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
@@ -349,7 +360,7 @@ func (s *relaySupervisor) reload(base, added []byte) error {
 	}
 	s.rendering.Add(1)
 	s.mu.Unlock()
-	config, notes, err := s.config.render(s.renderCtx, base, added)
+	config, notes, err := s.config.render(s.renderCtx, allowlist)
 	s.rendering.Done()
 	if err != nil {
 		return err

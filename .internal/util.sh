@@ -134,15 +134,6 @@ trim_into() {
     printf -v "$1" '%s' "$_ti_s"
 }
 
-# Set variable NAME to a config-file LINE with any trailing '#'-comment dropped and surrounding
-# whitespace trimmed
-#
-# usage: strip_comment_and_trim_into NAME LINE
-strip_comment_and_trim_into() {
-    arity 2
-    trim_into "$1" "${2%%#*}"
-}
-
 # Print TEXT with every occurrence of each SLOT replaced by the VALUE following it. Callers
 # assemble a text from a varying set of fragments, so a SLOT it doesn't hold is no error.
 #

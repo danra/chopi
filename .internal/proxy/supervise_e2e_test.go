@@ -102,7 +102,7 @@ func fakeCaddy() {
 type supervisorRun struct {
 	cmd       *exec.Cmd
 	dir       string
-	allowlist string // what the fake render prints as Caddy's config
+	allowlist string // the GitHub allowlist, whose entries the fake render prints as Caddy's config
 	logFile   string // the supervisor's stdout
 	state     string
 	parent    *exec.Cmd
@@ -135,21 +135,21 @@ func startSupervisor(t *testing.T, caddyPlan string) *supervisorRun {
 	caddy := filepath.Join(bin, "caddy")
 	writeFile(t, caddy, "#!/bin/sh\nCHOPI_TEST_ROLE=caddy exec '"+exe+"' \"$@\"\n")
 	os.Chmod(caddy, 0o755)
-	// The fake render prints the "allowlist", which it gets as a file, as the relays' config. It
-	// fails if the allowlist holds RENDER-FAILS. It records the GH_TOKEN it gets.
+	// The fake render prints the GitHub allowlist's entries, which it gets as arguments, as the
+	// relays' config. It fails if an entry is RENDER-FAILS. It records the GH_TOKEN it gets.
 	render := filepath.Join(bin, "render")
 	writeFile(t, render, `#!/bin/sh
 printf '%s' "${GH_TOKEN-(unset)}" > "$CHOPI_TEST_STATE/render-token"
-case "$(cat "$1")" in
+case "$*" in
     *RENDER-FAILS*) echo "render says: no token" >&2; exit 1 ;;
 esac
 echo "render says: a note" >&2
-cat "$1"
+printf '%s\n' "$@"
 `)
 	os.Chmod(render, 0o755)
 	rules := filepath.Join(tmp, "rules.yaml")
 	writeFile(t, rules, rulesAllowing("example.com"))
-	writeFile(t, filepath.Join(tmp, "allowlist"), "THE CADDY CONFIG")
+	writeFile(t, filepath.Join(tmp, "allowlist"), "THE/CADDY-CONFIG\n")
 	config, err := filepath.Abs("../smokescreen-config.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -281,7 +281,7 @@ func TestSupervisorServesAndStopsWithItsParent(t *testing.T) {
 	} else {
 		conn.Close()
 	}
-	if config, _ := os.ReadFile(filepath.Join(run.state, "caddy-config")); string(config) != "THE CADDY CONFIG" {
+	if config, _ := os.ReadFile(filepath.Join(run.state, "caddy-config")); string(config) != "THE/CADDY-CONFIG\n" {
 		t.Errorf("caddy got config %q, want the render's output", config)
 	}
 	if log, _ := os.ReadFile(run.logFile); !strings.Contains(string(log), "render says: a note") {
@@ -385,9 +385,10 @@ func (run *supervisorRun) awaitLog(t *testing.T, want string) string {
 	return ""
 }
 
-func (run *supervisorRun) editAllowlist(t *testing.T, content string) {
+// editAllowlist edits the GitHub allowlist to be entry alone.
+func (run *supervisorRun) editAllowlist(t *testing.T, entry string) {
 	t.Helper()
-	writeFile(t, run.allowlist, content)
+	writeFile(t, run.allowlist, entry+"\n")
 }
 
 // pidGone reports whether the process pid has exited, waiting for it a while.
@@ -418,9 +419,9 @@ func TestSupervisorReloadsTheAllowlistOnTheSameListeners(t *testing.T) {
 	up := run.awaitPorts(t)
 	first := run.mustCaddyPID(t)
 
-	run.editAllowlist(t, "THE NEW CADDY CONFIG")
+	run.editAllowlist(t, "THE/NEW-CADDY-CONFIG")
 	log := run.awaitLog(t, allowlistReloaded)
-	if config, _ := os.ReadFile(filepath.Join(run.state, "caddy-config")); string(config) != "THE NEW CADDY CONFIG" {
+	if config, _ := os.ReadFile(filepath.Join(run.state, "caddy-config")); string(config) != "THE/NEW-CADDY-CONFIG\n" {
 		t.Errorf("caddy got config %q after the edit", config)
 	}
 	if !strings.Contains(log, "render says: a note") {
@@ -469,8 +470,8 @@ func TestSupervisorKeepsTheRelaysOnAFailedReload(t *testing.T) {
 	relay := fmt.Sprintf("http://127.0.0.1:%d/", up.relay)
 
 	for _, c := range []struct{ config, says string }{
-		{"RENDER-FAILS", "render says: no token"},
-		{"CADDY-FAILS", "caddy says: bad config"},
+		{"RENDER-FAILS/x", "render says: no token"},
+		{"CADDY-FAILS/x", "caddy says: bad config"},
 	} {
 		run.editAllowlist(t, c.config)
 		log := run.awaitLog(t, c.says)
@@ -481,7 +482,7 @@ func TestSupervisorKeepsTheRelaysOnAFailedReload(t *testing.T) {
 			t.Errorf("%s: the relay answers %q: the caddy serving must stay", c.config, got)
 		}
 	}
-	run.editAllowlist(t, "THE FIXED CADDY CONFIG")
+	run.editAllowlist(t, "THE/FIXED-CADDY-CONFIG")
 	run.awaitLog(t, allowlistReloaded)
 	if !pidGone(serving) {
 		t.Error("the caddy serving stays once a fixed allowlist replaces it")

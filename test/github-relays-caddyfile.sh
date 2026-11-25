@@ -14,8 +14,6 @@ RENDER="$CHOPI_DIR/.internal/github-relays-caddyfile.sh"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/chopi-github-relay.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
-render() { printf '%s\n' "$@" > "$WORK/allow"; "$RENDER" "$WORK/allow"; }
-
 # extract_re FILE MATCHER -- the regex from a "@MATCHER path_regexp <re>" line
 extract_re() { arity 2; grep -E "@$2 path_regexp " "$1" | sed -E 's/.*path_regexp //'; }
 # extract_block_re TEXT DIRECTIVE -- the regex from TEXT's indented "DIRECTIVE <re>" line, a block
@@ -45,8 +43,10 @@ assert_no_match() { arity 3; if re_match "$1" "$2"; then bad "$3"; else ok "$3";
 header "github-relays-caddyfile"
 
 # ---- a populated allowlist: a wildcard owner, an exact repo, an exact repo with a dot ----
+# The renderer takes the allowlist as the proxy passes it: one argument per entry, and none for
+# an empty allowlist.
 cf="$WORK/populated"
-render 'soundradix/*' 'acme/tool' 'acme/tool.js' > "$cf"
+"$RENDER" 'soundradix/*' 'acme/tool' 'acme/tool.js' > "$cf"
 
 echo "-- structure --"
 # shellcheck disable=SC2016  # a Caddyfile env placeholder, which Caddy expands, not this shell
@@ -284,7 +284,7 @@ assert_not_contains "$tail_block" 'Authorization'                               
 assert_contains     "$tail_block" '"message":"chopi GitHub relay: unsupported host' "unmatched Host is refused loudly, with a JSON message (not Caddy's implicit empty 200)"
 
 echo "-- empty allowlist is fail-closed (no push route) --"
-empty="$(render)"
+empty="$("$RENDER")"
 assert_not_contains "$empty" '@allowed'                     "empty: no allowlisted git route"
 empty_imports="$(printf '%s\n' "$empty" | awk '/@pub_refs/{f=1} f' | grep -cE 'import (redirecting_)?ghproxy')"
 assert_eq "$empty_imports" 2                                "empty: push cannot be proxied (denied in-relay)"
@@ -304,53 +304,38 @@ assert_contains     "$empty" 'unsupported host'               "empty: catch-all 
 assert_not_contains "$empty" '@api_code_search'               "empty: no code search route"
 assert_contains     "$empty" 'search is allowed only as code search' "empty: the search deny still explains itself"
 assert_not_contains "$empty" '@api_org_alerts'                "empty: no org alerts route"
-repo_only="$(render 'acme/tool')"
+repo_only="$("$RENDER" 'acme/tool')"
 assert_not_contains "$repo_only" '@api_code_search' "owner/repo entries alone: no code search route"
 assert_not_contains "$repo_only" '@api_org_alerts'  "owner/repo entries alone: no org alerts route"
 
 echo "-- invalid entries are rejected (fail closed, non-zero exit) --"
-render 'no-slash-here' >/dev/null 2>&1; assert_nonzero "$?" "entry without owner/repo rejected"
-render 'own er/repo'   >/dev/null 2>"$WORK/err"; assert_nonzero "$?" "entry with illegal char rejected"
+"$RENDER" 'no-slash-here' >/dev/null 2>&1; assert_nonzero "$?" "entry without owner/repo rejected"
+"$RENDER" 'own er/repo'   >/dev/null 2>"$WORK/err"; assert_nonzero "$?" "entry with illegal char rejected"
 assert_contains "$(cat "$WORK/err")" 'using only A-Za-z0-9._-' "  -> naming the allowed characters"
-assert_contains "$(cat "$WORK/err")" "$WORK/allow: " "  -> and the file it is in"
-
-echo "-- several allowlists render their union --"
-printf 'acme/tool' > "$WORK/base"   # no newline at its end
-printf 'octocat/*\n' > "$WORK/added"
-union="$("$RENDER" "$WORK/base" "$WORK/added")"
-union_re="$(printf '%s\n' "$union" | grep -E '@allowed path_regexp ' | sed -E 's/.*path_regexp //')"
-assert_match "$union_re" '/acme/tool/git-receive-pack'     "the first file's entries allowed"
-assert_match "$union_re" '/octocat/any/git-receive-pack'   "  -> and the second's"
-printf 'no-slash-here\n' > "$WORK/added"
-"$RENDER" "$WORK/base" "$WORK/added" >/dev/null 2>"$WORK/err"; assert_nonzero "$?" "a broken second file rejected"
-assert_contains "$(cat "$WORK/err")" "$WORK/added: " "  -> naming it"
 
 echo "-- github-relays-config.sh: the config with its credentials, as chopi-smokescreen runs it --"
 CONFIG="$CHOPI_DIR/.internal/github-relays-config.sh"
 # No gh on PATH: the token is the environment's or none, whatever gh the machine is logged in with.
 nogh=(env -u GH_TOKEN -u GITHUB_TOKEN PATH=/usr/bin:/bin)
-printf 'octocat/*\n' > "$WORK/allow"
-out="$("${nogh[@]}" GH_TOKEN=the-token "$CONFIG" "$WORK/allow" 2>"$WORK/err")"; st=$?
+out="$("${nogh[@]}" GH_TOKEN=the-token "$CONFIG" 'octocat/*' 2>"$WORK/err")"; st=$?
 assert_zero "$st" "an allowlist with entries and a token renders"
 assert_contains "$out" "$(gh_basic_auth_header the-token)" "  -> with the git relay's credential filled in"
 assert_contains "$out" "$(gh_bearer_auth_header the-token)" "  -> and the API relay's"
 assert_not_contains "$out" '@@CHOPI_' "  -> leaving no credential slot"
 assert_eq "$(cat "$WORK/err")" "" "  -> saying nothing"
-out="$("${nogh[@]}" GITHUB_TOKEN=other-token "$CONFIG" "$WORK/allow" 2>/dev/null)"
+out="$("${nogh[@]}" GITHUB_TOKEN=other-token "$CONFIG" 'octocat/*' 2>/dev/null)"
 assert_contains "$out" "$(gh_bearer_auth_header other-token)" "GITHUB_TOKEN serves where GH_TOKEN isn't set"
 
-out="$("${nogh[@]}" "$CONFIG" "$WORK/allow" 2>"$WORK/err")"; st=$?
+out="$("${nogh[@]}" "$CONFIG" 'octocat/*' 2>"$WORK/err")"; st=$?
 assert_nonzero "$st" "an allowlist with entries and no token is refused"
 assert_eq "$out" "" "  -> printing no config"
 assert_contains "$(cat "$WORK/err")" "no GitHub token is set" "  -> saying why"
 
-: > "$WORK/allow"
-out="$("${nogh[@]}" "$CONFIG" "$WORK/allow" 2>"$WORK/err")"; st=$?
+out="$("${nogh[@]}" "$CONFIG" 2>"$WORK/err")"; st=$?
 assert_zero "$st" "an empty allowlist renders with no token"
 assert_contains "$(cat "$WORK/err")" "the GitHub allowlist is empty" "  -> noting what that leaves"
 
-printf 'no-slash-here\n' > "$WORK/allow"
-"${nogh[@]}" GH_TOKEN=t "$CONFIG" "$WORK/allow" >/dev/null 2>"$WORK/err"; st=$?
+"${nogh[@]}" GH_TOKEN=t "$CONFIG" no-slash-here >/dev/null 2>"$WORK/err"; st=$?
 assert_nonzero "$st" "an invalid allowlist is refused"
 assert_contains "$(cat "$WORK/err")" "could not render" "  -> saying so"
 

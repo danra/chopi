@@ -77,25 +77,28 @@ trap cleanup EXIT
 # are under test.
 printf 'version: v1\nservices: []\ndefault:\n  name: default\n  action: enforce\n  allowed_domains: []\n' \
     > "$WORK/rules.yaml"
+# The GitHub allowlist stays empty: the fake renderer below ignores it.
+: > "$WORK/allowlist"
 
 
 # start_relays CONFIG LOG -- start the proxy as a session's would, the relays on the Caddy config
 # CONFIG, logging to LOG (and caddy to LOG.caddy, which LOG quotes if caddy fails to start); sets
 # SESSION_PROXY_PID, CADDY_PID, SESSION_RELAY_PORT, SESSION_GH_SOCK and git_url once they serve, or
-# fails. Awaited as chopi awaits a session's proxy, sharing its handshake. The renderer, cat,
-# "renders" the config by printing RELAY_CONFIG, which the proxy takes as the GitHub allowlist.
-# reload_relays edits RELAY_CONFIG as a session's allowlist is edited, so the proxy renders the
-# relays' config again.
+# fails. Awaited as chopi awaits a session's proxy, sharing its handshake. The fake renderer
+# "renders" the config by printing RELAY_CONFIG. reload_relays edits RELAY_CONFIG, then saves the
+# GitHub allowlist with no edit, so the proxy renders the relays' config again.
 RELAY_CONFIG="$WORK/relay.caddy"
+printf '#!/bin/sh\nexec cat %q\n' "$RELAY_CONFIG" > "$WORK/render"
+chmod +x "$WORK/render"
 start_relays() {
     local config="$1" log="$2"
     printf '%s' "$config" > "$RELAY_CONFIG"
     RELAY_LOG="$log"
-    prepare_session_proxy_dir "$WORK/rules.yaml" "$RELAY_CONFIG" || return 1
+    prepare_session_proxy_dir "$WORK/rules.yaml" "$WORK/allowlist" || return 1
     # shellcheck disable=SC2034 # consumed by await_session_proxy
     SESSION_PROXY_LOG="$log"
     # shellcheck disable=SC2153 # set by prepare_session_proxy_dir
-    run_chopi_smokescreen "$SESSION_PROXY_DIR" $$ "$WORK/rules.yaml" "$RELAY_CONFIG" /bin/cat \
+    run_chopi_smokescreen "$SESSION_PROXY_DIR" $$ "$WORK/rules.yaml" "$WORK/allowlist" "$WORK/render" \
         "$log.caddy" "$(realpath "$WORK")/ws/rules.yaml" "$(realpath "$WORK")/ws/allowlist" >>"$log" 2>"$SESSION_PROXY_ERR" &
     SESSION_PROXY_PID=$!
     await_session_proxy 2>>"$log" || return 1
@@ -109,6 +112,7 @@ reload_relays() {
     local config="$1" _ before
     before="$(grep -c 'GitHub allowlist reloaded' "$RELAY_LOG")"
     printf '%s' "$config" > "$RELAY_CONFIG"
+    touch "$WORK/allowlist"
     for _ in {1..300}; do
         if [ "$(grep -c 'GitHub allowlist reloaded' "$RELAY_LOG")" -gt "$before" ]; then
             CADDY_PID="$(pgrep -n -P "$SESSION_PROXY_PID" -x caddy)"
@@ -131,12 +135,12 @@ if [ -n "${ALLOW_REPO:-}" ]; then
         echo "        the relays' config render refuses a populated allowlist without a token, so there is no config to smoke-test."
         exit 0
     fi
-    printf '%s/*\n' "${ALLOW_REPO%%/*}" > "$WORK/allow"
+    allow=("${ALLOW_REPO%%/*}/*")
 else
-    : > "$WORK/allow"
+    allow=()
 fi
 
-caddy_cfg="$("$RENDER" "$WORK/allow")" || { bad "github-relays-caddyfile.sh failed"; summary; exit 1; }
+caddy_cfg="$("$RENDER" ${allow[@]+"${allow[@]}"})" || { bad "github-relays-caddyfile.sh failed"; summary; exit 1; }
 if [[ "$caddy_cfg" == *@@CHOPI_AUTH@@* ]]; then
     caddy_cfg="${caddy_cfg//@@CHOPI_AUTH@@/$(gh_basic_auth_header "$TOKEN")}"
     caddy_cfg="${caddy_cfg//@@CHOPI_API_AUTH@@/$(gh_bearer_auth_header "$TOKEN")}"
@@ -490,8 +494,7 @@ fi
 # allowlist edit does -- so the rest runs on the Caddy the reload started, on the listeners the
 # first one served. Probe with operations GitHub can never serve anonymously (a push; a fetch of a
 # nonexistent repo), so it must 401 the bogus credential rather than fall back to anonymous access.
-printf 'octocat/*\n' > "$WORK/allow-bogus"
-bogus_cfg="$("$RENDER" "$WORK/allow-bogus")"
+bogus_cfg="$("$RENDER" 'octocat/*')"
 bogus_cfg="${bogus_cfg//@@CHOPI_AUTH@@/Basic Ym9ndXM6Ym9ndXM=}"
 bogus_cfg="${bogus_cfg//@@CHOPI_API_AUTH@@/Bearer bogus}"
 first_caddy="$CADDY_PID"

@@ -21,9 +21,10 @@
 //   - Every listener is opened here, on a loopback port the kernel picks, or the unix socket
 //     DIR/gh.sock, so no other process can take it first. Smokescreen serves its own; Caddy, started
 //     with its config on stdin and its output in the --relay-log FILE, inherits the relays'.
-//   - Caddy's config is CMD's output. CMD gets copies of the --github-allowlist FILE and of the
-//     added allowlist. Only CMD gets GH_TOKEN and GITHUB_TOKEN, where set: the proxy takes them
-//     out of the environment everything else gets.
+//   - Caddy's config is CMD's output. CMD gets the GitHub allowlist merged from the
+//     --github-allowlist FILE and the added allowlist, one entry per argument. Only CMD gets
+//     GH_TOKEN and GITHUB_TOKEN, where set: the proxy takes them out of the environment everything
+//     else gets.
 //   - The proxy polls the GitHub allowlist for changes as it polls the rules. A change to the
 //     GitHub allowlist starts a Caddy on the new config, which replaces the one serving, on the
 //     same listeners, so their ports and socket path don't change. The replaced Caddy finishes the
@@ -660,8 +661,12 @@ func main() {
 	rulesFiles := takeUp(rulesKind, path, opts.addRules)
 	allowlistFiles := takeUp(allowlistKind, opts.allowlist, opts.addAllowlist)
 	// The token is for rendering the relays' config, not for smokescreen or Caddy.
-	relayConf := relayConfig{cmd: opts.relayConfig, env: takeEnv("GH_TOKEN", "GITHUB_TOKEN"),
-		paths: [2]string{allowlistFiles.base.path, allowlistFiles.added.path}}
+	relayConf := relayConfig{cmd: opts.relayConfig, env: takeEnv("GH_TOKEN", "GITHUB_TOKEN")}
+	// allowlist returns the GitHub allowlist the relays are rendered from: the entries of both
+	// allowlists' contents.
+	allowlist := func(base, added []byte) ([]string, error) {
+		return allowlistEntries(allowlistFiles.base.path, allowlistFiles.added.path, base, added)
+	}
 
 	// Smokescreen logs to stdout, the log, from the start, its global logger included: stderr is
 	// for why the proxy can't start.
@@ -703,7 +708,11 @@ func main() {
 	if err := conf.Validate(); err != nil {
 		fail("invalid smokescreen config: %v", err)
 	}
-	initialConfig, notes, err := relayConf.render(stop, allowlistFiles.base.content, allowlistFiles.added.content)
+	initialAllowlist, err := allowlist(allowlistFiles.base.content, allowlistFiles.added.content)
+	if err != nil {
+		fail("%v", err)
+	}
+	initialConfig, notes, err := relayConf.render(stop, initialAllowlist)
 	if err != nil {
 		if stop.Err() != nil {
 			// Stopped as it rendered, maybe at a keychain prompt: nothing else is up yet.
@@ -781,7 +790,13 @@ func main() {
 	// Should the log's formatter die, the log is lost from here on, but not the session's
 	// network: writing to it then fails instead of killing the proxy.
 	signal.Ignore(syscall.SIGPIPE)
-	allowlistFiles.take = func(base, added []byte, _ func(error)) error { return relaySup.reload(base, added) }
+	allowlistFiles.take = func(base, added []byte, _ func(error)) error {
+		entries, err := allowlist(base, added)
+		if err != nil {
+			return err
+		}
+		return relaySup.reload(entries)
+	}
 	go allowlistFiles.watch(conf.Log)
 
 	// ...then serve, until the session ends or a server exits.

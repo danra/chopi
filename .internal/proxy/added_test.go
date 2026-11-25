@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -211,40 +210,30 @@ func TestAddedAllowedDomainsNeedABaseDefaultRule(t *testing.T) {
 	}
 }
 
-// The relays' config is rendered from the allowlists' contents as taken up, each in a file of its
-// own, gone once rendered; an added one missing adds nothing.
-func TestRelayConfigRendersFromBothAllowlists(t *testing.T) {
-	dir := t.TempDir()
-	cmd := filepath.Join(dir, "render")
-	writeScript(t, cmd, "#!/bin/sh\necho \"$*\" >>'"+filepath.Join(dir, "args")+"'\nfor f; do printf '[%s]' \"$(cat \"$f\")\"; done\n")
-	c := relayConfig{cmd: cmd}
+// The relays are rendered from the entries of both allowlists, in order: an added one missing, or
+// empty, adds nothing; comments and blank lines are no entries.
+func TestAllowlistEntriesJoinBothAllowlists(t *testing.T) {
+	base := []byte("# the base\nbase/r  # an entry\n\n  base/*\n")
 	for _, tc := range []struct {
-		added     []byte
-		want, why string
+		added []byte
+		want  []string
+		why   string
 	}{
-		{[]byte("ws/r\n"), "[base/r][ws/r]", "both allowlists given, each a file of its own"},
-		{[]byte{}, "[base/r][]", "an empty added allowlist given, as it is"},
-		{nil, "[base/r]", "the base allowlist alone, the missing added one adding nothing"},
+		{[]byte("ws/r"), []string{"base/r", "base/*", "ws/r"}, "both allowlists' entries, the base's first"},
+		{[]byte{}, []string{"base/r", "base/*"}, "an empty added allowlist adding nothing"},
+		{nil, []string{"base/r", "base/*"}, "a missing added allowlist adding nothing"},
 	} {
-		config, _, err := c.render(context.Background(), []byte("base/r"), tc.added)
-		if err != nil || string(config) != tc.want {
-			t.Errorf("rendered %q, err %v: want %s", config, err, tc.why)
-		}
-	}
-	for _, file := range strings.Fields(readFile(t, filepath.Join(dir, "args"))) {
-		if _, err := os.Stat(file); err == nil {
-			t.Errorf("%s, an allowlist given to render, outlived it", file)
+		got, err := allowlistEntries("/cfg/github-allowlist", "/ws/github-allowlist", base, tc.added)
+		if err != nil || !slices.Equal(got, tc.want) {
+			t.Errorf("got %q, err %v: want %s", got, err, tc.why)
 		}
 	}
 }
 
-// What the render says of an allowlist's file names the allowlist's own path, not its copy's.
-func TestRelayConfigNamesTheAllowlistsInWhatItSays(t *testing.T) {
-	cmd := filepath.Join(t.TempDir(), "render")
-	writeScript(t, cmd, "#!/bin/sh\necho \"$2: bad entry\" >&2\nexit 1\n")
-	c := relayConfig{cmd: cmd, paths: [2]string{"/cfg/github-allowlist", "/ws/github-allowlist"}}
-	_, _, err := c.render(context.Background(), []byte("base/r\n"), []byte("bad\n"))
-	if err == nil || !strings.Contains(err.Error(), "/ws/github-allowlist: bad entry") {
+// An entry that isn't one is refused, naming the allowlist it is in.
+func TestAllowlistEntriesNameTheAllowlistOfABadEntry(t *testing.T) {
+	_, err := allowlistEntries("/cfg/github-allowlist", "/ws/github-allowlist", []byte("base/r\n"), []byte("bad\n"))
+	if err == nil || !strings.Contains(err.Error(), "/ws/github-allowlist: allowlist entry needs owner/repo") {
 		t.Errorf("got %v, want the added allowlist named", err)
 	}
 }
