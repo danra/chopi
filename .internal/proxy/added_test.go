@@ -596,3 +596,71 @@ func TestAddedRulesBadGlobsNameTheFileAndList(t *testing.T) {
 		})
 	}
 }
+
+// Every way of spreading GitHub hosts, and another, over the base rules' and the added ones'
+// allowed_domains and global_deny_list: rules letting a GitHub host taking writes through are
+// refused, whichever file allows it, whatever the other holds.
+func TestRulesLettingGitHubThroughAreRefused(t *testing.T) {
+	hosts := []string{"github.com", "api.github.com", "*.github.com", "ok.example"}
+	var allows [][]string // every subset of hosts
+	for mask := 0; mask < 1<<len(hosts); mask++ {
+		var allow []string
+		for i, host := range hosts {
+			if mask&(1<<i) != 0 {
+				allow = append(allow, host)
+			}
+		}
+		allows = append(allows, allow)
+	}
+	denies := [][]string{nil, {"github.com"}, {"api.github.com"}, {"*.github.com"}}
+	for _, baseAllow := range allows {
+		for _, baseDeny := range denies {
+			for _, addedAllow := range allows {
+				for _, addedDeny := range denies {
+					base, added := baseRulesWith(baseAllow, baseDeny), hostsWith(addedAllow, addedDeny)
+					rules, refusals, err := loadRules(smokescreen.NewConfig(), "/rules.yaml", "/ws.yaml", []byte(base), []byte(added))
+					if err != nil {
+						t.Fatalf("%v:\n--- base\n%s--- added\n%s", err, base, added)
+					}
+					if through := gitHubThrough(rules); len(through) > 0 && len(refusals) == 0 {
+						t.Errorf("rules letting %v through taken up:\n--- base\n%s--- added\n%s", through, base, added)
+					}
+				}
+			}
+		}
+	}
+}
+
+// gitHubThrough is the GitHub hosts taking writes that rules let through, a subdomain no one would
+// name standing for any a glob lets through.
+func gitHubThrough(rules interface {
+	Decide(acl.DecideArgs) (acl.Decision, error)
+}) []string {
+	var through []string
+	for _, host := range []string{"github.com", "api.github.com", "uploads.github.com", "gist.github.com", "chopi-probe-for-a-glob.github.com"} {
+		if d, _ := rules.Decide(acl.DecideArgs{Host: host}); d.Result == acl.Allow {
+			through = append(through, host)
+		}
+	}
+	return through
+}
+
+// hostsWith is rules allowing allow and denying deny.
+func hostsWith(allow, deny []string) string {
+	return "allowed_domains: [" + quoted(allow) + "]\nglobal_deny_list: [" + quoted(deny) + "]\n"
+}
+
+// baseRulesWith is base rules, in smokescreen's format, allowing allow and denying deny.
+func baseRulesWith(allow, deny []string) string {
+	return "version: v1\nservices: []\ndefault:\n  name: default\n  action: enforce\n  allowed_domains: [" +
+		quoted(allow) + "]\nglobal_deny_list: [" + quoted(deny) + "]\n"
+}
+
+// quoted is hosts as a YAML flow list's items.
+func quoted(hosts []string) string {
+	items := make([]string, len(hosts))
+	for i, host := range hosts {
+		items[i] = `"` + host + `"`
+	}
+	return strings.Join(items, ", ")
+}

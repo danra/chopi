@@ -311,17 +311,17 @@ assert_config_kept() {
     arity 4
     local out="$1" file="$2" orig="$3" where="$4"
     assert_contains "$out" "RAN"         "chopi runs a command with the proxy rules $where"
-    assert_contains "$out" "WRITE_FAIL"  "  -> the command can't write them"
+    assert_contains "$out" "WRITE_FAIL"  "  -> the command can't write it"
     # On a case-sensitive volume, the name in another case is another file, for the command to make.
     if [ "$(upper_case_name "$file")" -ef "$file" ]; then
-        assert_contains "$out" "CASE_FAIL" "  -> by another case of their name either"
+        assert_contains "$out" "CASE_FAIL" "  -> by another case of its name either"
     else
-        echo "  SKIP writing them by another case of their name (a case-sensitive volume)"
+        echo "  SKIP writing it by another case of its name (a case-sensitive volume)"
     fi
-    assert_contains "$out" "RM_FAIL"     "  -> or remove them"
-    assert_contains "$out" "REPLACE_FAIL" "  -> or put others in their place"
-    assert_contains "$out" "LINK_FAIL"   "  -> or hard-link them, to write them through the link"
-    assert_contains "$out" "MOVE_FAIL"   "  -> or rename their dir away"
+    assert_contains "$out" "RM_FAIL"     "  -> or remove it"
+    assert_contains "$out" "REPLACE_FAIL" "  -> or put another in its place"
+    assert_contains "$out" "LINK_FAIL"   "  -> or hard-link it, to write it through the link"
+    assert_contains "$out" "MOVE_FAIL"   "  -> or rename its dir away"
     assert_eq "$(cat "$file")" "$orig"   "  -> the rules are as written"
 }
 
@@ -332,7 +332,7 @@ cp "$rules" "$ws/config/rules.yaml"
 write_cfg "$base/config/rules-inside.sh" "CHOPI_PROXY_RULES=\"$ws/config/rules.yaml\""
 out="$(chopi_cfg "$base/config/rules-inside.sh" /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
 assert_nonzero      "$rc"                                  "chopi refuses proxy rules outside the config dir"
-assert_contains     "$out" "must be in $PROXY_CONFIG_DIR"  "  -> saying where they must be"
+assert_contains     "$out" "must be in $PROXY_CONFIG_DIR"  "  -> saying where it must be"
 assert_not_contains "$out" "RAN"                           "  -> and the command does not run"
 rm -rf "$ws/config"
 
