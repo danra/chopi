@@ -175,6 +175,8 @@ ensure_copy() {
 
 ensure_copy "$NETWORK_TEMPLATE" "config/$DEFAULT_NETWORK_CONFIG"
 ensure_copy config/templates/sandbox.template.sh   config/sandbox.sh
+# Only a warning here: chopi itself refuses to run until the user moves the legacy files.
+refuse_legacy_network_files "$CHOPI_DIR/config" || :
 
 
 # ----------------------------------------------------------------------------

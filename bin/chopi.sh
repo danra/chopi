@@ -137,10 +137,15 @@ main() {
     # shellcheck disable=SC2034 # consumed by validate_write_targets
     local CHOPI_SAFE_WRITE_TARGETS=()
     local CHOPI_NETWORK_CONFIG=""
+    # Unset, so preflight_legacy_network_config can tell whether the sandbox config sets them. The
+    # network config replaced them.
+    local "${LEGACY_NETWORK_VARS[@]}"
+    unset "${LEGACY_NETWORK_VARS[@]}"
     check_sandbox_config_readable chopi "$config" "$config_given" || return 1
     # shellcheck source=/dev/null  # can't follow user-supplied config path at lint time
     . "$config"
 
+    preflight_legacy_network_config "$config" || return 1
     resolve_network_config || return 1
 
     if [ -n "$config_paths" ]; then
@@ -182,7 +187,8 @@ main() {
     # missing; the proxy's may be made mid-session, while the sandbox's takes effect as a session
     # starts, as the base one does.
     local ws_config_dir ws_sandbox ws_network
-    { set_workspace_config_paths "$run_dir" && load_workspace_sandbox_config "$ws_sandbox"; } \
+    { set_workspace_config_paths "$run_dir" && refuse_legacy_network_files "$ws_config_dir" \
+        && load_workspace_sandbox_config "$ws_sandbox"; } \
         || { echo "chopi: refusing to run" >&2; return 1; }
     preflight_proxy_config_links "$CHOPI_NETWORK_CONFIG" "$ws_network" || return $?
 

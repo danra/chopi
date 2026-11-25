@@ -109,6 +109,28 @@ preflight_config_placement() {
     fi
 }
 
+# Refuse a setup predating the network config, which replaced the proxy rules and the GitHub
+# allowlist. That is, the sandbox config CONFIG sets CHOPI_PROXY_RULES or CHOPI_GITHUB_ALLOWLIST,
+# or chopi's config dir still holds the default files (refuse_legacy_network_files). chopi would
+# otherwise leave each of them unread, silently dropping the hosts and repos each allows.
+#
+# The refusal says how to move them into the network config.
+#
+# usage: preflight_legacy_network_config CONFIG
+preflight_legacy_network_config() {
+    arity 1
+    local var
+    for var in "${LEGACY_NETWORK_VARS[@]}"; do
+        if [ -n "${!var+set}" ]; then
+            echo "chopi: $1 sets $var, which chopi no longer reads." >&2
+            legacy_network_advice "$PROXY_CONFIG_DIR/<name>.yaml" \
+                "Then set CHOPI_NETWORK_CONFIG to it instead."
+            return 1
+        fi
+    done
+    refuse_legacy_network_files "$CHOPI_DIR/config"
+}
+
 # Check every file in PROXY_CONFIG_DIR, used or not, and the files in use by this session, the
 # defaults, and running sessions for extra hard links, which write_proxy_config_profile's deny by
 # path can't see. A session can't make a link, so one it writes through predates it, and its own

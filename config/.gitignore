@@ -1,6 +1,6 @@
 # Local configuration, copied from templates and customized
 network.yaml
 sandbox.sh
-# The network config's predecessors
+# The files network.yaml replaced. chopi refuses to start until you move them into it.
 proxy-rules.yaml
 github-allowlist

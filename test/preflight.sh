@@ -11,6 +11,9 @@
 #   * preflight_config_placement -- refusing a custom --config that lives inside the workspace.
 #   * resolve_network_config -- resolving the proxy's config to the real paths that
 #     write_proxy_config_profile keeps the sandboxed command from writing.
+#   * preflight_legacy_network_config / refuse_legacy_network_files -- refusing the
+#     files the network config replaced. Otherwise chopi would silently drop the hosts and repos
+#     in them.
 #   * workspace_config_dir / resolve_workspace_config_dir -- which repo's own proxy config a
 #     session reads, and refusing one that leads out of the dir every session protects.
 #   * load_workspace_sandbox_config -- a repo's own sandbox config only adding to the base arrays,
@@ -405,6 +408,50 @@ out="$( CHOPI_NETWORK_CONFIG="$rp/team/missing"; PATH="$rp/gnu:$PATH"
         resolve_network_config 2>&1 )"; st=$?
 assert_nonzero "$st" "a configured path that doesn't exist is refused, whichever realpath is on PATH"
 assert_contains "$out" "no CHOPI_NETWORK_CONFIG file at '$rp/team/missing'" "  -> naming the setting"
+
+
+# ---------------------------------------------------------------------------
+echo "preflight_legacy_network_config (refusing the files the network config replaced)"
+# ---------------------------------------------------------------------------
+lg="$(mktemp -d)"; lg="$(realpath "$lg")"
+mkdir -p "$lg/chopi/config" "$lg/ws"
+# legacy_check [VAR=VALUE...] -- run preflight_legacy_network_config for the sandbox config
+# /cfg.sh, as if it set each VAR, with chopi's dir in $lg.
+legacy_check() {
+    ( unset "${LEGACY_NETWORK_VARS[@]}"
+      CHOPI_DIR="$lg/chopi"
+      for assignment; do declare "$assignment"; done
+      preflight_legacy_network_config /cfg.sh )
+}
+out="$(legacy_check 2>&1)"; st=$?
+assert_zero "$st" "a setup with none of the replaced files passes"
+assert_eq "$out" "" "  -> quietly"
+for var in "${LEGACY_NETWORK_VARS[@]}"; do
+    out="$(legacy_check "$var=" 2>&1)"; st=$?
+    assert_nonzero "$st" "a sandbox config setting $var is refused, even to nothing"
+    assert_contains "$out" "/cfg.sh sets $var" "  -> naming the config and the setting"
+    assert_contains "$out" "set CHOPI_NETWORK_CONFIG to it instead" "  -> saying what replaces it"
+done
+for name in "${LEGACY_NETWORK_FILES[@]}"; do
+    : >"$lg/chopi/config/$name"
+    out="$(legacy_check 2>&1)"; st=$?
+    assert_nonzero "$st" "chopi's own $name is refused"
+    assert_contains "$out" "  $lg/chopi/config/$name" "  -> naming it"
+    assert_contains "$out" "$lg/chopi/config/$DEFAULT_NETWORK_CONFIG" "  -> and the network config to move it into"
+    assert_contains "$out" "github_allowlist" "  -> saying how"
+    rm "$lg/chopi/config/$name"
+
+    : >"$lg/ws/$name"
+    out="$(CHOPI_DIR="$lg/chopi" refuse_legacy_network_files "$lg/ws" 2>&1)"; st=$?
+    assert_nonzero "$st" "a repo's own $name is refused"
+    assert_contains "$out" "  $lg/ws/$name" "  -> naming it"
+    assert_contains "$out" "$lg/ws/$DEFAULT_NETWORK_CONFIG" "  -> and the repo's network config to move it into"
+    rm "$lg/ws/$name"
+done
+out="$(refuse_legacy_network_files "$lg/ws" 2>&1)"; st=$?
+assert_zero "$st" "a repo's own config dir with none of them passes"
+out="$(refuse_legacy_network_files "$lg/missing" 2>&1)"; st=$?
+assert_zero "$st" "  -> as does one not made yet"
 
 
 # ---------------------------------------------------------------------------

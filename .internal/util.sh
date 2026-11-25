@@ -57,6 +57,11 @@ PROXY_CONFIG_DIR="${CHOPI_RUN_DIR%/}/config"
 # The file name of the default network config, under $CHOPI_DIR/config (see proxy_config_paths),
 # and of a workspace's own network config, in its dir (see workspace_config_dir).
 DEFAULT_NETWORK_CONFIG="network.yaml"
+# The network config replaced the proxy rules and the GitHub allowlist. These are the names of
+# their files, and of the sandbox config settings that named them. chopi refuses to start with any
+# of them until the user moves them into the network config (preflight_legacy_network_config).
+LEGACY_NETWORK_FILES=(proxy-rules.yaml github-allowlist)
+LEGACY_NETWORK_VARS=(CHOPI_PROXY_RULES CHOPI_GITHUB_ALLOWLIST)
 # The template to start a network config from, under $CHOPI_DIR.
 NETWORK_TEMPLATE="config/templates/network.template.yaml"
 # The name of a workspace's own sandbox config, in its dir, adding to the base sandbox config
@@ -933,4 +938,37 @@ open_in_gui_editor() {
             "${editor[@]}" "$file" ;;
         *)  open -t "$file" ;;
     esac
+}
+
+# Fail if the config dir DIR, chopi's own or a repo's own, holds the files the network config
+# replaced: the proxy rules and the GitHub allowlist. The error says how to move them into DIR's
+# network config.
+#
+# usage: refuse_legacy_network_files DIR
+refuse_legacy_network_files() {
+    arity 1
+    local name legacy=()
+    for name in "${LEGACY_NETWORK_FILES[@]}"; do
+        [ -e "$1/$name" ] && legacy+=("$1/$name")
+    done
+    [ "${#legacy[@]}" -eq 0 ] && return 0
+    echo "chopi: found files the network config replaced." >&2
+    legacy_network_advice "$1/$DEFAULT_NETWORK_CONFIG" "Then remove them:"
+    printf '  %s\n' "${legacy[@]}" >&2
+    return 1
+}
+
+# Print to stderr how to move the proxy rules and the GitHub allowlist into the network config
+# DEST, followed by THEN, the step after that.
+#
+# usage: legacy_network_advice DEST THEN
+legacy_network_advice() {
+    arity 2
+    echo "The proxy rules and the GitHub allowlist are now one file, the network config." >&2
+    echo "Move what they hold into the network config:" >&2
+    echo "  $1" >&2
+    echo "following the template $CHOPI_DIR/$NETWORK_TEMPLATE." >&2
+    echo "The proxy rules' default allowed_domains and global_deny_list go in unchanged, at the" >&2
+    echo "top level. Each line of the GitHub allowlist becomes an entry of github_allowlist." >&2
+    echo "$2" >&2
 }
