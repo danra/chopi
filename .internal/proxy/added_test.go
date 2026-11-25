@@ -272,11 +272,11 @@ func TestDeletedBrokenAddedRulesAreConfirmedGone(t *testing.T) {
 func TestDeletedAddedRulesFailingToBeTakenAwayAreRetried(t *testing.T) {
 	conf, holder, rules, ws, hook := addedSetup(t, "allowed_domains: [ws.example]\n")
 	take, failing := rules.take, true
-	rules.take = func(base, added []byte, warn func(error)) error {
+	rules.take = func(files []configContent, warn func(error)) error {
 		if failing {
 			return errors.New("relay did not come up")
 		}
-		return take(base, added, warn)
+		return take(files, warn)
 	}
 	mustRemove(t, ws.path)
 	hook.Reset()
@@ -525,7 +525,7 @@ func TestBrokenAddedRulesKeepTheProxyFromStarting(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			base, added := addedFiles(t, tc.base, tc.added)
 			_, _, rules, _ := untakenSetup(t, base, added)
-			err := rules.takeUpAtStart(func(error) {})
+			err := rules.takeUp(nil, func(error) {})
 			named, other := base, added
 			if tc.isAdded {
 				named, other = added, base

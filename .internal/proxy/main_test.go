@@ -99,7 +99,7 @@ func testSetup(t *testing.T, path string) (*smokescreen.Config, *swappableACL, *
 func setupWith(t *testing.T, base, added string) (*smokescreen.Config, *swappableACL, *configFiles, *logrustest.Hook) {
 	t.Helper()
 	conf, holder, rules, hook := untakenSetup(t, base, added)
-	if err := rules.takeUpAtStart(func(error) {}); err != nil {
+	if err := rules.takeUp(nil, func(error) {}); err != nil {
 		t.Fatalf("initial take: %v", err)
 	}
 	return conf, holder, rules, hook
@@ -123,7 +123,7 @@ func untakenSetup(t *testing.T, base, added string) (*smokescreen.Config, *swapp
 	if err != nil {
 		t.Fatalf("initial check: %v", err)
 	}
-	rules.take = takeRules(conf, holder, rules.base.path, rules.added.path)
+	rules.take = takeRules(conf, holder)
 	return conf, holder, rules, hook
 }
 
@@ -302,9 +302,9 @@ func TestARefusalPutsBackTheConfigInEffect(t *testing.T) {
 
 	writeFile(t, path, rulesAllowing("a.example"))
 	take := rules.take
-	rules.take = func(base, added []byte, warn func(error)) error {
+	rules.take = func(files []configContent, warn func(error)) error {
 		writeFile(t, path, rulesAllowing("b.example"))
-		return take(base, added, warn)
+		return take(files, warn)
 	}
 	rules.applyIfChanged(conf.Log, file)
 	rules.take = take
@@ -569,7 +569,7 @@ func TestUnreadableFileIsSurfacedOnce(t *testing.T) {
 	file := &configFile{path: path, kind: rulesKind}
 	added := &configFile{path: missingAdded(t), kind: rulesKind, added: true}
 	rules := &configFiles{base: file, added: added}
-	rules.take = takeRules(conf, holder, rules.base.path, rules.added.path)
+	rules.take = takeRules(conf, holder)
 
 	// First failing tick surfaces the error and sets unreadable; the mtime does not move.
 	rules.applyIfChanged(conf.Log, file)
