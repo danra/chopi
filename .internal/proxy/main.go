@@ -1,14 +1,15 @@
 // chopi-smokescreen -- a chopi session's proxy. It embeds Stripe's smokescreen egress proxy as a
-// library, hot-reloads its --egress-acl-file rules, and supervises the session's GitHub relays,
-// which Caddy serves.
+// library, takes its rules from the --rules file and hot-reloads them, and supervises the
+// session's GitHub relays, which Caddy serves.
 //
-//	chopi-smokescreen --dir DIR --parent PID --relay-log FILE --github-allowlist FILE
+//	chopi-smokescreen --dir DIR --parent PID --relay-log FILE --rules FILE --github-allowlist FILE
 //	                  --add-rules FILE --add-github-allowlist FILE
 //	                  --relay-config CMD -- SMOKESCREEN_FLAGS...
 //
 //   - Smokescreen's flags and log output are identical to the standalone smokescreen binary's,
-//     but for where it listens: --listen-ip and --listen-port are ignored.
-//   - The proxy polls the rules file for changes and takes up a new valid rule set right away.
+//     but for where it listens: --listen-ip and --listen-port are ignored. Smokescreen takes its
+//     rules from the --rules file, which the proxy reads itself, instead of an --egress-acl-file.
+//   - The proxy polls the --rules file for changes and takes up a new valid rule set right away.
 //     It swaps the rules in atomically.
 //   - The --add-rules and --add-github-allowlist files add to the base ones (see added.go). The
 //     proxy polls them for changes as it polls the base ones, including for being made or deleted
@@ -592,23 +593,6 @@ func modTime(path string) time.Time {
 	return st.ModTime()
 }
 
-// takeEgressACLPath is the path smokescreen's args name as the egress ACL file, and the args without
-// it: the proxy takes the file up itself (configFile), for smokescreen not to read it too.
-func takeEgressACLPath(args []string) (path string, rest []string) {
-	rest = make([]string, 0, len(args))
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--egress-acl-file" && i+1 < len(args) {
-			path = args[i+1]
-			i++
-		} else if v, ok := strings.CutPrefix(args[i], "--egress-acl-file="); ok {
-			path = v
-		} else {
-			rest = append(rest, args[i])
-		}
-	}
-	return path, rest
-}
-
 // Same role resolution as standalone smokescreen (https://github.com/stripe/smokescreen/blob/a3294a6cc4e4/main.go#L16-L24)
 func defaultRoleFromRequest(req *http.Request) (string, error) {
 	if req.TLS == nil {
@@ -650,15 +634,11 @@ func main() {
 	if err != nil {
 		fail("can't watch process %d: %v", opts.parent, err)
 	}
-	path, smokeArgs := takeEgressACLPath(opts.smokeArgs)
-	if path == "" {
-		fail("--egress-acl-file not found on the command line; chopi requires a hot-reloadable egress ACL")
-	}
-	args := append([]string{os.Args[0]}, smokeArgs...)
+	args := append([]string{os.Args[0]}, opts.smokeArgs...)
 	// Read the config files now, the base files and the ones added to them. The proxy takes up its
 	// config from them alone. Their watches take up any edit made from here on, and take up a
 	// missing added file once it is made.
-	rulesFiles := takeUp(rulesKind, path, opts.addRules)
+	rulesFiles := takeUp(rulesKind, opts.rules, opts.addRules)
 	allowlistFiles := takeUp(allowlistKind, opts.allowlist, opts.addAllowlist)
 	// The token is for rendering the relays' config, not for smokescreen or Caddy.
 	relayConf := relayConfig{cmd: opts.relayConfig, env: takeEnv("GH_TOKEN", "GITHUB_TOKEN")}
@@ -688,11 +668,11 @@ func main() {
 	log.SetFlags(0)
 
 	holder := &swappableACL{allowGitHub: os.Getenv(gitHubExfiltrationOverride) != ""}
-	rulesFiles.take = takeRules(conf, holder, path, opts.addRules)
+	rulesFiles.take = takeRules(conf, holder, opts.rules, opts.addRules)
 	if err := rulesFiles.takeUpAtStart(func(warning error) { complain("warning: %v", warning) }); err != nil {
 		// The advice is for a base file from a template predating the relays.
-		if e := (*exfiltrationError)(nil); errors.As(err, &e) && e.path == path {
-			fail("refusing to run: %v\n\n%s", err, gitHubExfiltrationAdvice(path, opts.allowlist))
+		if e := (*exfiltrationError)(nil); errors.As(err, &e) && e.path == opts.rules {
+			fail("refusing to run: %v\n\n%s", err, gitHubExfiltrationAdvice(opts.rules, opts.allowlist))
 		}
 		fail("could not load the rules: %v", err)
 	}

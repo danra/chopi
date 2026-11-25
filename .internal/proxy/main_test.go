@@ -708,18 +708,3 @@ default:
 		})
 	}
 }
-
-// The egress ACL file is taken out of smokescreen's args, in either flag form, for smokescreen not
-// to read it too.
-func TestTakeEgressACLPath(t *testing.T) {
-	for _, args := range [][]string{
-		{"--listen-ip", "127.0.0.1", "--egress-acl-file", "/rules.yaml", "--deny-range", "10.0.0.0/8"},
-		{"--listen-ip", "127.0.0.1", "--egress-acl-file=/rules.yaml", "--deny-range", "10.0.0.0/8"},
-	} {
-		path, rest := takeEgressACLPath(args)
-		want := []string{"--listen-ip", "127.0.0.1", "--deny-range", "10.0.0.0/8"}
-		if path != "/rules.yaml" || !slices.Equal(rest, want) {
-			t.Fatalf("%q: got %q, %q; want /rules.yaml, %q", args, path, rest, want)
-		}
-	}
-}

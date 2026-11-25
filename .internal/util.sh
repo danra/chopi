@@ -815,11 +815,9 @@ run_chopi_smokescreen() {
     local dir="$1" parent="$2" rules="$3" allowlist="$4" render="$5" relay_log="$6"
     local add_rules="$7" add_allowlist="$8"
     exec "$SMOKESCREEN_BIN" --dir "$dir" --parent "$parent" --relay-log "$relay_log" \
-        --github-allowlist "$allowlist" --add-rules "$add_rules" \
+        --rules "$rules" --github-allowlist "$allowlist" --add-rules "$add_rules" \
         --add-github-allowlist "$add_allowlist" \
-        --relay-config "$render" -- \
-        --config-file "$CHOPI_DIR/.internal/smokescreen-config.yaml" \
-        --egress-acl-file "$rules"
+        --relay-config "$render" -- --config-file "$CHOPI_DIR/.internal/smokescreen-config.yaml"
 }
 
 # Make dir $1, in an existing parent, a directory only we can reach: created so if missing, else

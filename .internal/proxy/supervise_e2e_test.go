@@ -170,10 +170,10 @@ printf '%s\n' "$@"
 		stderr: &strings.Builder{}, exited: make(chan struct{})}
 	run.cmd = exec.Command(exe, "--dir", dir, "--parent", strconv.Itoa(parent.Process.Pid),
 		"--relay-log", filepath.Join(tmp, "caddy.log"),
-		"--github-allowlist", run.allowlist, "--relay-config", render,
+		"--rules", rules, "--github-allowlist", run.allowlist, "--relay-config", render,
 		"--add-rules", filepath.Join(ws, "rules.yaml"),
 		"--add-github-allowlist", filepath.Join(ws, "allowlist"), "--",
-		"--config-file", config, "--egress-acl-file", rules)
+		"--config-file", config)
 	run.cmd.Env = append(os.Environ(), "CHOPI_TEST_ROLE=supervisor", "CHOPI_TEST_STATE="+state,
 		"CHOPI_TEST_CADDY="+caddyPlan, "PATH="+bin+":"+os.Getenv("PATH"), "GH_TOKEN=the-token")
 	logFile, err := os.Create(run.logFile)
