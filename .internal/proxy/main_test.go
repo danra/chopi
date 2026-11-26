@@ -96,16 +96,16 @@ func rewrite(t *testing.T, rules *configFiles, f *configFile, log *logrus.Logger
 	rules.applyIfChanged(log, f)
 }
 
-// testSetup returns a config whose log entries are captured by the returned hook, a holder
-// loaded from the given rules file, and the file, the rules added to it missing.
+// testSetup returns a config whose log entries the returned hook captures, a holder loaded from
+// the rules file at path, and that file. The file added to it is missing.
 func testSetup(t *testing.T, path string) (*smokescreen.Config, *swappableACL, *configFiles, *configFile, *logrustest.Hook) {
 	t.Helper()
 	conf, holder, rules, hook := setupWith(t, path, missingAdded(t))
 	return conf, holder, rules, rules.base, hook
 }
 
-// setupWith is testSetup for the base rules file at base, and the one added to it at added,
-// returned as the proxy watches them.
+// setupWith is testSetup for the base rules file at base, and the one added to it at added. It
+// returns the files as the proxy watches them.
 func setupWith(t *testing.T, base, added string) (*smokescreen.Config, *swappableACL, *configFiles, *logrustest.Hook) {
 	t.Helper()
 	conf, holder, rules, hook := untakenSetup(t, base, added)
@@ -168,7 +168,8 @@ func decide(t *testing.T, holder *swappableACL, host string) acl.DecisionResult 
 	return d.Result
 }
 
-// wantDecisions checks holder decides each host as wanted, when saying when, if anything.
+// wantDecisions checks that holder decides each host as want says. A failure names when, if it
+// isn't empty.
 func wantDecisions(t *testing.T, holder *swappableACL, when string, want map[string]acl.DecisionResult) {
 	t.Helper()
 	if when != "" {
@@ -238,8 +239,8 @@ func TestReloadFailureKeepsPreviousRules(t *testing.T) {
 	}
 }
 
-// unreadableEdit makes the rules file unreadable, and checks the poll that sees it logs a reload
-// failure.
+// unreadableEdit makes the rules file unreadable, and checks that the poll that sees it logs a
+// reload failure.
 func unreadableEdit(t *testing.T, log *logrus.Logger, rules *configFiles, file *configFile,
 	hook *logrustest.Hook) {
 	t.Helper()

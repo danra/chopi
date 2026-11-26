@@ -743,7 +743,7 @@ banner_sequence="$(
     notify_reload failed rules 'not json'
 )"
 assert_eq "$banner_sequence" $'workspace workspace rules reload failed\nbase rules reload failed\nbase rules reloaded\nbase proxy config reload failed' \
-    "each file's reloads go to its own group, a base reload leaving the workspace file's failure up"
+    "each file's reloads go to its own group, so a base reload leaves the workspace file's failure up"
 
 # ---------------------------------------------------------------------------
 summary

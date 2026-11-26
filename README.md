@@ -31,23 +31,24 @@ Before first use, review the configuration.
 
 ## Configuration
 
-To add or remove allowed domains, edit `config/proxy-rules.yaml`. You can also modify the list
-of known denied domains that don't generate alerts -- important for keeping blocked telemetry,
-auto-updates etc. from spamming you with notifications. You can add and remove domains during
-a `chopi` session and they'll take effect immediately.
+To add or remove allowed domains, edit `config/proxy-rules.yaml`. To set the GitHub repos
+allowlist, edit `config/github-allowlist`.
 
-To set the GitHub repos allowlist, edit `config/github-allowlist`. This too takes effect during a
-`chopi` session, immediately. An edit also has the session's proxy take up a GitHub token that
-`gh` has replaced since the session started.
+Listing a host in the rules' `global_deny_list` keeps its blocked requests (telemetry,
+auto-updates etc.) from spamming you with notifications.
 
-Both of those apply to every project. To allow a host or a repo for a single project, put it in
-that repo's own config instead, which adds to them for its sessions alone. It lives in
-`~/.chopi/config/workspaces/`, in a dir named for the repo's path, every character but a letter,
-digit or dash made a dash (as Claude Code names its project dirs; a very long one is cut short),
-then a digest of the path, telling apart repos whose paths would otherwise name the same dir. A
-session has its files' paths in `$CHOPI_WORKSPACE_PROXY_RULES` and
-`$CHOPI_WORKSPACE_GITHUB_ALLOWLIST`, which Claude is told to quote when suggesting one, and
-`chopi --config-paths`, run anywhere in the repo, prints them. E.g. for `~/dev/myapp`:
+Edits take effect immediately, even in a running `chopi` session. When you edit the allowlist, the
+session's proxy also takes up any GitHub token that `gh` has replaced since the session started.
+
+Those files apply to every project. To allow a host or a repo for a single project, put it in
+that repo's own config instead. The repo's config adds to the base files, for the repo's sessions
+alone. It lives in `~/.chopi/config/workspaces/`, in a dir named for the repo's path, every
+character but a letter, digit or dash made a dash (as Claude Code names its project dirs; a very
+long one is cut short), then a digest of the path, telling apart repos whose paths would otherwise
+name the same dir. A session sets `$CHOPI_WORKSPACE_PROXY_RULES` and
+`$CHOPI_WORKSPACE_GITHUB_ALLOWLIST` to the paths of the repo's files, and Claude is told to quote
+those paths when it suggests adding to a file. `chopi --config-paths`, run anywhere in the repo,
+prints the paths too. E.g. for `~/dev/myapp`:
 
 ```
 ~/.chopi/config/workspaces/-Users-me-dev-myapp-1a2b3c4d5e6f7a8b/
@@ -56,18 +57,19 @@ session has its files' paths in `$CHOPI_WORKSPACE_PROXY_RULES` and
     github-allowlist     # owner/repo or owner/*, one per line, as the base allowlist
 ```
 
-Either file is optional, and takes effect immediately, even when created or deleted mid-session. The
-rules file can only add hosts, or deny them: any key but `allowed_domains` and `global_deny_list` is
-refused, and the base config's `global_deny_list` still holds against the hosts it adds; its own
-`global_deny_list` denies a host even where the base config allows it. A mistake made in either file
-mid-session never stops a running session: the edit doesn't take effect, as the notification says,
-and what the file added before it stays. An edit to the base config still takes effect, with what
-the file last added. But a mistake keeps a new session from starting, as a mistake in the base
-config does, so that the repo's sessions all run on the same config; so does a file `chopi` won't
-read -- a symlink, one with other hard links, or one it can't read. The repo's worktrees,
-`chopi --worktree` ones included, share its config. When a repo has its own, `chopi` says so as a
-session starts. Like the base config, it's outside every workspace, and no sandboxed command can
-change it.
+Either of the repo's files is optional. Each takes effect immediately, even when created or
+deleted mid-session. The repo's rules file takes only the keys `allowed_domains` and
+`global_deny_list`, and `chopi` refuses any other key. It can add hosts, or deny them. Either rules
+file's `global_deny_list` denies its hosts even where the other file allows them.
+
+A mistake made in either of the repo's files mid-session never stops a running session: the edit
+doesn't take effect, as the notification says, and what the file added before it stays. An edit to
+the base config still takes effect, with what the file last added. But a mistake keeps a new
+session from starting, as a mistake in the base config does, so that the repo's sessions all run on
+the same config; so does a file `chopi` won't read -- a symlink, one with other hard links, or one
+it can't read. The repo's worktrees, `chopi --worktree` ones included, share its config. When a
+repo has its own, `chopi` says so as a session starts. Like the base config, it's outside every
+workspace, and no sandboxed command can change it.
 
 To configure the sandbox policy, edit the first two settings in `config/sandbox.sh` (other
 settings can be reviewed later):
@@ -271,9 +273,9 @@ applied without you approving it, and `chopi-review` runs only out-of-sandbox.
 
 To run the proxy against a different rules file or GitHub allowlist, set `CHOPI_PROXY_RULES` or
 `CHOPI_GITHUB_ALLOWLIST` in the sandbox config to its absolute path, which must be in
-`~/.chopi/config`. Every session denies its sandboxed command any change to that directory, and to
-the default files, or to the dirs above them, whatever the session itself reads -- even under a
-grant covering them -- as a command that could rewrite rules or an allowlist could lift its own
+`~/.chopi/config`. Every session denies its sandboxed command any change to that directory, to
+the default files, and to the dirs above them, whichever of them the session itself reads, even
+under a grant covering them. A command that could rewrite rules or an allowlist could lift its own
 limits, or another session's. A config file there with other hard links refuses every session,
 whichever repo's it is and whether any session uses it, as writing through one would escape the
 deny (`CHOPI_ALLOW_SELF=1` downgrades this to a warning, as for `--config` below).

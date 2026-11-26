@@ -311,7 +311,7 @@ assert_config_kept() {
     arity 4
     local out="$1" file="$2" orig="$3" where="$4"
     assert_contains "$out" "RAN"         "chopi runs a command with the proxy rules $where"
-    assert_contains "$out" "WRITE_FAIL"  "  -> it can't write them"
+    assert_contains "$out" "WRITE_FAIL"  "  -> the command can't write them"
     # On a case-sensitive volume, the name in another case is another file, for the command to make.
     if [ "$(upper_case_name "$file")" -ef "$file" ]; then
         assert_contains "$out" "CASE_FAIL" "  -> by another case of their name either"
@@ -917,7 +917,7 @@ echo "rules and GitHub allowlist hot reload (edits take effect within a running 
 # within one session, stepped from here: the session runs each probe the test asks for in step
 # files -- a curl to a host, or a git ls-remote of a URL.
 steps="$ws/steps"; mkdir -p "$steps"
-# The workspace's own files, which the session's proxy is given, missing or not.
+# The session's proxy is given the workspace's own files, whether or not they exist.
 ws_rules="$ws_config/$DEFAULT_PROXY_RULES"
 ws_allowlist="$ws_config/$DEFAULT_GITHUB_ALLOWLIST"
 # shellcheck disable=SC2016  # expands in the sandboxed shell, not here
@@ -980,8 +980,8 @@ await_step() {
     code="timeout"
 }
 
-# The alerter args of the banner a reload puts up, as notify_reload words it: of WHAT, the file
-# edited named NAME, in the banner group of config file FILE, with each KEY (see
+# The alerter args of the banner notify_reload puts up for a reload of WHAT. The edited file is
+# named NAME, and the banner goes to the banner group of config file FILE with each KEY (see
 # reload_banner_group).
 #
 # usage: reload_banner ok|failed WHAT NAME FILE KEY...
@@ -1061,9 +1061,9 @@ fi
 session_probe http_code "$DENIED_HOST"
 assert_not_contains "$code" "200"                  "the restored rules refuse the host again"
 
-# On an allowlist edit, a Caddy on the new config replaces the one serving, on the same listeners:
-# the session keeps the port and socket it was confined to. The session's fetch is made through
-# them, so its success says the relays serve there.
+# On a GitHub allowlist edit, a Caddy on the new config replaces the one serving, on the same
+# listeners: the session keeps the port and socket it was confined to. The session's fetch is made
+# through them, so its success says the relays serve there.
 # relay_fetch WHAT -- assert the session fetches a public repo through the git relay.
 relay_fetch() {
     arity 1
@@ -1075,7 +1075,7 @@ relay_fetch() {
     fi
 }
 
-# (4) A broken allowlist edit is refused loudly, and the relays serving keep serving.
+# (4) The proxy refuses a broken allowlist edit loudly, and the relays keep serving.
 allowlist_key="$(gh_token_source)"
 printf 'no-slash-here\n' > "$empty_github_allow"
 if wait_for "$reload_log" "GITHUB ALLOWLIST RELOAD FAILED"; then
@@ -1107,8 +1107,8 @@ else
 fi
 relay_fetch "after an allowlist reload the session's relay serves, on the port it was confined to"
 
-# (6) The repo's own rules, made mid-session in its config dir, add to the base rules at once, and
-# their banner says whose they are. The session started with none.
+# (6) The repo's own rules, made mid-session in its config dir, add to the base rules at once.
+# Their banner says they are the workspace's. The session started with none.
 mkdir -p "$ws_config"
 printf 'allowed_domains:\n  - %s\n' "$DENIED_HOST" > "$ws_rules"
 if wait_for "$reload_log" "workspace rules reloaded"; then

@@ -13,7 +13,8 @@
 #                                   --worktree target), since that is the dir a custom
 #                                   --config must stay outside of.
 #
-# resolve_proxy_config, run up front, resolves the proxy's config, which it reads all session long.
+# resolve_proxy_config, run up front, resolves the proxy config files, which the proxy reads all
+# session long.
 
 _preflight_dir="$(dirname "${BASH_SOURCE[0]}")"
 . "$_preflight_dir/util.sh"
@@ -186,12 +187,16 @@ require_in_proxy_config_dir() {
     return 1
 }
 
-# Resolve the proxy config file the sandbox config's variable VAR names -- or, when it names none,
-# the default config/DEFAULT the installer creates from config/templates/TEMPLATE -- setting VAR to
-# its real path. chopi hands the proxy that path, which it reads for the whole session, hot-reloading
-# the rules: resolved once, as Seatbelt matches the real path, no symlink on the way can be
-# repointed past the profile denying changes to it. A configured one must be in PROXY_CONFIG_DIR,
-# where every session's command is kept from changing it, not just this session's.
+# Set the sandbox config's variable VAR to the real path of the proxy config file it names. When it
+# names none, use the default config/DEFAULT, which the installer creates from
+# config/templates/TEMPLATE.
+#
+# chopi hands the proxy that path, and the proxy reads the file for the whole session,
+# hot-reloading the rules. Seatbelt matches the real path, so with the path resolved once, no
+# symlink on the way can be repointed past the profile that denies changes to the file.
+#
+# A configured file must be in PROXY_CONFIG_DIR, which every session keeps its command from
+# changing, not just this session.
 #
 # usage: resolve_proxy_config VAR DEFAULT TEMPLATE
 resolve_proxy_config() {
@@ -223,9 +228,10 @@ resolve_proxy_config() {
 }
 
 # Print the real path of the own config dir of the workspace at RUN_DIR (workspace_config_dir),
-# whether or not it exists: chopi hands the proxy the proxy config files in it, and the proxy reads
-# them all session, as they appear. Resolved through any symlinks on the way, it must still be in
-# PROXY_CONFIG_DIR, where every session keeps its command from changing it.
+# whether or not it exists. chopi hands the proxy the proxy config files in that dir, and the proxy
+# reads the files all session, from whenever they appear. The dir, resolved through any symlinks on
+# the way, must still be in PROXY_CONFIG_DIR, where every session keeps its command from changing
+# it.
 #
 # usage: resolve_workspace_config_dir RUN_DIR
 resolve_workspace_config_dir() {
@@ -244,10 +250,12 @@ WORKSPACE_SANDBOX_ARRAYS=(CHOPI_SAFEHOUSE_FLAGS CHOPI_EXTRA_ENV CHOPI_GIT_CONFIG
 
 # Add what the workspace's own sandbox config FILE adds to the sandbox config arrays
 # (WORKSPACE_SANDBOX_ARRAYS), for its sessions alone, as workspace-sandbox-loader.sh reports it. A
-# missing FILE adds nothing. Like the repo's own proxy config files beside it, it is in
-# PROXY_CONFIG_DIR, where every session keeps its command from changing it; so a symlink, which may
-# lead to where a command can, is refused, as is a file with other hard links, which a command may have written through
-# (CHOPI_ALLOW_SELF downgrading that to a warning, as for the proxy config).
+# missing FILE adds nothing.
+#
+# Like the repo's own proxy config files beside it, FILE is in PROXY_CONFIG_DIR, where every session
+# keeps its command from changing it. So this refuses a symlink, which may lead to a place a command
+# can change. It also refuses a file with other hard links, which a command may have written
+# through; CHOPI_ALLOW_SELF downgrades that refusal to a warning, as for the proxy config.
 #
 # usage: load_workspace_sandbox_config FILE
 load_workspace_sandbox_config() {

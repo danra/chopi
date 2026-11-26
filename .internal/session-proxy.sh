@@ -27,10 +27,12 @@ SESSION_PROXY_PORT=""
 SESSION_RELAY_PORT=""
 SESSION_GH_SOCK=""
 
-# Start the session's proxy, with RULES and ALLOWLIST as its configuration, and its log verbose when
-# VERBOSE is non-empty. Returns as soon as it is launched, for chopi to go on with its own setup as
-# the proxy starts; await_session_proxy waits for it. ADD_RULES and ADD_ALLOWLIST add to RULES and
-# ALLOWLIST; either may be missing.
+# Start the session's proxy on the rules RULES and the GitHub allowlist ALLOWLIST, with its log
+# verbose when VERBOSE is non-empty. ADD_RULES and ADD_ALLOWLIST add to RULES and ALLOWLIST, and
+# either may be missing.
+#
+# This returns as soon as the proxy is launched, so chopi goes on with its own setup as the proxy
+# starts. await_session_proxy waits for the proxy.
 #
 # USER_TMPDIR is the TMPDIR chopi was started with, before it took a temp dir of its own; empty for
 # none. The proxy runs with it, not with chopi's, which goes with the session: an editor its banner

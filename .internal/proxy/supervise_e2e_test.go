@@ -135,8 +135,8 @@ func startSupervisor(t *testing.T, caddyPlan string) *supervisorRun {
 	caddy := filepath.Join(bin, "caddy")
 	writeFile(t, caddy, "#!/bin/sh\nCHOPI_TEST_ROLE=caddy exec '"+exe+"' \"$@\"\n")
 	os.Chmod(caddy, 0o755)
-	// The relays' config is the "allowlist" as it is, unless it holds RENDER-FAILS; the render
-	// records the GH_TOKEN it gets.
+	// The fake render prints the "allowlist", which it gets as a file, as the relays' config. It
+	// fails if the allowlist holds RENDER-FAILS. It records the GH_TOKEN it gets.
 	render := filepath.Join(bin, "render")
 	writeFile(t, render, `#!/bin/sh
 printf '%s' "${GH_TOKEN-(unset)}" > "$CHOPI_TEST_STATE/render-token"

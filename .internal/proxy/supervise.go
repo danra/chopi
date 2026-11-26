@@ -43,8 +43,8 @@ type options struct {
 	allowlist   string // the GitHub allowlist, watched for changes
 	relayConfig string // the command rendering the relays' Caddy config from the allowlist
 
-	// Rules and a GitHub allowlist adding to the base ones (see added.go), watched for changes as
-	// they are; each may be missing.
+	// Rules and a GitHub allowlist adding to the base ones (see added.go). They are watched for
+	// changes the same way, and each may be missing.
 	addRules, addAllowlist string
 
 	smokeArgs []string
@@ -122,9 +122,9 @@ func takeEnv(names ...string) []string {
 }
 
 // relayConfig renders the relays' Caddy config: the output of cmd run on the GitHub allowlists'
-// contents, with env added to our environment -- the GitHub token the user exported, if any, which
-// only cmd gets. paths are the allowlists' files, the base one and the one added to it, for
-// what cmd says of their contents to name them.
+// contents. env holds the GitHub token the user exported, if any. Only cmd gets it, added to our
+// environment. paths are the allowlists' files, the base one and the one added to it, so that what
+// cmd says about their contents names them.
 type relayConfig struct {
 	cmd   string
 	env   []string
@@ -135,12 +135,16 @@ type relayConfig struct {
 // process group is TERMed, before they are closed on whatever still holds them.
 const renderCancelGrace = 2 * time.Second
 
-// render returns the relays' config, rendered from the allowlists' contents as taken up: nil for
-// the added one when missing. Each is given to cmd in a file of its own, private to the
-// proxy, so it reads no allowlist as it is now; what cmd says of such a file names the allowlist's
-// own path instead. It returns any notes cmd had for the user on stderr -- or, failing, an error
-// with what cmd said on stderr: why. Cancelling ctx TERMs cmd's whole process group: what it waits
-// on, like gh at a keychain prompt for the token, is a child of its own.
+// render returns the relays' config, rendered by cmd from the allowlists' contents as taken up. It
+// also returns any notes cmd wrote on stderr for the user. If cmd fails, the error includes what
+// cmd wrote on stderr, which says why.
+//
+// cmd gets each allowlist's contents in a file of its own, private to the proxy, so it reads no
+// allowlist as it is now. added is nil when the added allowlist is missing. What cmd says about
+// such a file names the allowlist's own path instead.
+//
+// Cancelling ctx TERMs cmd's whole process group: what cmd waits on, like gh at a keychain prompt
+// for the token, is a child process of cmd's.
 func (c relayConfig) render(ctx context.Context, base, added []byte) (config []byte, notes string, err error) {
 	dir, err := os.MkdirTemp("", "chopi-allowlists-")
 	if err != nil {
@@ -199,10 +203,10 @@ func (c *caddyProc) stop(timeout time.Duration) {
 // A var, for tests to shorten.
 var caddyStopTimeout = 5 * time.Second
 
-// relaySupervisor runs the Caddy serving the relays, and on a change to a GitHub allowlist, the
-// base one or one added to it, replaces it with one on the new config, on the same listeners, kept
-// open here for the proxy's life: their ports and socket path are what running chopi sessions are
-// confined to.
+// relaySupervisor runs the Caddy serving the relays. On a change to a GitHub allowlist, the base
+// one or one added to it, it replaces that Caddy with one on the new config, on the same listeners.
+// It keeps the listeners open for the proxy's life, as running chopi sessions are confined to their
+// ports and socket path.
 type relaySupervisor struct {
 	relays  *relays
 	logPath string // Caddy's output, every Caddy's in turn
@@ -335,8 +339,8 @@ func (s *relaySupervisor) serve(proc *caddyProc) (replaced *caddyProc) {
 }
 
 // reload replaces the serving Caddy with one on the config rendered from the allowlists' contents,
-// base and added (relayConfig.render), unless that is the config it already serves (a save with no
-// edit). On failure, the serving Caddy stays.
+// base and added (relayConfig.render), unless the serving Caddy already serves that config (a save
+// with no edit). On failure, the serving Caddy stays.
 func (s *relaySupervisor) reload(base, added []byte) error {
 	s.mu.Lock()
 	if s.stopped {

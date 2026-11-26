@@ -1,4 +1,4 @@
-# format-reload.jq -- recognize and render the proxy's hot-reload lines: of the rules, and of the
+# format-reload.jq -- recognize and render the proxy's hot-reload lines of the rules and of the
 # GitHub allowlist, which the relays serve.
 #
 # Emits the display line when the input is a reload line, else empty -- the caller
@@ -10,19 +10,20 @@
 #              -- loud like a DENY: the user's edit did NOT take effect, and the proxy
 #              keeps enforcing the previous rules.
 #
-# Each says what reloaded as the entry's "what" says -- e.g. "workspace rules reloaded", for a
-# workspace's own -- or, for an entry without one, as its message says.
+# Each line names what reloaded by the entry's "what", e.g. "workspace rules reloaded" for a
+# workspace's own rules, or, for an entry without a "what", by its message.
 #
-# The msg strings matched here are emitted by .internal/proxy/main.go (its *Reloaded and
-# *ReloadFailed constants), and classify_log (.internal/classify-log.sh) matches them on the raw line to fire its
-# reload hook; keep all three in sync.
+# .internal/proxy/main.go emits the msg strings matched here (its *Reloaded and *ReloadFailed
+# constants). classify_log (.internal/classify-log.sh) also matches them, on the raw line, to fire
+# its reload hook. Keep all three in sync.
 #
 # Inputs:
 #   $script         (string) the proxy script's name, tagging the synthesized line
 
 include "util";
 
-# Render the reload entry given as input, of WHAT, and of its failure, which keeps the previous KEPT.
+# Render the reload entry given as input, of WHAT, as a reload or as a failed reload, which keeps
+# the previous KEPT.
 def what($what): .what // $what;
 def reloaded($what): "[" + $script + "] " + what($what) + " reloaded  @ " + field(.time);
 def failed($what; $kept):

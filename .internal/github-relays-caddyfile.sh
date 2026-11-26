@@ -4,7 +4,7 @@
 #
 #   github-relays-caddyfile.sh <allowlist-file>...   # prints a Caddyfile to stdout
 #
-# Compiles the GitHub repo allowlists -- their union -- into a path regex and assembles the
+# Compiles the GitHub repo allowlists, their union, into a path regex and assembles the
 # Caddyfile from the github-relay-*.caddy (git) and github-api-relay-*.caddy (API) fragments next to
 # this script: two loopback reverse-proxy listeners,
 #

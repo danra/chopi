@@ -11,8 +11,9 @@
 # usage: chopi-proxy.sh --dir DIR --log FILE --parent PID --rules FILE --github-allowlist FILE
 #                       --add-rules FILE --add-github-allowlist FILE [--verbose]
 #
-# The --add-rules and --add-github-allowlist add to the base ones -- chopi's, a workspace's own (see
-# workspace_config_dir); either may be missing.
+# The --rules and --github-allowlist files are the base ones, chopi's. The --add-rules and
+# --add-github-allowlist files are a workspace's own (see workspace_config_dir), which add to the
+# base ones. Either may be missing.
 
 set -euo pipefail
 # The GitHub token is chopi-smokescreen's alone, which exports it again (see run_smokescreen): kept
@@ -113,18 +114,19 @@ done
 # - Denied connections show as "DENY host @ time" and trigger notifications
 # - Denials of hosts matching the configured denylist show as a plain "deny(known)" line,
 #   once per host per session -- no notification, repeats dropped
-# - Rules hot-reloads show as a plain "rules reloaded" line; a failed reload (the edit
-#   did NOT take effect) shows as a loud "RULES RELOAD FAILED" line, and notifies; the next
-#   successful reload replaces that notification with a brief confirmation
+# - Rules hot-reloads show as a plain "rules reloaded" line.
+# - A failed reload, whose edit did NOT take effect, shows as a loud "RULES RELOAD FAILED"
+#   line and triggers a notification. The next successful reload replaces that notification with a
+#   brief confirmation.
 # - Allowed connections and the known noise are dropped
 # - Every other line passes through. notify_deny and notify_reload manage the macOS banners.
 format_smokescreen_log() {
     # A formatter that fails takes the rest of the log with it, while the proxy keeps serving: the
     # log says so where it ends, rather than just going quiet.
     trap 'report_formatter_failure $?' EXIT
-    # The reload banners' groups (see notify_reload), worked out here, off the proxy's startup path:
-    # the base file's and the workspace's own, each keyed by the other file it is taken up with,
-    # and the allowlists' by where the token comes from too.
+    # Work out the reload banners' groups (see notify_reload) here, off the proxy's startup path.
+    # Each group is keyed by its file and the other file it is taken up with, and an allowlist's
+    # group by where the token comes from too.
     local token_source
     token_source="$(gh_token_source)"
     RULES_RELOAD_GROUP="$(reload_banner_group "$RULES" "$ADD_RULES")"
@@ -149,13 +151,18 @@ notify_deny() {
     notify "chopi-proxy-deny-$PARENT_PID" "$LOG" 'connection denied' "DENY $1" "$NOTIFY_ALERT_SECS"
 }
 
-# Each config file's reloads have a banner group of their own: a reload of one says nothing of the
-# other's last edit. It is shared by the sessions whose reloads of the file go alike, those reading
-# the same base and workspace files (reload_banner_group): a base edit shows once per workspace, so
-# one refused for what a workspace's file has shows in that workspace's sessions alone. A reload's banner replaces its group's last one: a failure stays up
-# until the user fixes it, and the fix's confirmation takes its place, briefly. With no terminal for
-# the proxy, the confirmation is the user's word that an edit took effect before they retry what it
-# allows -- or, by its absence, that the edit went to a file the session doesn't read.
+# Each config file's reloads have a banner group of their own, since a reload of one file says
+# nothing of another file's last edit.
+#
+# The sessions whose reloads of the file go alike share its group (reload_banner_group): those that
+# take the file up with the same base and workspace files, and, for an allowlist, take the token
+# from the same place. So a base edit shows once per workspace, and a base edit refused for what a
+# workspace's file holds shows only in that workspace's sessions.
+#
+# A reload's banner replaces its group's last one. A failure stays up until the user fixes it, and
+# the fix's confirmation then takes its place, briefly. The proxy has no terminal, so the
+# confirmation is how the user learns that an edit took effect before they retry what it allows.
+# Without one, they learn that the edit went to a file the session doesn't read.
 #
 # The banner says what reloaded and names the file as the proxy's log LINE does.
 #
@@ -191,15 +198,22 @@ run_smokescreen() {
     run_chopi_smokescreen "$@" 2>&4 4>&-
 }
 
-# chopi-smokescreen opens the listeners, serves the proxy, and starts Caddy on the relays' config,
-# which it renders from the allowlist, and again on each edit to it. It reports its ports in
-# DIR/ports once up; until then, its stderr is still ours as chopi started us, where chopi shows why
-# it couldn't start, and its log output, on stdout, goes through the formatter. lead_group's stderr
-# goes to the log, as does the formatter's: both outlive the startup, whose stderr chopi reads only
-# then -- the shell's word of how chopi-smokescreen ended, a crash's say, would be lost there. What
-# we print once lead_group returns still goes to the startup's stderr, unread. We stay, for Caddy to
-# go with chopi-smokescreen however it goes; chopi's stop signal reaches it as a TERM from us. Its
-# temporaries, Caddy's among them, go in our private dir, which we remove once it is gone (see the
+# chopi-smokescreen opens the listeners, serves the proxy, and starts Caddy on the relays' config.
+# It renders that config from the allowlist, and again on each edit to the allowlist, and on a save
+# with no edit, which takes up a GitHub token gh replaced.
+#
+# chopi-smokescreen reports its ports in DIR/ports once up. Until then, its stderr is still the one
+# chopi started us with, where chopi shows why it couldn't start. Its log output, on stdout, goes
+# through the formatter.
+#
+# lead_group's stderr goes to the log, as does the formatter's. Both outlive the startup, and chopi
+# reads the startup's stderr only during the startup, so the shell's report of how
+# chopi-smokescreen ended, such as a crash, would be lost there. What we print once lead_group
+# returns still goes to the startup's stderr, where nothing reads it.
+#
+# We stay running, so that Caddy goes with chopi-smokescreen however chopi-smokescreen ends.
+# chopi's stop signal reaches chopi-smokescreen as a TERM from us. chopi-smokescreen's temporaries,
+# Caddy's among them, go in our private dir, which we remove once chopi-smokescreen is gone (see the
 # EXIT trap above).
 #
 # chopi-smokescreen's output goes through this to the formatter: a background job of ours, unlike a

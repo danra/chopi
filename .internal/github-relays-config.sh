@@ -7,8 +7,8 @@
 # Renders the config for the allowlists' union (github-relays-caddyfile.sh) and fills its credential
 # slots with the GitHub token: the GH_TOKEN or GITHUB_TOKEN set, else gh's. chopi-smokescreen runs
 # this as the proxy starts, and again on every edit to the allowlist, piping the output to Caddy
-# over stdin: the token never touches disk or any argv. A token gh rotates is thus taken up at the
-# next edit.
+# over stdin: the token never touches disk or any argv. A save of the allowlist with no edit runs it
+# again too, which takes up a token gh rotated.
 #
 # Notes for the user, and why it fails, go to stderr: chopi-smokescreen logs the notes, and shows
 # why it fails in chopi's terminal where the proxy starts, and in its log on a reload.

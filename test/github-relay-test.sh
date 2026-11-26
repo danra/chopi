@@ -82,8 +82,10 @@ printf 'version: v1\nservices: []\ndefault:\n  name: default\n  action: enforce\
 # start_relays CONFIG LOG -- start the proxy as a session's would, the relays on the Caddy config
 # CONFIG, logging to LOG (and caddy to LOG.caddy, which LOG quotes if caddy fails to start); sets
 # SESSION_PROXY_PID, CADDY_PID, SESSION_RELAY_PORT, SESSION_GH_SOCK and git_url once they serve, or
-# fails. Awaited as chopi awaits a session's proxy, sharing its handshake. The config is "rendered"
-# by cat from RELAY_CONFIG, for reload_relays to edit as a session's allowlist is.
+# fails. Awaited as chopi awaits a session's proxy, sharing its handshake. The renderer, cat,
+# "renders" the config by printing RELAY_CONFIG, which the proxy takes as the GitHub allowlist.
+# reload_relays edits RELAY_CONFIG as a session's allowlist is edited, so the proxy renders the
+# relays' config again.
 RELAY_CONFIG="$WORK/relay.caddy"
 start_relays() {
     local config="$1" log="$2"

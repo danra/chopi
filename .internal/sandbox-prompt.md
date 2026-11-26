@@ -59,12 +59,14 @@ git's access to the same host.
 
 Hosts and GitHub repos are allowed at two levels: in chopi's base config, for every project,
 or in this repo's own config, which adds to it for this repo's sessions alone. Recommend this
-repo's own unless the host or repo is one every project needs. Its files are
-`$CHOPI_WORKSPACE_PROXY_RULES` and `$CHOPI_WORKSPACE_GITHUB_ALLOWLIST` (quote the full paths
-from your environment); either may not exist yet, for the user to create. The rules file takes
-only an `allowed_domains:` list (and `global_deny_list:`, which denies a host even
-where the base config allows it); the allowlist takes the base one's
-format, one `owner/repo` or `owner/*` per line.
+repo's own unless the host or repo is one every project needs.
+
+This repo's own config is two files, `$CHOPI_WORKSPACE_PROXY_RULES` and
+`$CHOPI_WORKSPACE_GITHUB_ALLOWLIST` (quote the full paths from your environment). Either may
+not exist yet, in which case the user creates it. The rules file takes only an
+`allowed_domains:` list of hosts, and a `global_deny_list:` of hosts the proxy denies even
+where the base config allows them. The allowlist takes the base one's format: one `owner/repo`
+or `owner/*` entry per line.
 
 | Symptom | Cause | Fix, and when it takes effect |
 |---|---|---|
@@ -83,7 +85,7 @@ format, one `owner/repo` or `owner/*` per line.
 | `gh search` fails: `chopi GitHub relay: search is allowed only as code search ...` | Search names no repo in its path, so it is credentialed only as code search whose query provably stays within owners with an `owner/*` allowlist entry; the message states the grammar | Rephrase within it: `gh search code WORDS --owner OWNER`, adding `--language`/`--extension` to narrow. If OWNER has no `owner/*` entry, the user adds one to the allowlist as above, which hot-reloads. Other searches are not available in-session. |
 | Creating a GitHub Discussion or discussion comment fails: GraphQL gets the deny above, and a REST `POST .../discussions` gets GitHub's own 404 | GitHub offers Discussions writes only via GraphQL; its REST API has no discussion write routes at all, so the 404 comes from GitHub, not the relay | Not possible in-session, and no config change enables it -- don't probe for a REST write route. Reading works, via REST endpoints GitHub leaves undocumented (so they may change): `gh api repos/OWNER/REPO/discussions`, `.../discussions/{number}`, `.../discussions/{number}/comments`, with standard pagination. To post, the user goes through the web UI (`https://github.com/OWNER/REPO/discussions/new?category=SLUG`) or runs the `createDiscussion` GraphQL mutation with `gh api graphql` outside the sandbox; the repo and category node IDs it needs appear in the REST read responses. |
 | `gh` REST reads 404 on a non-allowlisted private repo, or writes are unauthorized | The GitHub token is injected only for allowlisted repos; other repos are reached anonymously | Same allowlist as above, which hot-reloads too. Public-repo reads need no entry. |
-| `gh` REST reads 404 (`Not Found`) on an **allowlisted** private repo | GitHub hides repos the credential cannot see: the host's token does not cover this one (fine-grained PATs are repo-scoped) | User grants the repo to the host's token, outside the sandbox. Widening the existing token applies immediately; a replacement token **takes effect once the user touches `config/github-allowlist`**, as the credential is read on each allowlist reload -- or, for one exported to `chopi` as `GH_TOKEN`, **in a new chopi session**. |
+| `gh` REST reads 404 (`Not Found`) on an **allowlisted** private repo | GitHub hides repos the credential cannot see: the host's token does not cover this one (fine-grained PATs are repo-scoped) | User grants the repo to the host's token, outside the sandbox. Widening the existing token applies immediately; a replacement token **takes effect once the user saves `config/github-allowlist`, even unchanged**, as the proxy reads the credential whenever it renders the relays again -- or, for one exported to `chopi` as `GH_TOKEN`, **in a new chopi session**. |
 | Anything hitting `api.github.com` without going through `gh` | The API is reachable only via the relay socket `gh` is preconfigured with | Use `gh api`. Direct hits are quietly denied; nothing to grant for other clients. |
 | Background tasks fail to start | The daemon needs a unix socket the policy denies; the default config also turns them off (`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`) | Run the command in the foreground. |
 
