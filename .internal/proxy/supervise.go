@@ -45,8 +45,8 @@ type options struct {
 	allowlist   string // the GitHub allowlist, watched for changes
 	relayConfig string // the command rendering the relays' Caddy config from the allowlist
 
-	// Rules and a GitHub allowlist adding to the base ones (see added.go). They are watched for
-	// changes the same way, and each may be missing.
+	// Rules and a GitHub allowlist adding to the base ones (see network_config.go). They are watched
+	// for changes the same way, and each may be missing.
 	addRules, addAllowlist string
 
 	smokeArgs []string

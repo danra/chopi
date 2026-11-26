@@ -8,12 +8,12 @@
 //
 //   - Smokescreen's flags and log output are identical to the standalone smokescreen binary's,
 //     but for where it listens: --listen-ip and --listen-port are ignored. Smokescreen takes its
-//     rules from the rules files (see added.go) instead of an --egress-acl-file.
+//     rules from the rules files (see network_config.go) instead of an --egress-acl-file.
 //   - The proxy polls the --rules file for changes and takes up a new valid rule set right away.
 //     It swaps the rules in atomically.
-//   - The --add-rules and --add-github-allowlist files add to the base ones (see added.go). The
-//     proxy polls them for changes as it polls the base ones, including for being made or deleted
-//     mid-session.
+//   - The --add-rules and --add-github-allowlist files add to the base ones (see
+//     network_config.go). The proxy polls them for changes as it polls the base ones, including for
+//     being made or deleted mid-session.
 //   - A change to either file of a kind takes up their config with the other file as last taken
 //     up. If the proxy refuses an added file as it starts, the proxy doesn't start, and its error
 //     names that file.
@@ -207,7 +207,7 @@ To run anyway, set %s=1.`, allowlist, template, path, path, gitHubExfiltrationOv
 }
 
 // configFile is a config file of kind that the proxy watches. added is whether it adds to the base
-// config (added.go).
+// config (network_config.go).
 //
 // read is what the file's own reload last read from it, after checking the file, whether or not
 // the reload took it up. accepted is what was last taken up from it (zero if nothing was): a
