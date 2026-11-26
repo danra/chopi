@@ -12,8 +12,8 @@
 #     is refused by the proxy (and the denial is logged + notified); any direct outgoing connection
 #     that bypasses the proxy, or aims at a non-allowlisted loopback port -- another session's
 #     proxy included -- is blocked by Seatbelt. A session's proxy stops with the session.
-#   * rules hot reload: an edit to the rules file takes effect while the session runs; a
-#     broken edit is refused loudly and the previous rules stay in effect.
+#   * network config hot reload: an edit to the network config takes effect while the session
+#     runs; a broken edit is refused loudly and the previous config stays in effect.
 
 set -euo pipefail
 
@@ -74,9 +74,8 @@ alerter_stub="$base/bin"        # a recording `alerter` shim on the proxy's PATH
 claudebin="$base/claudebin"     # a stand-in `claude` for the Claude-context cases
 codexbin="$base/codexbin"       # a stand-in `codex` for checking Chopi's argv
 cfg="$base/config/sandbox.sh"   # minimal sandbox config, OUTSIDE the workspace
-# Custom proxy config must be in PROXY_CONFIG_DIR, here under the test's CHOPI_RUN_DIR.
-rules="$PROXY_CONFIG_DIR/itest-rules.yaml"
-empty_github_allow="$PROXY_CONFIG_DIR/itest-github-allowlist-empty"
+# Custom network config must be in PROXY_CONFIG_DIR, here under the test's CHOPI_RUN_DIR.
+network="$PROXY_CONFIG_DIR/itest-network.yaml"
 alerter_log="$base/alerter-calls.log"
 mkdir -p "$ws" "$outside" "$alerter_stub" "$claudebin" "$codexbin" "$base/config" "$base/home" \
     "$PROXY_CONFIG_DIR"
@@ -117,12 +116,10 @@ printf '%s\n' "$@"
 EOF
 chmod +x "$codex_shim"
 
-: > "$empty_github_allow"
-
 # write_cfg FILE [LINE...] -- a minimal config: no dir grants beyond the stub agent's (so denials
-# are clean), PATH of system binaries only, and the test's proxy rules and empty GitHub allowlist,
-# plus any LINEs: `+=` adds to those, `=` replaces. The proxy config keeps every session from
-# falling back to the developer's own config/proxy-rules.yaml.
+# are clean), PATH of system binaries only, and the test's network config, with an empty GitHub
+# allowlist, plus any LINEs: `+=` adds to those, `=` replaces. The network config keeps every session
+# from falling back to the developer's own config/network.yaml.
 # With --template, the config first sources the shipped template, as a user's would.
 write_cfg() {
     local file="$1"; shift
@@ -134,29 +131,23 @@ write_cfg() {
         cat <<EOF
 CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro "$claudebin:$codexbin" )
 CHOPI_EXTRA_ENV=( PATH=/usr/bin:/bin:/usr/sbin:/sbin )
-CHOPI_PROXY_RULES="$rules"
-CHOPI_GITHUB_ALLOWLIST="$empty_github_allow"
+CHOPI_NETWORK_CONFIG="$network"
 EOF
         printf '%s\n' "$@"
     } > "$file"
 }
 write_cfg "$cfg"
 
-# Test rules: exactly one host allowed.
+# Test network config: exactly one host allowed, and no GitHub repo.
 # A function because the hot-reload tests below restore this same baseline mid-run.
-write_test_rules() {
+write_test_network() {
     arity 0
-    cat > "$rules" <<EOF
-version: v1
-services: []
-default:
-  name: default
-  action: enforce
-  allowed_domains:
-    - $ALLOWED_HOST
+    cat > "$network" <<EOF
+allowed_domains:
+  - $ALLOWED_HOST
 EOF
 }
-write_test_rules
+write_test_network
 
 # alerter shim: record each invocation (so we can prove the denial-notification path fired)
 # instead of popping a real macOS banner per DENY. First on PATH, which chopi passes on to the
@@ -233,9 +224,9 @@ set +e
 # ---------------------------------------------------------------------------
 echo "the session's proxy refuses a populated allowlist with no GitHub token"
 # ---------------------------------------------------------------------------
-nonempty_github_allow="$PROXY_CONFIG_DIR/itest-github-allowlist-nonempty"
-printf 'soundradix/*\n' > "$nonempty_github_allow"
-write_cfg "$base/config/no-token.sh" "CHOPI_GITHUB_ALLOWLIST=\"$nonempty_github_allow\""
+allowlisting_network="$PROXY_CONFIG_DIR/itest-network-allowlisting.yaml"
+printf 'github_allowlist: [soundradix/*]\n' > "$allowlisting_network"
+write_cfg "$base/config/no-token.sh" "CHOPI_NETWORK_CONFIG=\"$allowlisting_network\""
 out="$(GH_TOKEN='' chopi_cfg "$base/config/no-token.sh" /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
 assert_nonzero      "$rc"                         "chopi refuses to run when its proxy refuses a populated allowlist with no token"
 assert_contains     "$out" "no GitHub token is set" "  -> and shows the proxy's reason"
@@ -243,27 +234,22 @@ assert_not_contains "$out" "RAN"                  "  -> and the command does not
 
 
 # ---------------------------------------------------------------------------
-echo "the session's proxy refuses rules that allow github.com/api.github.com (pre-relay leftovers)"
+echo "the session's proxy refuses a network config allowing github.com/api.github.com (pre-relay leftovers)"
 # ---------------------------------------------------------------------------
-exfil_rules="$PROXY_CONFIG_DIR/itest-rules-exfil.yaml"
-cat > "$exfil_rules" <<EOF
-version: v1
-services: []
-default:
-  name: default
-  action: enforce
-  allowed_domains:
-    - $ALLOWED_HOST
-    - github.com
-    - api.github.com
+exfil_network="$PROXY_CONFIG_DIR/itest-network-exfil.yaml"
+cat > "$exfil_network" <<EOF
+allowed_domains:
+  - $ALLOWED_HOST
+  - github.com
+  - api.github.com
 EOF
-write_cfg "$base/config/exfil.sh" "CHOPI_PROXY_RULES=\"$exfil_rules\""
+write_cfg "$base/config/exfil.sh" "CHOPI_NETWORK_CONFIG=\"$exfil_network\""
 out="$(chopi_cfg "$base/config/exfil.sh" /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
 assert_nonzero      "$rc" "chopi refuses to run when its proxy refuses rules that allow github.com and api.github.com"
 assert_not_contains "$out" "RAN"                         "  -> and the command does not run"
 assert_contains     "$out" "github.com, api.github.com"  "  -> the refusal names the domains"
 assert_contains     "$out" "dedicated relays"            "  -> and says both git and the API are relayed"
-assert_contains     "$out" "cp \"$repo/config/templates/proxy-rules.template.yaml\" \"$exfil_rules\"" \
+assert_contains     "$out" "cp \"$repo/config/templates/network.template.yaml\" \"$exfil_network\"" \
     "  -> and gives the command copying the current template over them, by absolute paths"
 assert_contains     "$out" "global_deny_list"            "  -> or to moving the domains to the denylist"
 assert_contains     "$out" "CHOPI_ALLOW_EXFILTRATION_PRONE_GITHUB_DOMAINS_DESPITE_API_RELAY" "  -> and names the override"
@@ -310,71 +296,71 @@ config_tamper() {
 assert_config_kept() {
     arity 4
     local out="$1" file="$2" orig="$3" where="$4"
-    assert_contains "$out" "RAN"         "chopi runs a command with the proxy rules $where"
-    assert_contains "$out" "WRITE_FAIL"  "  -> it can't write them"
+    assert_contains "$out" "RAN"         "chopi runs a command with the network config $where"
+    assert_contains "$out" "WRITE_FAIL"  "  -> the command can't write it"
     # On a case-sensitive volume, the name in another case is another file, for the command to make.
     if [ "$(upper_case_name "$file")" -ef "$file" ]; then
-        assert_contains "$out" "CASE_FAIL" "  -> by another case of their name either"
+        assert_contains "$out" "CASE_FAIL" "  -> by another case of its name either"
     else
-        echo "  SKIP writing them by another case of their name (a case-sensitive volume)"
+        echo "  SKIP writing it by another case of its name (a case-sensitive volume)"
     fi
-    assert_contains "$out" "RM_FAIL"     "  -> or remove them"
-    assert_contains "$out" "REPLACE_FAIL" "  -> or put others in their place"
-    assert_contains "$out" "LINK_FAIL"   "  -> or hard-link them, to write them through the link"
-    assert_contains "$out" "MOVE_FAIL"   "  -> or rename their dir away"
-    assert_eq "$(cat "$file")" "$orig"   "  -> the rules are as written"
+    assert_contains "$out" "RM_FAIL"     "  -> or remove it"
+    assert_contains "$out" "REPLACE_FAIL" "  -> or put another in its place"
+    assert_contains "$out" "LINK_FAIL"   "  -> or hard-link it, to write it through the link"
+    assert_contains "$out" "MOVE_FAIL"   "  -> or rename its dir away"
+    assert_eq "$(cat "$file")" "$orig"   "  -> the network config is as written"
 }
 
 # Custom proxy config elsewhere -- in the workspace, say -- is refused: another session's command,
 # in the same workspace, could rewrite it, lifting this session's limits.
 mkdir -p "$ws/config"
-cp "$rules" "$ws/config/rules.yaml"
-write_cfg "$base/config/rules-inside.sh" "CHOPI_PROXY_RULES=\"$ws/config/rules.yaml\""
-out="$(chopi_cfg "$base/config/rules-inside.sh" /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
-assert_nonzero      "$rc"                                  "chopi refuses proxy rules outside the config dir"
-assert_contains     "$out" "must be in $PROXY_CONFIG_DIR"  "  -> saying where they must be"
+cp "$network" "$ws/config/network.yaml"
+write_cfg "$base/config/network-inside.sh" "CHOPI_NETWORK_CONFIG=\"$ws/config/network.yaml\""
+out="$(chopi_cfg "$base/config/network-inside.sh" /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_nonzero      "$rc"                                  "chopi refuses a network config outside the config dir"
+assert_contains     "$out" "must be in $PROXY_CONFIG_DIR"  "  -> saying where it must be"
 assert_not_contains "$out" "RAN"                           "  -> and the command does not run"
 rm -rf "$ws/config"
 
 # In the config dir, under a grant covering it, read-only: the command is the file's owner, free to
 # make it writable.
-other_rules="$PROXY_CONFIG_DIR/itest-rules-other.yaml"
-cp "$rules" "$other_rules"; chmod a-w "$other_rules"
-write_cfg "$base/config/rules-granted.sh" \
+other_network="$PROXY_CONFIG_DIR/itest-network-other.yaml"
+cp "$network" "$other_network"; chmod a-w "$other_network"
+write_cfg "$base/config/network-granted.sh" \
     "CHOPI_SAFEHOUSE_FLAGS=( --add-dirs-ro \"$claudebin:$codexbin\" --add-dirs \"$PROXY_CONFIG_DIR\" )" \
-    "CHOPI_PROXY_RULES=\"$other_rules\""
-out="$(chopi_cfg "$base/config/rules-granted.sh" /bin/sh -c \
-    "chmod u+w '$other_rules' 2>/dev/null && echo CHMOD_OK || echo CHMOD_FAIL
-    $(config_tamper "$other_rules")" 2>&1)"
-assert_config_kept "$out" "$other_rules" "$(cat "$rules")" "read-only in the config dir, granted to the command"
+    "CHOPI_NETWORK_CONFIG=\"$other_network\""
+out="$(chopi_cfg "$base/config/network-granted.sh" /bin/sh -c \
+    "chmod u+w '$other_network' 2>/dev/null && echo CHMOD_OK || echo CHMOD_FAIL
+    $(config_tamper "$other_network")" 2>&1)"
+assert_config_kept "$out" "$other_network" "$(cat "$network")" "read-only in the config dir, granted to the command"
 assert_contains "$out" "CHMOD_FAIL" "  -> nor make them writable"
 
 # Another session's: a command whose session reads other rules can't change these either.
-chmod u+w "$other_rules"
-out="$(chopi_cfg "$base/config/rules-granted.sh" /bin/sh -c "$(config_tamper "$rules")" 2>&1)"
-assert_config_kept "$out" "$rules" "$(cat "$other_rules")" "another session reads, under the same grant"
+chmod u+w "$other_network"
+out="$(chopi_cfg "$base/config/network-granted.sh" /bin/sh -c "$(config_tamper "$network")" 2>&1)"
+assert_config_kept "$out" "$network" "$(cat "$other_network")" "another session reads, under the same grant"
 
 # The repo's own rules, in the config dir too, are as far out of its own session's reach, under the
 # same grant: it can't change them, nor make them where missing, to widen its own limits.
 ws_config="$(workspace_config_dir "$ws")"
 mkdir -p "$ws_config"
-printf 'allowed_domains: []\n' > "$ws_config/$DEFAULT_PROXY_RULES"
-out="$(chopi_cfg "$base/config/rules-granted.sh" /bin/sh -c \
-    "$(config_tamper "$ws_config/$DEFAULT_PROXY_RULES")" 2>&1)"
-assert_config_kept "$out" "$ws_config/$DEFAULT_PROXY_RULES" "allowed_domains: []" \
+printf 'allowed_domains: []\n' > "$ws_config/$DEFAULT_NETWORK_CONFIG"
+out="$(chopi_cfg "$base/config/network-granted.sh" /bin/sh -c \
+    "$(config_tamper "$ws_config/$DEFAULT_NETWORK_CONFIG")" 2>&1)"
+assert_config_kept "$out" "$ws_config/$DEFAULT_NETWORK_CONFIG" "allowed_domains: []" \
     "the workspace's own, under the same grant"
 rm -rf "$ws_config"
-out="$(chopi_cfg "$base/config/rules-granted.sh" /bin/sh -c "
+out="$(chopi_cfg "$base/config/network-granted.sh" /bin/sh -c "
     mkdir -p '$ws_config' 2>/dev/null
-    (echo 'allowed_domains: [evil.example]' > '$ws_config/$DEFAULT_PROXY_RULES') 2>/dev/null \
+    (echo 'allowed_domains: [evil.example]' > '$ws_config/$DEFAULT_NETWORK_CONFIG') 2>/dev/null \
         && echo MAKE_OK || echo MAKE_FAIL" 2>&1)"
 assert_contains "$out" "MAKE_FAIL" "a command can't make its workspace's own rules where missing"
-assert_absent "$ws_config/$DEFAULT_PROXY_RULES" "  -> leaving none"
+assert_absent "$ws_config/$DEFAULT_NETWORK_CONFIG" "  -> leaving none"
 rm -rf "$ws_config"
 
-write_cfg "$base/config/rules-relative.sh" "CHOPI_PROXY_RULES=rules.yaml"
-out="$(chopi_cfg "$base/config/rules-relative.sh" /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
-assert_nonzero      "$rc"                              "chopi refuses relative proxy rules paths"
+write_cfg "$base/config/network-relative.sh" "CHOPI_NETWORK_CONFIG=network.yaml"
+out="$(chopi_cfg "$base/config/network-relative.sh" /bin/sh -c 'echo RAN' 2>&1)"; rc=$?
+assert_nonzero      "$rc"                              "chopi refuses a relative network config path"
 assert_contains     "$out" "must be an absolute path"  "  -> saying why"
 assert_not_contains "$out" "RAN"                       "  -> and the command does not run"
 
@@ -462,17 +448,17 @@ assert_eq "$(cat "$planted")" $'proxy 24760\nrelay 24761' "  -> the ports are as
 # covering the config dir shows the deny wins over it.
 cfg_proxy_config="$base/config/sandbox-proxy-config.sh"
 write_cfg "$cfg_proxy_config" "CHOPI_SAFEHOUSE_FLAGS+=( --add-dirs '$PROXY_CONFIG_DIR' )"
-rules_before="$(cat "$rules")"
+network_before="$(cat "$network")"
 out="$( ( cd "$ws" && "$repo/bin/chopi" --config "$cfg_proxy_config" -- /bin/sh -c "
-    (echo x >> '$rules') 2>/dev/null && echo WRITE_OK || echo WRITE_FAIL
-    ln '$rules' ./rules-link 2>/dev/null && echo LINK_OK || echo LINK_FAIL
+    (echo x >> '$network') 2>/dev/null && echo WRITE_OK || echo WRITE_FAIL
+    ln '$network' ./network-link 2>/dev/null && echo LINK_OK || echo LINK_FAIL
     ln ./readable.txt ./control-link 2>/dev/null && echo CONTROL_LINK_OK || echo CONTROL_LINK_FAIL
 " ) 2>/dev/null )"
 assert_contains "$out" "WRITE_FAIL"        "the proxy config can't be rewritten, even under a grant covering it"
 assert_contains "$out" "LINK_FAIL"         "  -> nor hard-linked into the workspace, to write it through another link"
-assert_absent   "$ws/rules-link"           "  -> and no link is left there"
+assert_absent   "$ws/network-link"           "  -> and no link is left there"
 assert_contains "$out" "CONTROL_LINK_OK"   "  -> while a workspace file can still be hard-linked"
-assert_eq "$(cat "$rules")" "$rules_before" "  -> the rules are as written"
+assert_eq "$(cat "$network")" "$network_before" "  -> the network config is as written"
 rm -f "$ws/control-link"
 
 
@@ -911,15 +897,14 @@ fi
 
 
 # ---------------------------------------------------------------------------
-echo "rules and GitHub allowlist hot reload (edits take effect within a running session)"
+echo "network config hot reload (edits take effect within a running session)"
 # ---------------------------------------------------------------------------
-# The proxy polls the rules file and the allowlist, and takes up each edit. All of it happens
+# The proxy polls the network config, and takes up each edit. All of it happens
 # within one session, stepped from here: the session runs each probe the test asks for in step
 # files -- a curl to a host, or a git ls-remote of a URL.
 steps="$ws/steps"; mkdir -p "$steps"
-# The workspace's own files, which the session's proxy is given, missing or not.
-ws_rules="$ws_config/$DEFAULT_PROXY_RULES"
-ws_allowlist="$ws_config/$DEFAULT_GITHUB_ALLOWLIST"
+# The session's proxy is given the workspace's own network config, whether or not it exists.
+ws_network="$ws_config/$DEFAULT_NETWORK_CONFIG"
 # shellcheck disable=SC2016  # expands in the sandboxed shell, not here
 chopi_t /bin/sh -c '
     n=1
@@ -980,14 +965,14 @@ await_step() {
     code="timeout"
 }
 
-# The alerter args of the banner a reload puts up, as notify_reload words it: of WHAT, the file
-# edited named NAME, in the banner group of config file FILE, with each KEY (see
+# The alerter args of the banner notify_reload puts up for a reload of WHAT. The edited file is
+# named NAME, and the banner goes to the banner group of config file FILE (see
 # reload_banner_group).
 #
-# usage: reload_banner ok|failed WHAT NAME FILE KEY...
+# usage: reload_banner ok|failed WHAT NAME FILE
 reload_banner() {
     local group name="$3"
-    group="$(reload_banner_group "${@:4}")"
+    group="$(reload_banner_group "$4" "$network" "$ws_network" "$token_key")"
     case "$1" in
         ok)     echo "$2 reloaded --message Your edit to $name took effect --group $group --timeout $NOTIFY_CONFIRM_SECS" ;;
         failed) echo "$2 reload failed --message Your edit to $name did not take effect --group $group --timeout $NOTIFY_ALERT_SECS" ;;
@@ -997,19 +982,22 @@ reload_banner() {
 # The session's proxy is up once a probe went through it.
 session_probe http_code "$OTHER_DENIED_HOST"
 reload_log="$(latest_proxy_log)"
+# Where the session takes its GitHub token from. It is part of each banner group's key
+# (reload_banner_group).
+token_key="$(gh_token_source)"
 
 # (1) Allowing the denied host must lift its denial with no new session; the log confirms the
 # reload happened.
-printf '    - %s\n' "$DENIED_HOST" >> "$rules"
-if wait_for "$reload_log" "rules reloaded"; then
-    ok "the proxy reloaded the rules after the file changed"
+printf '  - %s\n' "$DENIED_HOST" >> "$network"
+if wait_for "$reload_log" "network config reloaded"; then
+    ok "the proxy reloaded the network config after the file changed"
 else
-    bad "the proxy did NOT log a rules reload after the file changed"
+    bad "the proxy did NOT log a network config reload after the file changed"
 fi
 # In the file's group, replacing any failure banner of its, and naming the file: the user's word
 # that the edit took effect, with no terminal for the proxy.
-rules_reloaded_banner="$(reload_banner ok rules "${rules##*/}" "$rules" "$ws_rules")"
-if wait_for "$alerter_log" "$rules_reloaded_banner"; then
+network_reloaded_banner="$(reload_banner ok 'network config' "${network##*/}" "$network")"
+if wait_for "$alerter_log" "$network_reloaded_banner"; then
     ok "  -> and notifies, briefly, that the edit took effect"
 else
     bad "  -> but did NOT notify that the edit took effect"
@@ -1021,22 +1009,22 @@ else
     echo "  SKIP hot-reloaded host reachability (no connectivity to $DENIED_HOST)"
 fi
 
-# (2) A broken edit is refused loudly and the previous rules stay in effect: hosts not
+# (2) A broken edit is refused loudly and the previous config stays in effect: hosts not
 # on the allowlist stay refused.
-printf 'all rules have been broken\n' > "$rules"
-if wait_for "$reload_log" "RULES RELOAD FAILED"; then
-    ok "a broken rules edit is logged loudly as a failed reload"
+printf 'all rules have been broken\n' > "$network"
+if wait_for "$reload_log" "NETWORK CONFIG RELOAD FAILED"; then
+    ok "a broken edit is logged loudly as a failed reload"
 else
-    bad "a broken rules edit did NOT log a failed reload"
+    bad "a broken edit did NOT log a failed reload"
 fi
 # In its own group, so the next DENY banner doesn't replace it before the user sees it.
-if wait_for "$alerter_log" "$(reload_banner failed rules "${rules##*/}" "$rules" "$ws_rules")"; then
-    ok "a broken rules edit notifies that the edit did not take effect"
+if wait_for "$alerter_log" "$(reload_banner failed 'network config' "${network##*/}" "$network")"; then
+    ok "a broken edit notifies that the edit did not take effect"
 else
-    bad "a broken rules edit did NOT notify"
+    bad "a broken edit did NOT notify"
 fi
 session_probe http_code "$OTHER_DENIED_HOST"
-assert_not_contains "$code" "200"                  "after a failed reload the previous rules still refuse other hosts"
+assert_not_contains "$code" "200"                  "after a failed reload the previous config still refuses other hosts"
 # ...and the host the last good edit ALLOWED stays allowed.
 if curl -sS -o /dev/null --max-time 10 "https://$DENIED_HOST" 2>/dev/null; then
     session_probe http_connect "$DENIED_HOST"
@@ -1046,24 +1034,24 @@ else
 fi
 
 # (3) Fixing the file reloads again.
-write_test_rules
-if wait_for_count "$reload_log" "rules reloaded" 2; then
-    ok "the proxy reloaded again once the rules were fixed"
+write_test_network
+if wait_for_count "$reload_log" "network config reloaded" 2; then
+    ok "the proxy reloaded again once the network config was fixed"
 else
-    bad "the proxy did NOT reload after the rules were fixed"
+    bad "the proxy did NOT reload after the network config was fixed"
 fi
 # Each successful reload's banner replaces the failure's in the file's group; (1) popped one too.
-if wait_for_count "$alerter_log" "$rules_reloaded_banner" 2; then
-    ok "the fixed rules' confirmation replaces the now-stale reload-failure notification"
+if wait_for_count "$alerter_log" "$network_reloaded_banner" 2; then
+    ok "the fixed config's confirmation replaces the now-stale reload-failure notification"
 else
-    bad "the fixed rules did NOT replace the reload-failure notification"
+    bad "the fixed config did NOT replace the reload-failure notification"
 fi
 session_probe http_code "$DENIED_HOST"
-assert_not_contains "$code" "200"                  "the restored rules refuse the host again"
+assert_not_contains "$code" "200"                  "the restored config refuses the host again"
 
-# On an allowlist edit, a Caddy on the new config replaces the one serving, on the same listeners:
-# the session keeps the port and socket it was confined to. The session's fetch is made through
-# them, so its success says the relays serve there.
+# On a GitHub allowlist edit, a Caddy on the new config replaces the one serving, on the same
+# listeners: the session keeps the port and socket it was confined to. The session's fetch is made
+# through them, so its success says the relays serve there.
 # relay_fetch WHAT -- assert the session fetches a public repo through the git relay.
 relay_fetch() {
     arity 1
@@ -1075,56 +1063,54 @@ relay_fetch() {
     fi
 }
 
-# (4) A broken allowlist edit is refused loudly, and the relays serving keep serving.
-allowlist_key="$(gh_token_source)"
-printf 'no-slash-here\n' > "$empty_github_allow"
-if wait_for "$reload_log" "GITHUB ALLOWLIST RELOAD FAILED"; then
-    ok "a broken allowlist edit is logged loudly as a failed reload"
-    assert_contains "$(cat "$reload_log")" "allowlist entry needs owner/repo" "  -> saying why"
+# (4) The proxy refuses a broken allowlist entry loudly, and the relays keep serving. A single
+# write appends the entry, so no poll sees the file between two writes.
+printf 'github_allowlist: [no-slash-here]\n' >> "$network"
+if wait_for_count "$reload_log" "NETWORK CONFIG RELOAD FAILED" 2; then
+    ok "a broken allowlist entry is logged loudly as a failed reload"
+    assert_contains "$(cat "$reload_log")" "needs owner/repo or owner/*" "  -> saying why"
 else
-    bad "a broken allowlist edit did NOT log a failed reload"
+    bad "a broken allowlist entry did NOT log a failed reload"
 fi
-if wait_for "$alerter_log" "$(reload_banner failed 'GitHub allowlist' "${empty_github_allow##*/}" "$empty_github_allow" \
-    "$ws_allowlist" "$allowlist_key")"; then
-    ok "a broken allowlist edit notifies that the edit did not take effect"
-else
-    bad "a broken allowlist edit did NOT notify"
-fi
-relay_fetch "after a failed allowlist reload the relay still serves"
+relay_fetch "after a failed reload the relay still serves"
 
-# (5) Fixing it reloads the relays, on the same port, and its banner replaces the failure's.
-: > "$empty_github_allow"
-if wait_for "$reload_log" "GitHub allowlist reloaded"; then
-    ok "the proxy reloaded the relays once the allowlist was fixed"
+# (5) Fixing the entry reloads the network config, and so does a save with no edit. The relays
+# serve on as they were. The allowlist here is empty, so the save doesn't render the relays again.
+# For an allowlist with entries, a save with no edit renders them again, taking up a GitHub token
+# gh replaced. TestTheRelaysReloadWithTheAllowlist checks that, and so does github-relay-test.sh,
+# whose reload_relays relies on it.
+write_test_network
+if wait_for_count "$reload_log" "network config reloaded" 3; then
+    ok "the proxy reloaded once the allowlist entry was fixed"
 else
-    bad "the proxy did NOT reload the relays after the allowlist was fixed"
+    bad "the proxy did NOT reload after the allowlist entry was fixed"
 fi
-if wait_for "$alerter_log" "$(reload_banner ok 'GitHub allowlist' "${empty_github_allow##*/}" "$empty_github_allow" \
-    "$ws_allowlist" "$allowlist_key")"; then
-    ok "the fixed allowlist's confirmation replaces the now-stale reload-failure notification"
+touch "$network"
+if wait_for_count "$reload_log" "network config reloaded" 4; then
+    ok "a save with no edit is taken up again"
 else
-    bad "the fixed allowlist did NOT replace the reload-failure notification"
+    bad "a save with no edit was NOT taken up again"
 fi
-relay_fetch "after an allowlist reload the session's relay serves, on the port it was confined to"
+relay_fetch "after a save with no edit the session's relay serves, on the port it was confined to"
 
-# (6) The repo's own rules, made mid-session in its config dir, add to the base rules at once, and
-# their banner says whose they are. The session started with none.
+# (6) The repo's own network config, made mid-session in its config dir, adds to the base one at
+# once. Its banner says it is the workspace's. The session started with none.
 mkdir -p "$ws_config"
-printf 'allowed_domains:\n  - %s\n' "$DENIED_HOST" > "$ws_rules"
-if wait_for "$reload_log" "workspace rules reloaded"; then
-    ok "the proxy took up the workspace's own rules, made mid-session"
+printf 'allowed_domains:\n  - %s\n' "$DENIED_HOST" > "$ws_network"
+if wait_for "$reload_log" "workspace network config reloaded"; then
+    ok "the proxy took up the workspace's own network config, made mid-session"
 else
-    bad "the proxy did NOT take up the workspace's own rules, made mid-session"
+    bad "the proxy did NOT take up the workspace's own network config, made mid-session"
 fi
-if wait_for "$alerter_log" "$(reload_banner ok 'workspace rules' "${ws_config##*/}/$DEFAULT_PROXY_RULES" \
-    "$ws_rules" "$rules")"; then
+if wait_for "$alerter_log" "$(reload_banner ok 'workspace network config' "${ws_config##*/}/$DEFAULT_NETWORK_CONFIG" \
+    "$ws_network")"; then
     ok "  -> and notifies, naming the workspace's dir"
 else
     bad "  -> but did NOT notify, naming the workspace's dir"
 fi
 if curl -sS -o /dev/null --max-time 10 "https://$DENIED_HOST" 2>/dev/null; then
     session_probe http_connect "$DENIED_HOST"
-    assert_eq "$code" "200"                        "the workspace's own rules allow their host"
+    assert_eq "$code" "200"                        "the workspace's own network config allows its host"
 else
     echo "  SKIP the workspace's host reachability (no connectivity to $DENIED_HOST)"
 fi

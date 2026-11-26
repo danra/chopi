@@ -173,9 +173,10 @@ ensure_copy() {
     echo "  created $live  (from $template)"
 }
 
-ensure_copy config/templates/proxy-rules.template.yaml "config/$DEFAULT_PROXY_RULES"
-ensure_copy config/templates/github-allowlist.template "config/$DEFAULT_GITHUB_ALLOWLIST"
-ensure_copy config/templates/sandbox.template.sh           config/sandbox.sh
+ensure_copy "$NETWORK_TEMPLATE" "config/$DEFAULT_NETWORK_CONFIG"
+ensure_copy config/templates/sandbox.template.sh   config/sandbox.sh
+# Only a warning here: chopi itself refuses to run until the user moves the legacy files.
+refuse_legacy_network_files "$CHOPI_DIR/config" || :
 
 
 # ----------------------------------------------------------------------------
@@ -227,8 +228,7 @@ echo ""
 echo "==> Done."
 echo ""
 echo "Before first use, review your local setup:"
-echo "  * the proxy rules            ($CHOPI_DIR/config/$DEFAULT_PROXY_RULES)"
-echo "  * the GitHub allowlist       ($CHOPI_DIR/config/$DEFAULT_GITHUB_ALLOWLIST)"
+echo "  * the network config         ($CHOPI_DIR/config/$DEFAULT_NETWORK_CONFIG)"
 echo "  * the sandbox configuration  ($CHOPI_DIR/config/sandbox.sh)"
 echo ""
 echo "To use it, from inside the repo you're working on, run a command:  chopi <cmd> [args...]"

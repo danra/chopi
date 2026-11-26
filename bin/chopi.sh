@@ -67,15 +67,14 @@ trap 'chopi_on_signal TERM' TERM
 trap 'chopi_on_signal HUP'  HUP
 
 # Set the caller's ws_config_dir to the repo's own config dir for a session at DIR, and its
-# ws_sandbox, ws_rules and ws_allowlist to the config files in it.
+# ws_sandbox and ws_network to the config files in it.
 #
-# usage: local ws_config_dir ws_sandbox ws_rules ws_allowlist; set_workspace_config_paths DIR
+# usage: local ws_config_dir ws_sandbox ws_network; set_workspace_config_paths DIR
 set_workspace_config_paths() {
     arity 1
     ws_config_dir="$(resolve_workspace_config_dir "$1")" || return 1
     ws_sandbox="$ws_config_dir/$WORKSPACE_SANDBOX_CONFIG"
-    ws_rules="$ws_config_dir/$DEFAULT_PROXY_RULES"
-    ws_allowlist="$ws_config_dir/$DEFAULT_GITHUB_ALLOWLIST"
+    ws_network="$ws_config_dir/$DEFAULT_NETWORK_CONFIG"
 }
 
 # Print the config files a session at DIR reads: the base ones -- the sandbox config CONFIG, and the
@@ -85,16 +84,14 @@ set_workspace_config_paths() {
 # usage: print_config_paths DIR CONFIG
 print_config_paths() {
     arity 2
-    local ws_config_dir ws_sandbox ws_rules ws_allowlist
+    local ws_config_dir ws_sandbox ws_network
     set_workspace_config_paths "$1" || return 1
     echo "For every project:"
-    echo "  sandbox:          $(realpath "$2")"
-    echo "  proxy rules:      $CHOPI_PROXY_RULES"
-    echo "  GitHub allowlist: $CHOPI_GITHUB_ALLOWLIST"
+    echo "  sandbox:  $(realpath "$2")"
+    echo "  network:  $CHOPI_NETWORK_CONFIG"
     echo "For this repo alone, adding to those:"
-    echo "  sandbox:          $ws_sandbox$(missing_note "$ws_sandbox")"
-    echo "  proxy rules:      $ws_rules$(missing_note "$ws_rules")"
-    echo "  GitHub allowlist: $ws_allowlist$(missing_note "$ws_allowlist")"
+    echo "  sandbox:  $ws_sandbox$(missing_note "$ws_sandbox")"
+    echo "  network:  $ws_network$(missing_note "$ws_network")"
 }
 
 main() {
@@ -139,15 +136,17 @@ main() {
     local CHOPI_GIT_CONFIG=()
     # shellcheck disable=SC2034 # consumed by validate_write_targets
     local CHOPI_SAFE_WRITE_TARGETS=()
-    local CHOPI_PROXY_RULES=""
-    local CHOPI_GITHUB_ALLOWLIST=""
+    local CHOPI_NETWORK_CONFIG=""
+    # Unset, so preflight_legacy_network_config can tell whether the sandbox config sets them. The
+    # network config replaced them.
+    local "${LEGACY_NETWORK_VARS[@]}"
+    unset "${LEGACY_NETWORK_VARS[@]}"
     check_sandbox_config_readable chopi "$config" "$config_given" || return 1
     # shellcheck source=/dev/null  # can't follow user-supplied config path at lint time
     . "$config"
 
-    resolve_proxy_config CHOPI_PROXY_RULES "$DEFAULT_PROXY_RULES" proxy-rules.template.yaml || return 1
-    resolve_proxy_config CHOPI_GITHUB_ALLOWLIST "$DEFAULT_GITHUB_ALLOWLIST" github-allowlist.template \
-        || return 1
+    preflight_legacy_network_config "$config" || return 1
+    resolve_network_config || return 1
 
     if [ -n "$config_paths" ]; then
         print_config_paths "$(pwd -P)" "$config"
@@ -187,11 +186,11 @@ main() {
     # The repo's own config, adding to the base config for its sessions alone. Each file may be
     # missing; the proxy's may be made mid-session, while the sandbox's takes effect as a session
     # starts, as the base one does.
-    local ws_config_dir ws_sandbox ws_rules ws_allowlist
-    { set_workspace_config_paths "$run_dir" && load_workspace_sandbox_config "$ws_sandbox"; } \
+    local ws_config_dir ws_sandbox ws_network
+    { set_workspace_config_paths "$run_dir" && refuse_legacy_network_files "$ws_config_dir" \
+        && load_workspace_sandbox_config "$ws_sandbox"; } \
         || { echo "chopi: refusing to run" >&2; return 1; }
-    preflight_proxy_config_links "$CHOPI_PROXY_RULES" "$CHOPI_GITHUB_ALLOWLIST" \
-        "$ws_rules" "$ws_allowlist" || return $?
+    preflight_proxy_config_links "$CHOPI_NETWORK_CONFIG" "$ws_network" || return $?
 
     # The patch queue: where the command drops changes it wants made to a configured
     # write target, for the user to review and apply on the host with chopi-review.
@@ -217,7 +216,7 @@ main() {
     if [ -e "$ws_sandbox" ]; then
         echo "chopi: sandbox: the base config, plus this repo's own in $ws_config_dir" >&2
     fi
-    if [ -e "$ws_rules" ] || [ -e "$ws_allowlist" ]; then
+    if [ -e "$ws_network" ]; then
         echo "chopi: network: the base config, plus this repo's own in $ws_config_dir" >&2
     fi
 
@@ -240,8 +239,7 @@ main() {
     # once the checks that may refuse the session have passed, so a refused session doesn't wait
     # for it; it starts as chopi goes on with the rest of its setup, and nothing reaches it before
     # the sandbox starts.
-    launch_session_proxy "$CHOPI_PROXY_RULES" "$CHOPI_GITHUB_ALLOWLIST" "$verbose" \
-        "$CHOPI_USER_TMPDIR" "$ws_rules" "$ws_allowlist" \
+    launch_session_proxy "$CHOPI_NETWORK_CONFIG" "$verbose" "$CHOPI_USER_TMPDIR" "$ws_network" \
         || { echo "chopi: refusing to run without the proxy" >&2; return 1; }
     [ -n "$verbose" ] && echo "chopi: the proxy logs to $SESSION_PROXY_LOG" >&2
 
@@ -350,8 +348,7 @@ main() {
         CHOPI_GITHUB_RELAY_PORT="$SESSION_RELAY_PORT" \
         CHOPI_PROXY_LOG="$SESSION_PROXY_LOG" \
         CHOPI_WORKSPACE_SANDBOX_CONFIG="$ws_sandbox" \
-        CHOPI_WORKSPACE_PROXY_RULES="$ws_rules" \
-        CHOPI_WORKSPACE_GITHUB_ALLOWLIST="$ws_allowlist" \
+        CHOPI_WORKSPACE_NETWORK_CONFIG="$ws_network" \
         HTTP_PROXY="$proxy"  HTTPS_PROXY="$proxy" \
         http_proxy="$proxy"  https_proxy="$proxy" \
         NODE_USE_ENV_PROXY=1 \

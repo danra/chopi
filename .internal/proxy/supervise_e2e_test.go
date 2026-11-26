@@ -100,14 +100,14 @@ func fakeCaddy() {
 }
 
 type supervisorRun struct {
-	cmd       *exec.Cmd
-	dir       string
-	allowlist string // what the fake render prints as Caddy's config
-	logFile   string // the supervisor's stdout
-	state     string
-	parent    *exec.Cmd
-	stderr    *strings.Builder
-	exited    chan struct{}
+	cmd     *exec.Cmd
+	dir     string
+	network string // the network config, whose GitHub allowlist the fake render prints as Caddy's config
+	logFile string // the supervisor's stdout
+	state   string
+	parent  *exec.Cmd
+	stderr  *strings.Builder
+	exited  chan struct{}
 }
 
 // startSupervisor runs chopi-smokescreen with a fake caddy behaving as caddyPlan says, and a
@@ -135,27 +135,26 @@ func startSupervisor(t *testing.T, caddyPlan string) *supervisorRun {
 	caddy := filepath.Join(bin, "caddy")
 	writeFile(t, caddy, "#!/bin/sh\nCHOPI_TEST_ROLE=caddy exec '"+exe+"' \"$@\"\n")
 	os.Chmod(caddy, 0o755)
-	// The relays' config is the "allowlist" as it is, unless it holds RENDER-FAILS; the render
-	// records the GH_TOKEN it gets.
+	// The fake render prints the GitHub allowlist's entries, which it gets as arguments, as the
+	// relays' config. It fails if an entry is RENDER-FAILS. It records the GH_TOKEN it gets.
 	render := filepath.Join(bin, "render")
 	writeFile(t, render, `#!/bin/sh
 printf '%s' "${GH_TOKEN-(unset)}" > "$CHOPI_TEST_STATE/render-token"
-case "$(cat "$1")" in
+case "$*" in
     *RENDER-FAILS*) echo "render says: no token" >&2; exit 1 ;;
 esac
 echo "render says: a note" >&2
-cat "$1"
+printf '%s\n' "$@"
 `)
 	os.Chmod(render, 0o755)
-	rules := filepath.Join(tmp, "rules.yaml")
-	writeFile(t, rules, rulesAllowing("example.com"))
-	writeFile(t, filepath.Join(tmp, "allowlist"), "THE CADDY CONFIG")
+	network := filepath.Join(tmp, "network.yaml")
+	writeFile(t, network, networkAllowlisting("THE/CADDY-CONFIG"))
 	config, err := filepath.Abs("../smokescreen-config.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// The added config files are missing, at a real path, as chopi gives them (configFile.open).
+	// The added config file is missing, at a real path, as chopi gives it (configFile.open).
 	ws := filepath.Join(realTempDir(t), "ws")
 
 	dir := filepath.Join(tmp, "dir")
@@ -165,15 +164,15 @@ cat "$1"
 	}
 	t.Cleanup(func() { parent.Process.Kill(); parent.Wait() })
 
-	run := &supervisorRun{dir: dir, allowlist: filepath.Join(tmp, "allowlist"),
+	run := &supervisorRun{dir: dir, network: network,
 		logFile: filepath.Join(tmp, "supervisor.log"), state: state, parent: parent,
 		stderr: &strings.Builder{}, exited: make(chan struct{})}
 	run.cmd = exec.Command(exe, "--dir", dir, "--parent", strconv.Itoa(parent.Process.Pid),
 		"--relay-log", filepath.Join(tmp, "caddy.log"),
-		"--github-allowlist", run.allowlist, "--relay-config", render,
-		"--add-rules", filepath.Join(ws, "rules.yaml"),
-		"--add-github-allowlist", filepath.Join(ws, "allowlist"), "--",
-		"--config-file", config, "--egress-acl-file", rules)
+		"--network", network, "--relay-config", render,
+		"--add-network", filepath.Join(ws, "network.yaml"),
+		"--network-template", filepath.Join(tmp, "network.template.yaml"), "--",
+		"--config-file", config)
 	run.cmd.Env = append(os.Environ(), "CHOPI_TEST_ROLE=supervisor", "CHOPI_TEST_STATE="+state,
 		"CHOPI_TEST_CADDY="+caddyPlan, "PATH="+bin+":"+os.Getenv("PATH"), "GH_TOKEN=the-token")
 	logFile, err := os.Create(run.logFile)
@@ -281,7 +280,7 @@ func TestSupervisorServesAndStopsWithItsParent(t *testing.T) {
 	} else {
 		conn.Close()
 	}
-	if config, _ := os.ReadFile(filepath.Join(run.state, "caddy-config")); string(config) != "THE CADDY CONFIG" {
+	if config, _ := os.ReadFile(filepath.Join(run.state, "caddy-config")); string(config) != "THE/CADDY-CONFIG\n" {
 		t.Errorf("caddy got config %q, want the render's output", config)
 	}
 	if log, _ := os.ReadFile(run.logFile); !strings.Contains(string(log), "render says: a note") {
@@ -385,9 +384,15 @@ func (run *supervisorRun) awaitLog(t *testing.T, want string) string {
 	return ""
 }
 
-func (run *supervisorRun) editAllowlist(t *testing.T, content string) {
+// networkAllowlisting is a network config whose GitHub allowlist is entry alone.
+func networkAllowlisting(entry string) string {
+	return networkAllowing("example.com") + "github_allowlist: [" + entry + "]\n"
+}
+
+// editAllowlist edits the network config for its GitHub allowlist to be entry alone.
+func (run *supervisorRun) editAllowlist(t *testing.T, entry string) {
 	t.Helper()
-	writeFile(t, run.allowlist, content)
+	writeFile(t, run.network, networkAllowlisting(entry))
 }
 
 // pidGone reports whether the process pid has exited, waiting for it a while.
@@ -418,9 +423,9 @@ func TestSupervisorReloadsTheAllowlistOnTheSameListeners(t *testing.T) {
 	up := run.awaitPorts(t)
 	first := run.mustCaddyPID(t)
 
-	run.editAllowlist(t, "THE NEW CADDY CONFIG")
-	log := run.awaitLog(t, allowlistReloaded)
-	if config, _ := os.ReadFile(filepath.Join(run.state, "caddy-config")); string(config) != "THE NEW CADDY CONFIG" {
+	run.editAllowlist(t, "THE/NEW-CADDY-CONFIG")
+	log := run.awaitLog(t, networkReloaded)
+	if config, _ := os.ReadFile(filepath.Join(run.state, "caddy-config")); string(config) != "THE/NEW-CADDY-CONFIG\n" {
 		t.Errorf("caddy got config %q after the edit", config)
 	}
 	if !strings.Contains(log, "render says: a note") {
@@ -454,8 +459,8 @@ func TestSupervisorKeepsTheCaddyOnASaveWithNoEdit(t *testing.T) {
 	run.awaitPorts(t)
 	first := run.mustCaddyPID(t)
 
-	setMtime(t, run.allowlist, mtimeOf(t, run.allowlist).Add(time.Second))
-	run.awaitLog(t, allowlistReloaded)
+	setMtime(t, run.network, mtimeOf(t, run.network).Add(time.Second))
+	run.awaitLog(t, networkReloaded)
 	if pid := run.mustCaddyPID(t); pid != first {
 		t.Errorf("caddy %d replaced by %d, for the config it already served", first, pid)
 	}
@@ -469,20 +474,20 @@ func TestSupervisorKeepsTheRelaysOnAFailedReload(t *testing.T) {
 	relay := fmt.Sprintf("http://127.0.0.1:%d/", up.relay)
 
 	for _, c := range []struct{ config, says string }{
-		{"RENDER-FAILS", "render says: no token"},
-		{"CADDY-FAILS", "caddy says: bad config"},
+		{"RENDER-FAILS/x", "render says: no token"},
+		{"CADDY-FAILS/x", "caddy says: bad config"},
 	} {
 		run.editAllowlist(t, c.config)
 		log := run.awaitLog(t, c.says)
-		if !strings.Contains(log, allowlistReloadFailed) {
+		if !strings.Contains(log, networkReloadFailed) {
 			t.Errorf("%s: the log lacks the failure:\n%s", c.config, log)
 		}
 		if got := get(t, directClient, relay); got != fmt.Sprintf("git port %d from %d", up.relay, serving) {
 			t.Errorf("%s: the relay answers %q: the caddy serving must stay", c.config, got)
 		}
 	}
-	run.editAllowlist(t, "THE FIXED CADDY CONFIG")
-	run.awaitLog(t, allowlistReloaded)
+	run.editAllowlist(t, "THE/FIXED-CADDY-CONFIG")
+	run.awaitLog(t, networkReloaded)
 	if !pidGone(serving) {
 		t.Error("the caddy serving stays once a fixed allowlist replaces it")
 	}

@@ -1,41 +1,39 @@
-# format-reload.jq -- recognize and render the proxy's hot-reload lines: of the rules, and of the
-# GitHub allowlist, which the relays serve.
+# format-reload.jq -- recognize and render the proxy's hot-reload lines of the network config,
+# which holds the rules and the GitHub allowlist the relays serve.
 #
 # Emits the display line when the input is a reload line, else empty -- the caller
-# falls through to format-misc.jq on empty. Two flavors of each:
+# falls through to format-misc.jq on empty. Two flavors:
 #
-#   reloaded   "[script] rules reloaded  @ time" -- routine, just visible enough to
-#              confirm an edit took effect.
-#   failed     "[script] RULES RELOAD FAILED (previous rules kept)  <error>  @ time"
+#   reloaded   "[script] network config reloaded  @ time" -- routine, just visible enough
+#              to confirm an edit took effect.
+#   failed     "[script] NETWORK CONFIG RELOAD FAILED (previous config kept)  <error>  @ time"
 #              -- loud like a DENY: the user's edit did NOT take effect, and the proxy
-#              keeps enforcing the previous rules.
+#              keeps enforcing the previous config.
 #
-# Each says what reloaded as the entry's "what" says -- e.g. "workspace rules reloaded", for a
-# workspace's own -- or, for an entry without one, as its message says.
+# Each line names what reloaded by the entry's "what", e.g. "workspace network config reloaded"
+# for a workspace's own network config.
 #
-# The msg strings matched here are emitted by .internal/proxy/main.go (its *Reloaded and
-# *ReloadFailed constants), and classify_log (.internal/classify-log.sh) matches them on the raw line to fire its
-# reload hook; keep all three in sync.
+# .internal/proxy/main.go emits the msg strings matched here (its networkReloaded and
+# networkReloadFailed constants). classify_log (.internal/classify-log.sh) also matches them, on
+# the raw line, to fire its reload hook. Keep all three in sync.
 #
 # Inputs:
 #   $script         (string) the proxy script's name, tagging the synthesized line
 
 include "util";
 
-# Render the reload entry given as input, of WHAT, and of its failure, which keeps the previous KEPT.
-def what($what): .what // $what;
-def reloaded($what): "[" + $script + "] " + what($what) + " reloaded  @ " + field(.time);
-def failed($what; $kept):
-  "[" + $script + "] " + (what($what) | ascii_upcase) + " RELOAD FAILED"
-  + " (previous " + $kept + " kept)  " + field(.error) + "  @ " + field(.time);
+# Render the reload entry given as input, as a reload or as a failed reload, which keeps the
+# previous config.
+def what: .what // "network config";
+def reloaded: "[" + $script + "] " + what + " reloaded  @ " + field(.time);
+def failed:
+  "[" + $script + "] " + (what | ascii_upcase) + " RELOAD FAILED"
+  + " (previous config kept)  " + field(.error) + "  @ " + field(.time);
 
 (try fromjson catch null) as $entry
 | if ($entry | type) != "object" then empty
-  elif $entry.msg == "egress ACL reloaded" then $entry | reloaded("rules")
-  elif $entry.msg == "egress ACL reload failed; keeping the previous rules"
-  then $entry | failed("rules"; "rules")
-  elif $entry.msg == "GitHub allowlist reloaded" then $entry | reloaded("GitHub allowlist")
-  elif $entry.msg == "GitHub allowlist reload failed; keeping the previous relays"
-  then $entry | failed("GitHub allowlist"; "relays")
+  elif $entry.msg == "network config reloaded" then $entry | reloaded
+  elif $entry.msg == "network config reload failed; keeping the previous config"
+  then $entry | failed
   else empty
   end

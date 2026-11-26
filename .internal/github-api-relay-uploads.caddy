@@ -18,6 +18,6 @@ http://uploads.github.com {
 
 	handle {
 		header Content-Type application/json
-		respond `{"message":"chopi: GitHub requires authentication for this operation; the relay authenticates only repos in chopi's config/github-allowlist"}` 401
+		respond `{"message":"chopi: GitHub requires authentication for this operation; the relay authenticates only repos on the github_allowlist of chopi's network config"}` 401
 	}
 }

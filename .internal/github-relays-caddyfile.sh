@@ -2,9 +2,9 @@
 #
 # github-relays-caddyfile.sh -- emit the Caddy config for chopi's GitHub relays.
 #
-#   github-relays-caddyfile.sh <allowlist-file>...   # prints a Caddyfile to stdout
+#   github-relays-caddyfile.sh [ENTRY...]   # prints a Caddyfile to stdout
 #
-# Compiles the GitHub repo allowlists -- their union -- into a path regex and assembles the
+# Compiles the GitHub repo allowlist, one entry per argument, into a path regex and assembles the
 # Caddyfile from the github-relay-*.caddy (git) and github-api-relay-*.caddy (API) fragments next to
 # this script: two loopback reverse-proxy listeners,
 #
@@ -38,39 +38,26 @@ _render_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 unset _render_dir
 
 main() {
-    if [ "$#" -eq 0 ]; then
-        echo "github-relays-caddyfile.sh: usage: github-relays-caddyfile.sh <allowlist-file>..." >&2
-        exit 2
-    fi
-    local allowlist
-    for allowlist in "$@"; do
-        if [ ! -f "$allowlist" ]; then
-            echo "github-relays-caddyfile.sh: allowlist file not found: $allowlist" >&2
-            exit 2
-        fi
-    done
-
     # The entries' regex alternation, and the owner/* entries' owners: the owners whose every repo
     # is allowlisted, so a code search or org-wide read scoped to one reaches only allowlisted repos.
-    local allowlist_regex="" owners_regex="" line entry esc re
-    for allowlist in "$@"; do
-        while IFS= read -r line || [ -n "$line" ]; do
-            strip_comment_and_trim_into entry "$line"
-            [ -z "$entry" ] && continue
-            if ! is_allowlist_entry "$entry"; then
-                echo "github-relays-caddyfile.sh: $allowlist: allowlist entry needs owner/repo or owner/*, using only A-Za-z0-9._-: '$entry'" >&2
-                exit 2
-            fi
-            # is_allowlist_entry admits no regex metacharacter but the dot (and owner/*'s star)
-            esc="${entry//./\\.}"
-            if [[ $esc == */\* ]]; then
-                owners_regex+="${owners_regex:+|}${esc%/*}"
-                re="${esc%/*}/[^/]+"
-            else
-                re="$esc(\\.git)?"
-            fi
-            allowlist_regex+="${allowlist_regex:+|}$re"
-        done < "$allowlist"
+    local allowlist_regex="" owners_regex="" entry esc re
+    for entry in "$@"; do
+        # The proxy already checks every entry as it reads the network config, and names the file
+        # in its error. This check stays because the regex built below is safe only for entries
+        # that pass it.
+        if ! is_allowlist_entry "$entry"; then
+            echo "github-relays-caddyfile.sh: allowlist entry needs owner/repo or owner/*, using only A-Za-z0-9._-: '$entry'" >&2
+            exit 2
+        fi
+        # is_allowlist_entry admits no regex metacharacter but the dot (and owner/*'s star)
+        esc="${entry//./\\.}"
+        if [[ $esc == */\* ]]; then
+            owners_regex+="${owners_regex:+|}${esc%/*}"
+            re="${esc%/*}/[^/]+"
+        else
+            re="$esc(\\.git)?"
+        fi
+        allowlist_regex+="${allowlist_regex:+|}$re"
     done
     emit_caddyfile "$allowlist_regex" "$owners_regex"
 }
@@ -123,9 +110,9 @@ emit_caddyfile() {
 
     local deny_fetch deny_push auth_msg deny_auth_fetch deny_auth_push
     deny_fetch="$(deny_pkt git-upload-pack \
-        "chopi: repo not found, or private and missing from chopi's config/github-allowlist")"
+        "chopi: repo not found, or private and missing from the github_allowlist of chopi's network config")"
     deny_push="$(deny_pkt git-receive-pack \
-        "chopi: push denied, repo is not in chopi's config/github-allowlist")"
+        "chopi: push denied, repo is not on the github_allowlist of chopi's network config")"
     auth_msg="chopi: GitHub rejected the relay credential; refresh the host's GitHub token outside the sandbox (gh auth login / GH_TOKEN)"
     deny_auth_fetch="$(deny_pkt git-upload-pack "$auth_msg")"
     deny_auth_push="$(deny_pkt git-receive-pack "$auth_msg")"

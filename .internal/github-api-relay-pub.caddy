@@ -15,7 +15,7 @@
 			@unauth status 401
 			handle_response @unauth {
 				header Content-Type application/json
-				respond `{"message":"chopi: GitHub requires authentication for this operation; the relay authenticates only repos in chopi's config/github-allowlist"}` 401
+				respond `{"message":"chopi: GitHub requires authentication for this operation; the relay authenticates only repos on the github_allowlist of chopi's network config"}` 401
 			}
 		}
 	}
@@ -29,7 +29,7 @@
 	@api_search path /search /search/*
 	handle @api_search {
 		header Content-Type application/json
-		respond `{"message":"chopi GitHub relay: search is allowed only as code search (GET /search/code) scoped to an owner with an owner/* entry in chopi's config/github-allowlist. Its q may hold only plain words, at least one org:OWNER or user:OWNER naming such an owner, and language:X or extension:X; no repo: or other qualifiers, quotes, -negation, or AND/OR/NOT. Only page and per_page may accompany q."}` 403
+		respond `{"message":"chopi GitHub relay: search is allowed only as code search (GET /search/code) scoped to an owner with an owner/* entry on the github_allowlist of chopi's network config. Its q may hold only plain words, at least one org:OWNER or user:OWNER naming such an owner, and language:X or extension:X; no repo: or other qualifiers, quotes, -negation, or AND/OR/NOT. Only page and per_page may accompany q."}` 403
 	}
 
 	# GraphQL (/graphql) names its repo in the POST body, not the URL, so it cannot be scoped to

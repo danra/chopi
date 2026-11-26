@@ -1,0 +1,52 @@
+# chopi network config: the hosts the proxy allows and denies, and the GitHub repos the relays
+# send the host's GitHub token for.
+#
+# allowed_domains and global_deny_list match the exact host; use a leading "*."
+# for subdomains (e.g. "*.anthropic.com"). global_deny_list denies a host even
+# where allowed_domains allows it.
+
+allowed_domains:
+  - api.anthropic.com
+  - mcp-proxy.anthropic.com
+  - platform.claude.com
+  - downloads.claude.ai
+
+  # *INTENTIONALLY NOT ALLOWED* to prevent trivial exfiltration
+  # - github.com
+  # - api.github.com
+
+  - raw.githubusercontent.com
+  # Images are stored here: Looks random, but this same random-looking identifier is what currently comes up in other reports
+  # when googling github-production-user-asset
+  - github-production-user-asset-6210df.s3.amazonaws.com
+  # Git-LFS CDN
+  - github-cloud.githubusercontent.com
+
+  - pypi.org
+
+# Hosts listed here are refused like any other non-allowed host, but chopi treats their
+# denials as *known*, emitting one "deny(known)" line per matching host per proxy run, with
+# no notification.
+global_deny_list:
+  # Claude Code telemetry destination
+  - "*.datadoghq.com"
+  # github.com is reachable only for git, and only via the GitHub relay we run for it
+  - github.com
+  # api.github.com is reachable only for the gh REST API, and only via the GitHub relay's unix
+  # socket; direct hits (e.g. Claude Code's plugin-marketplace update poll) are expected
+  - api.github.com
+
+# The GitHub repos the relays inject the host's GitHub token for. git-pushing to any repo
+# requires a matching entry, and so does any access to a private repo. Fetching/cloning any
+# PUBLIC repo works regardless of this list.
+#
+# Each entry names a repository on github.com (the "github.com/" prefix is implicit), in one
+# of two forms:
+#   owner/*      -- any repository under that owner or org; also enables code search
+#                   scoped to it (gh search code --owner owner) and the org's
+#                   Dependabot alert list (gh api orgs/owner/dependabot/alerts)
+#   owner/repo   -- exactly that repository
+github_allowlist: []
+  # Examples (uncomment / edit, and drop the [] above):
+  # - owner/*
+  # - owner/repo

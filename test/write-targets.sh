@@ -166,7 +166,7 @@ PROXY_CONFIG_DIR="$cfg_dir" refuses "  -> and a directory holding it" \
 # A default file linking elsewhere, as chopi-review sees it: unresolved.
 mkdir -p "$TMPDIR/fake-chopi/config" "$TMPDIR/linked-config"
 : > "$TMPDIR/linked-config/rules.yaml"
-ln -s "$TMPDIR/linked-config/rules.yaml" "$TMPDIR/fake-chopi/config/$DEFAULT_PROXY_RULES"
+ln -s "$TMPDIR/linked-config/rules.yaml" "$TMPDIR/fake-chopi/config/$DEFAULT_NETWORK_CONFIG"
 CHOPI_DIR="$TMPDIR/fake-chopi" refuses \
     "  -> and one holding the default rules, linked from chopi's directory, unresolved" \
     "overlaps the proxy's config" "$TMPDIR/linked-config"
@@ -177,11 +177,11 @@ mkdir -p "$TMPDIR/hop" "$TMPDIR/real-config"
 : > "$TMPDIR/real-config/rules.yaml"
 ln -s "$TMPDIR/real-config" "$TMPDIR/hop/dir-link"
 ln -s ../hop/dir-link/rules.yaml "$TMPDIR/linked-config/second-link.yaml"
-ln -sf "$TMPDIR/linked-config/second-link.yaml" "$TMPDIR/fake-chopi/config/$DEFAULT_PROXY_RULES"
+ln -sf "$TMPDIR/linked-config/second-link.yaml" "$TMPDIR/fake-chopi/config/$DEFAULT_NETWORK_CONFIG"
 real_tmp="$(realpath "$TMPDIR")"
 CHOPI_DIR="$TMPDIR/fake-chopi" PROXY_RUN_DIR="$TMPDIR/no-run" proxy_config_paths paths
 config_paths="$(printf '%s\n' "${paths[@]}")"
-assert_has_line "$config_paths" "$real_tmp/fake-chopi/config/$DEFAULT_PROXY_RULES" \
+assert_has_line "$config_paths" "$real_tmp/fake-chopi/config/$DEFAULT_NETWORK_CONFIG" \
     "  -> the proxy's config paths list a default file's link, in its real dir"
 assert_has_line "$config_paths" "$real_tmp/linked-config/second-link.yaml" "  -> the link it points at"
 assert_has_line "$config_paths" "$real_tmp/hop/dir-link" "  -> a linked dir on the way"
