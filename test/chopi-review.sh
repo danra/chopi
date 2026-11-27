@@ -180,6 +180,16 @@ out="$(with_test_env "$repo/bin/chopi-review" --config "$config" < /dev/null 2>&
 assert_eq       "$st" 1              "without a terminal it refuses"
 assert_contains "$out" "interactive" "  -> saying why"
 
+# GIT_DIR and the like would send git to their repo instead of the one each step names.
+decoy="$TMPDIR/decoy"
+make_repo "$decoy"
+reset_fixture
+queue_patch git_env "A rule for elsewhere."
+out="$(answers a | GIT_DIR="$decoy/.git" under_pty "$repo/bin/chopi-review" --config "$config")"
+assert_contains "$out" "git overrides" "with git location env vars set it refuses"
+assert_eq "$(git -C "$decoy" log --format='%s' -1)" "init" "  -> committing nothing to their repo"
+assert_present "$slot/git_env.patch" "  -> and leaving the patch queued"
+
 out="$(review_with "$TMPDIR/absent.sh")"
 assert_contains "$out" "absent.sh" "an unreadable config is an error naming the file"
 
