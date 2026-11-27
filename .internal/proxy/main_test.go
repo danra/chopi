@@ -39,6 +39,9 @@ func realTempDir(t *testing.T) string {
 	return dir
 }
 
+// networkTemplatePath is chopi's network config template, from this package's dir.
+const networkTemplatePath = "../../config/templates/network.template.yaml"
+
 func readFile(t *testing.T, path string) string {
 	t.Helper()
 	content, err := os.ReadFile(path)
@@ -653,7 +656,7 @@ func TestReloadTakesUpRulesAllowingGitHubWithTheOverride(t *testing.T) {
 }
 
 func TestGitHubExfiltration(t *testing.T) {
-	template := readFile(t, "../../config/templates/network.template.yaml")
+	template := readFile(t, networkTemplatePath)
 	for _, tc := range []struct{ name, rules, want string }{
 		{"a pre-relay config names both domains", networkAllowing("api.anthropic.com") +
 			"  - github.com\n  - api.github.com\n  - raw.githubusercontent.com\n", "github.com, api.github.com"},
