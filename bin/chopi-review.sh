@@ -677,6 +677,8 @@ main() {
         echo "chopi-review: reviewing is interactive; run in a terminal." >&2
         return 1
     fi
+    # GIT_DIR and the like would send git to their repo instead of the one each step names.
+    refuse_git_location_env || return 1
 
     local CHOPI_SAFE_WRITE_TARGETS=()
     check_sandbox_config_readable chopi-review "$config" "$config_given" || return 1
