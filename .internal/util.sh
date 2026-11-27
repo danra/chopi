@@ -940,6 +940,19 @@ open_in_gui_editor() {
     esac
 }
 
+# Set array NAME to the path of each of the files the network config replaced that the config dir
+# DIR holds -- without a subshell, as preflight checks at every session start.
+#
+# usage: existing_legacy_network_files NAME DIR
+existing_legacy_network_files() {
+    arity 2
+    local _elnf_name _elnf_found=()
+    for _elnf_name in "${LEGACY_NETWORK_FILES[@]}"; do
+        [ -e "$2/$_elnf_name" ] && _elnf_found+=("$2/$_elnf_name")
+    done
+    eval "$1=(\${_elnf_found[@]+\"\${_elnf_found[@]}\"})"
+}
+
 # Fail if the config dir DIR, chopi's own or a repo's own, holds the files the network config
 # replaced: the proxy rules and the GitHub allowlist. The error says how to move them into DIR's
 # network config.
@@ -947,10 +960,8 @@ open_in_gui_editor() {
 # usage: refuse_legacy_network_files DIR
 refuse_legacy_network_files() {
     arity 1
-    local name legacy=()
-    for name in "${LEGACY_NETWORK_FILES[@]}"; do
-        [ -e "$1/$name" ] && legacy+=("$1/$name")
-    done
+    local legacy
+    existing_legacy_network_files legacy "$1"
     [ "${#legacy[@]}" -eq 0 ] && return 0
     echo "chopi: found files the network config replaced." >&2
     legacy_network_advice "$1/$DEFAULT_NETWORK_CONFIG" "Then remove them:"
