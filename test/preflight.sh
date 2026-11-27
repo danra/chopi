@@ -452,6 +452,132 @@ out="$(refuse_legacy_network_files "$lg/ws" 2>&1)"; st=$?
 assert_zero "$st" "a repo's own config dir with none of them passes"
 out="$(refuse_legacy_network_files "$lg/missing" 2>&1)"; st=$?
 assert_zero "$st" "  -> as does one not made yet"
+: >"$lg/chopi/config/github-allowlist"
+out="$(legacy_check 2>&1)"
+assert_contains "$out" "have the installer move them" "chopi's own files: the refusal points at the installer"
+printf 'allowed_domains: [mine.example]\n' >"$lg/chopi/config/$DEFAULT_NETWORK_CONFIG"
+out="$(legacy_check 2>&1)"
+assert_not_contains "$out" "have the installer move them" "  -> but not with a network config the user edited, which it leaves alone"
+rm "$lg/chopi/config/$DEFAULT_NETWORK_CONFIG"
+: >"$lg/chopi/config/github-allowlist.old"
+out="$(legacy_check 2>&1)"
+assert_not_contains "$out" "have the installer move them" "  -> nor with a backup in the way, which it won't overwrite"
+assert_contains "$out" "github-allowlist.old is there already" "  -> naming it"
+rm "$lg/chopi/config/github-allowlist.old"
+fifo="$lg/chopi/config/$DEFAULT_NETWORK_CONFIG"
+mkfifo "$fifo"
+legacy_check >/dev/null 2>&1 & pid=$!
+assert_pid_exits "$pid" "  -> nor with a network config that isn't a file, without blocking on a FIFO"
+wait "$pid" 2>/dev/null
+# Free a reader still blocked on the FIFO, if any: opening it for reading and writing doesn't block.
+: <>"$fifo"
+rm "$fifo"
+rm "$lg/chopi/config/github-allowlist"
+
+
+# ---------------------------------------------------------------------------
+echo "migrate_legacy_network_files (the installer moving chopi's own files into network.yaml)"
+# ---------------------------------------------------------------------------
+if [ ! -x "$SMOKESCREEN_BIN" ]; then
+    echo "  SKIP: proxy binary not built at $SMOKESCREEN_BIN (run: make build)"
+else
+    mg="$lg/chopi/config"
+    mkdir -p "$mg/templates"
+    cp "$repo/$NETWORK_TEMPLATE" "$lg/chopi/$NETWORK_TEMPLATE"
+    # migrate -- run migrate_legacy_network_files with chopi's dir in $lg.
+    migrate() { ( CHOPI_DIR="$lg/chopi"; migrate_legacy_network_files ); }
+    # migrated -- the network config the migration wrote.
+    migrated() { cat "$mg/$DEFAULT_NETWORK_CONFIG"; }
+
+    printf 'version: v1\nservices: []\ndefault:\n  action: enforce\n  allowed_domains:\n    - a.example\n' >"$mg/proxy-rules.yaml"
+    printf '# header\nacme/*\n' >"$mg/github-allowlist"
+    out="$(migrate 2>&1)"; st=$?
+    assert_zero "$st" "the old files move into a network config not made yet"
+    assert_contains "$out" "moved proxy-rules.yaml github-allowlist into config/$DEFAULT_NETWORK_CONFIG" "  -> saying so"
+    assert_has_line "$(migrated)" "- a.example" "  -> with their hosts"
+    assert_has_line "$(migrated)" "- acme/*" "  -> and their allowlist"
+    assert_present "$mg/proxy-rules.yaml.old" "  -> keeping each as NAME.old"
+    assert_present "$mg/github-allowlist.old" "  -> (both)"
+    assert_absent "$mg/proxy-rules.yaml" "  -> in place of NAME"
+    out="$(refuse_legacy_network_files "$mg" 2>&1)"; st=$?
+    assert_zero "$st" "  -> so chopi no longer refuses"
+    rm "$mg"/*.old "$mg/$DEFAULT_NETWORK_CONFIG"
+
+    printf 'acme/*\n' >"$mg/github-allowlist"
+    cp "$repo/$NETWORK_TEMPLATE" "$mg/$DEFAULT_NETWORK_CONFIG"
+    out="$(migrate 2>&1)"; st=$?
+    assert_zero "$st" "the allowlist alone moves into a network config still the template"
+    assert_has_line "$(migrated)" "- acme/*" "  -> replacing the template's empty list"
+    rm "$mg"/*.old
+
+    # A network config an older installer copied from a template chopi has changed since.
+    cp "$lg/chopi/$NETWORK_TEMPLATE" "$mg/$DEFAULT_NETWORK_CONFIG"
+    make_repo "$lg/chopi"
+    git -C "$lg/chopi" add "$NETWORK_TEMPLATE"
+    git -C "$lg/chopi" -c core.hooksPath=/dev/null commit -qm template
+    printf '# changed since\n' >>"$lg/chopi/$NETWORK_TEMPLATE"
+    printf 'acme/*\n' >"$mg/github-allowlist"
+    out="$(migrate 2>&1)"; st=$?
+    assert_zero "$st" "the allowlist moves into a network config still an earlier template"
+    assert_has_line "$(migrated)" "- acme/*" "  -> replacing its empty list"
+    rm "$mg"/*.old
+    rm -rf "${lg:?}/chopi/.git"
+    cp "$repo/$NETWORK_TEMPLATE" "$lg/chopi/$NETWORK_TEMPLATE"
+
+    printf 'acme/*\n' >"$mg/github-allowlist"
+    printf 'allowed_domains: [mine.example]\n' >"$mg/$DEFAULT_NETWORK_CONFIG"
+    out="$(migrate 2>&1)"; st=$?
+    assert_zero "$st" "a network config the user edited is left alone"
+    assert_eq "$(migrated)" "allowed_domains: [mine.example]" "  -> unchanged"
+    assert_eq "$out" "" "  -> quietly, for refuse_legacy_network_files to explain"
+    assert_present "$mg/github-allowlist" "  -> as is the old file"
+    rm "$mg/$DEFAULT_NETWORK_CONFIG"
+
+    printf 'version: v1\nservices: []\ndefault:\n  action: open\n' >"$mg/proxy-rules.yaml"
+    out="$(migrate 2>&1)"; st=$?
+    assert_nonzero "$st" "rules that don't move cleanly are refused"
+    assert_contains "$out" 'action is "open"' "  -> saying why"
+    assert_absent "$mg/$DEFAULT_NETWORK_CONFIG" "  -> making no network config"
+    assert_present "$mg/proxy-rules.yaml" "  -> leaving the old files"
+    rm "$mg/proxy-rules.yaml"
+
+    # A retry after the user put the network config back to the template finds the last backups.
+    printf 'acme/*\n' >"$mg/github-allowlist.old"
+    printf 'other/*\n' >"$mg/github-allowlist"
+    out="$(migrate 2>&1)"
+    assert_contains "$out" "github-allowlist.old" "an old file whose backup is there already is refused, naming the backup"
+    assert_eq "$(cat "$mg/github-allowlist.old")" "acme/*" "  -> keeping it"
+    assert_absent "$mg/$DEFAULT_NETWORK_CONFIG" "  -> making no network config"
+    assert_present "$mg/github-allowlist" "  -> leaving the old file"
+    rm "$mg/github-allowlist.old"
+    mkdir "$mg/github-allowlist.old"
+    out="$(migrate 2>&1)"
+    assert_contains "$out" "github-allowlist.old" "  -> a directory there too, which mv would move the old file into"
+    assert_present "$mg/github-allowlist" "  -> (still left)"
+    rmdir "$mg/github-allowlist.old"
+    rm "$mg/github-allowlist"
+
+    # An earlier migration's backup of a file not moved this time isn't taken for it.
+    printf 'allowed_domains: [stale.example]\n' >"$mg/proxy-rules.yaml.old"
+    printf 'acme/*\n' >"$mg/github-allowlist"
+    out="$(migrate 2>&1)"; st=$?
+    assert_zero "$st" "a backup of a file not moved this time is left alone"
+    assert_not_contains "$(migrated)" "stale.example" "  -> not migrated again"
+    rm "$mg"/*.old "$mg/$DEFAULT_NETWORK_CONFIG"
+
+    # The install stopping while the proxy binary migrates them.
+    cat >"$lg/killer" <<'EOF'
+#!/bin/sh
+kill -9 "$PPID"
+EOF
+    chmod +x "$lg/killer"
+    printf 'allowed_domains: [a.example]\n' >"$mg/proxy-rules.yaml"
+    ( SMOKESCREEN_BIN="$lg/killer"; migrate ) 2>/dev/null
+    assert_present "$mg/proxy-rules.yaml" "an install stopped mid-migration leaves the old files"
+    out="$(refuse_legacy_network_files "$mg" 2>&1)"; st=$?
+    assert_nonzero "$st" "  -> so chopi still refuses, rather than lose their hosts"
+    rm "$mg/proxy-rules.yaml"
+fi
 
 
 # ---------------------------------------------------------------------------

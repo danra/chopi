@@ -173,9 +173,12 @@ ensure_copy() {
     echo "  created $live  (from $template)"
 }
 
+# Before the copy, so a network config not made yet is made from the legacy files, not copied.
+migrate_legacy_network_files || :
 ensure_copy "$NETWORK_TEMPLATE" "config/$DEFAULT_NETWORK_CONFIG"
 ensure_copy config/templates/sandbox.template.sh   config/sandbox.sh
-# Only a warning here: chopi itself refuses to run until the user moves the legacy files.
+# Only a warning here, for the legacy files that didn't move: chopi itself refuses to run until the
+# user moves them.
 refuse_legacy_network_files "$CHOPI_DIR/config" || :
 
 

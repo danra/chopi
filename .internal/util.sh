@@ -60,7 +60,9 @@ DEFAULT_NETWORK_CONFIG="network.yaml"
 # The network config replaced the proxy rules and the GitHub allowlist. These are the names of
 # their files, and of the sandbox config settings that named them. chopi refuses to start with any
 # of them until the user moves them into the network config (preflight_legacy_network_config).
-LEGACY_NETWORK_FILES=(proxy-rules.yaml github-allowlist)
+LEGACY_PROXY_RULES="proxy-rules.yaml"
+LEGACY_GITHUB_ALLOWLIST="github-allowlist"
+LEGACY_NETWORK_FILES=("$LEGACY_PROXY_RULES" "$LEGACY_GITHUB_ALLOWLIST")
 LEGACY_NETWORK_VARS=(CHOPI_PROXY_RULES CHOPI_GITHUB_ALLOWLIST)
 # The template to start a network config from, under $CHOPI_DIR.
 NETWORK_TEMPLATE="config/templates/network.template.yaml"
@@ -938,6 +940,69 @@ open_in_gui_editor() {
             "${editor[@]}" "$file" ;;
         *)  open -t "$file" ;;
     esac
+}
+
+# Move chopi's own proxy rules and GitHub allowlist, the files the network config replaced, into
+# its network config, keeping each beside it as NAME.old. The installer runs this, building the
+# proxy binary that does the moving first (see migrate.go).
+#
+# It moves them only while legacy_network_files_movable holds. Otherwise, or if they don't move
+# cleanly, it leaves them for the user to move, as refuse_legacy_network_files says how.
+#
+# usage: migrate_legacy_network_files
+migrate_legacy_network_files() {
+    arity 0
+    local dir="$CHOPI_DIR/config" legacy f
+    existing_legacy_network_files legacy "$dir"
+    [ "${#legacy[@]}" -eq 0 ] && return 0
+    legacy_network_files_movable || return 0
+    # It skips either file that isn't there.
+    "$SMOKESCREEN_BIN" migrate-network --template "$CHOPI_DIR/$NETWORK_TEMPLATE" \
+        --rules "$dir/$LEGACY_PROXY_RULES" --allowlist "$dir/$LEGACY_GITHUB_ALLOWLIST" \
+        --out "$dir/$DEFAULT_NETWORK_CONFIG" || return 1
+    # Only once the network config holds them. Stopped before, nothing changed. Stopped after, both
+    # are there, and chopi refuses to start, naming the old files, rather than lose their hosts.
+    for f in "${legacy[@]}"; do
+        mv "$f" "$f.old" || return 1
+    done
+    echo "  moved ${legacy[*]#"$dir/"} into config/$DEFAULT_NETWORK_CONFIG, keeping each with .old appended"
+}
+
+# Succeed if migrate_legacy_network_files may move chopi's own legacy files into its network
+# config: it isn't made yet, or is still a template (is_network_template), which an installer may
+# have made while they stayed. Fail if it is neither, or, saying so, if moving a legacy file aside
+# would overwrite an earlier migration's backup -- or, for a directory there, move the file into it.
+#
+# usage: legacy_network_files_movable
+legacy_network_files_movable() {
+    arity 0
+    local dir="$CHOPI_DIR/config" legacy f
+    local dst="$dir/$DEFAULT_NETWORK_CONFIG"
+    [ ! -e "$dst" ] || is_network_template "$dst" || return 1
+    existing_legacy_network_files legacy "$dir"
+    for f in ${legacy[@]+"${legacy[@]}"}; do
+        if [ -e "$f.old" ] || [ -L "$f.old" ]; then
+            echo "chopi: can't move ${f#"$dir/"} into config/$DEFAULT_NETWORK_CONFIG:" \
+                "$f.old is there already. Move it away first." >&2
+            return 1
+        fi
+    done
+}
+
+# Succeed if FILE is the network config template as some chopi version had it: the current one,
+# or one in chopi's git history. An installer copied it there unedited, so the template's own
+# changes since, as an update pulls them in, don't make it the user's. A FILE that isn't a regular
+# file isn't, without being read: a FIFO would block.
+#
+# usage: is_network_template FILE
+is_network_template() {
+    arity 1
+    local blob
+    [ -f "$1" ] || return 1
+    cmp -s "$1" "$CHOPI_DIR/$NETWORK_TEMPLATE" && return 0
+    blob="$(git -C "$CHOPI_DIR" hash-object -- "$1" 2>/dev/null)" || return 1
+    [ -n "$(git -C "$CHOPI_DIR" log -1 --format=%H --find-object="$blob" \
+        -- "$NETWORK_TEMPLATE" 2>/dev/null)" ]
 }
 
 # Set array NAME to the path of each of the files the network config replaced that the config dir
