@@ -4,3 +4,6 @@ sandbox.sh
 # The files network.yaml replaced. chopi refuses to start until you move them into it.
 proxy-rules.yaml
 github-allowlist
+# The same, kept once the installer moved them into network.yaml
+proxy-rules.yaml.old
+github-allowlist.old

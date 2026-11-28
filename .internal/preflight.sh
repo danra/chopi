@@ -128,7 +128,10 @@ preflight_legacy_network_config() {
             return 1
         fi
     done
-    refuse_legacy_network_files "$CHOPI_DIR/config"
+    refuse_legacy_network_files "$CHOPI_DIR/config" && return 0
+    legacy_network_files_movable &&
+        echo "Or have the installer move them for you:  $CHOPI_DIR/install.sh" >&2
+    return 1
 }
 
 # Check every file in PROXY_CONFIG_DIR, used or not, and the files in use by this session, the

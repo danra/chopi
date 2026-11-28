@@ -703,6 +703,9 @@ func listenLoopback() (*net.TCPListener, error) {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == migrateNetworkCommand {
+		os.Exit(runMigrateNetwork(os.Args[2:], os.Stderr))
+	}
 	// Caught from the start, a stop asked as the proxy starts still ends it in order: the render
 	// cancelled, Caddy stopped.
 	stop := stopSignals()
